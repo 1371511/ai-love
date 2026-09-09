@@ -8,6 +8,51 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ============================================================
+#  💾 记忆持久化
+# ============================================================
+
+import time
+
+MEMORY_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "memory")
+
+def save_memory(user_id: str, cm):
+    """把某个用户的记忆保存到 JSON 文件"""
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    data = {
+        "messages": cm.messages,
+        "long_term_summary": cm.long_term_summary,
+        "key_facts": cm.key_facts,
+        "user_profile": cm.user_profile,
+        "user_profile_initialized": cm.user_profile_initialized,
+        "turn_count": cm.turn_count,
+        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)  # 先写临时文件再替换，防止写一半崩了丢数据
+
+def load_memory(user_id: str, cm) -> bool:
+    """启动时读回记忆，文件不存在返回 False"""
+    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    if not os.path.exists(path):
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        cm.messages = data.get("messages", cm.messages)
+        cm.long_term_summary = data.get("long_term_summary", cm.long_term_summary)
+        cm.key_facts = data.get("key_facts", [])
+        cm.user_profile = data.get("user_profile", cm.user_profile)
+        cm.user_profile_initialized = data.get("user_profile_initialized", False)
+        cm.turn_count = data.get("turn_count", 0)
+        return True
+    except Exception as e:
+        print(f"⚠️ 读取记忆失败（{user_id}）：{e}，将从头开始")
+        return False
+
+# ============================================================
 #  🎭 角色配置区（改这里就能换人设！）
 # ============================================================
 
@@ -127,6 +172,17 @@ nickname_rules = """
 - 称呼的递进应随着你们关系的深入而自然变化，不要跳跃。
 - 可以根据对话氛围灵活微调，但整体方向应与当前阶段匹配。
 - 严禁自创昵称或对上述称呼进行随意改动。
+"""
+
+# ----- 用户画像注入模板（对话时自动注入 system prompt）-----
+user_profile_template = """
+## 👤 关于"她"（用户）的信息
+- 称呼：{user_name}
+- 爱好：{user_hobby}
+- 饮食偏好：{user_food}
+- 擅长的事：{user_skill}
+- 其他：{user_extra}
+（以上是她的基本信息，请在对话中自然地体现你对这些的了解，不要生硬地复述。）
 """
 
 # ----- 说话风格 -----
@@ -532,6 +588,7 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
     if user_id not in _user_managers:
         # 每个用户拥有独立的 system_prompt（但人设是共享的）
         _user_managers[user_id] = ConversationManager(system_prompt)
+        load_memory(user_id, _user_managers[user_id])   # ← 新增：读回旧记忆
 
     cm = _user_managers[user_id]
 
@@ -575,6 +632,7 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
                 cm.update_system_message()
                 cm.trim_facts()
 
+            save_memory(user_id, cm)   # ← 新增：每次对话后保存
             return reply
         else:
             error_msg = result.get("error", {}).get("message", str(result))
