@@ -69,10 +69,10 @@ python ai_lover_bot.py
 
 ## 🔗 与 NapCat 的 WebSocket 配置
 
-在 NapCat WebUI 的“网络配置”中，添加反向 WebSocket：
+- 在 NapCat WebUI 的“网络配置”中，添加反向 WebSocket：
 
-类型：WebSocket 反向
-地址：ws://127.0.0.1:8080/onebot/v11/ws
+- 类型：WebSocket 反向
+- 地址：ws://127.0.0.1:8080/onebot/v11/ws
 
 ---
 
@@ -83,39 +83,37 @@ python ai_lover_bot.py
 
 ## 🛠️ 技术栈
 
-###
-```
-Python 3.10：服务端逻辑
+- Python 3.10：服务端逻辑
 
-DeepSeek API：大语言模型
+- DeepSeek API：大语言模型
 
-NapCatQQ：QQ 协议端
+- NapCatQQ：QQ 协议端
 
-WebSocket：消息通信
+- WebSocket：消息通信
 
-tmux：进程守护
-```
+- tmux：进程守护
+
 
 ---
 
 ## 📌 注意事项
 
-API Key 请通过环境变量或 .env 文件配置，不要硬编码在代码中
-建议使用机器人小号登录，避免主号被封风险
-NapCat 配置目录建议挂载到宿主机，防止重启后配置丢失
+- API Key 请通过环境变量或 .env 文件配置，不要硬编码在代码中
+- 建议使用机器人小号登录，避免主号被封风险
+- NapCat 配置目录建议挂载到宿主机，防止重启后配置丢失
 
 ---
 
 ## 💙 致谢
 
-角色设定来自游戏《恋与深空》
-感谢 NapCatQQ 提供的 QQ 机器人框架
-DeepSeek API 提供的大模型支持
+- 角色设定来自游戏《恋与深空》
+- 感谢 NapCatQQ 提供的 QQ 机器人框架
+- DeepSeek API 提供的大模型支持
 
 ---
 
 ## 📜 License
 
-仅供个人学习和娱乐使用，请勿用于商业用途。
+- 仅供个人学习和娱乐使用，请勿用于商业用途。
 
 ---
