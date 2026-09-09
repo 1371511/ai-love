@@ -68,11 +68,11 @@ python ai_lover_bot.py
 ---
 
 ## 🔗 与 NapCat 的 WebSocket 配置
-### 在 NapCat WebUI 的“网络配置”中，添加反向 WebSocket：
 
-### 类型：WebSocket 反向
+## 在 NapCat WebUI 的“网络配置”中，添加反向 WebSocket：
 
-### 地址：ws://127.0.0.1:8080/onebot/v11/ws
+类型：WebSocket 反向
+地址：ws://127.0.0.1:8080/onebot/v11/ws
 
 ---
 
