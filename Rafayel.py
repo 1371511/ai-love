@@ -3,6 +3,9 @@ import json
 import re
 import os
 import random
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ============================================================
 #  🎭 角色配置区（改这里就能换人设！）
