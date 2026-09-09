@@ -1,3 +1,36 @@
-ai-love
+# 💙 AI 恋人 · 祁煜
+
+基于 **NapCatQQ + DeepSeek API** 的 QQ 机器人，扮演《恋与深空》中的祁煜，在 QQ 上与你实时聊天。
+
+---
+
+## ✨ 功能特点
+
+- **角色扮演**：完整还原祁煜的人设（画家、海神、傲娇直球），基于 DeepSeek 大模型驱动
+- **多用户支持**：每个 QQ 用户拥有独立的对话记忆和用户画像，互不干扰
+- **长期记忆**：通过对话摘要机制，自动记住重要事件和用户偏好
+- **实时回复**：通过 WebSocket 与 NapCat 通信，消息延迟低
+- **云端部署**：支持 Docker + tmux 后台运行，7x24 小时在线
+
+---
+
+## 🧱 项目结构
+
+ai-love/
 ├── ai_lover_bot.py      # WebSocket 服务端（主入口）
 └── Rafayel.py    # ‘祁煜’核心逻辑
+
+---
+
+## 🚀 快速部署
+
+### 1. 环境要求
+
+- Python 3.10+
+- NapCatQQ（已部署在 Docker 容器中）
+- DeepSeek API Key
+
+### 2. 安装依赖
+
+```bash
+pip install websockets requests
