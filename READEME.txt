@@ -1,0 +1,3 @@
+ai-love
+├── ai_lover_bot.py      # WebSocket 服务端（主入口）
+└── Rafayel.py    # ‘祁煜’核心逻辑
