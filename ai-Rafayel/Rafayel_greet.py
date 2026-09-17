@@ -33,10 +33,12 @@ ROOT = os.path.dirname(_HERE)                               # E:\ai-love
 GREETINGS_MD = os.path.join(ROOT, "card", "greetings.md")
 
 # 池子名 ↔ md 里的 `## ` 小节标题
+# ⚠ 这两个字符串必须与 card\greetings.md 里的 `## ` 小节标题**逐字一致**，
+#   改标题就要同步改这里，否则 load_pools 拿到的池名对不上，那个池直接空掉。
 POOL_REUNION = "重逢（冷场超过 24 小时才用）"
 POOL_DAY = "白天（8:00–17:00）"
-POOL_EVENING = "傍晚与夜里（17:00–22:00）"
-POOL_NIGHT = "深夜（22:00–23:00）"
+POOL_EVENING = "傍晚与夜里（17:00–21:00）"
+POOL_NIGHT = "深夜（21:00–23:00）"
 
 REUNION_IDLE_HOURS = 24     # 冷场超过这么久才算「重逢」
 
@@ -73,9 +75,9 @@ def _pool_for(idle_hours, hour):
         return POOL_REUNION
     if 8 <= hour < 17:
         return POOL_DAY
-    if 17 <= hour < 22:
+    if 17 <= hour < 21:
         return POOL_EVENING
-    if 22 <= hour < 23:
+    if 21 <= hour < 23:
         return POOL_NIGHT
     return None
 
