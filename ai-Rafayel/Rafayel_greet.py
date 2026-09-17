@@ -24,7 +24,7 @@ import time
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_HOUR_END, AUTO_GREET_HOUR_START,
     AUTO_GREET_IDLE_HOURS, AUTO_GREET_MAX_PER_DAY, AUTO_GREET_MIN_GAP_HOURS,
-    MEMORY_DIR,
+    AUTO_GREET_TZ_OFFSET, MEMORY_DIR,
 )
 from Rafayel_profile import get_user_profile
 
@@ -104,6 +104,20 @@ def save_record(user_id, rec):
     os.replace(tmp, path)
 
 
+def _now_bj():
+    """
+    「现在几点 / 今天几号」——按 AUTO_GREET_TZ_OFFSET 换算后的北京时间。
+
+    ⚠ 只用于判断时段和记当天日期。**绝不能拿它写 `rec["last"]`** ——
+      那个字段要和时间戳格式对齐（`_hours_since` 用 mktime 反解），写偏移后的时间会让间隔算错 8 小时。
+    """
+    return time.localtime(time.time() + AUTO_GREET_TZ_OFFSET * 3600)
+
+
+def _today_bj():
+    return time.strftime("%Y-%m-%d", _now_bj())
+
+
 def _hours_since(stamp):
     """stamp 形如 '2026-09-18 12:00:00'（save_memory 写进去的格式）。解析不了返回 None。"""
     if not stamp:
@@ -130,14 +144,14 @@ def should_greet(user_id, last_active, now=None):
     if idle < AUTO_GREET_IDLE_HOURS:
         return False, "才冷场 %.1f 小时（阈值 %s 小时）" % (idle, AUTO_GREET_IDLE_HOURS)
 
-    now = now or time.localtime()
+    now = now or _now_bj()
     hour = now.tm_hour
     if not (AUTO_GREET_HOUR_START <= hour < AUTO_GREET_HOUR_END):
-        return False, "现在 %d 点，不在 %d–%d 点的时段内" % (
+        return False, "现在（北京时间）%d 点，不在 %d–%d 点的时段内" % (
             hour, AUTO_GREET_HOUR_START, AUTO_GREET_HOUR_END)
 
     rec = load_record(user_id)
-    today = time.strftime("%Y-%m-%d")
+    today = time.strftime("%Y-%m-%d", now)
     if rec.get("date") == today and rec.get("count", 0) >= AUTO_GREET_MAX_PER_DAY:
         return False, "今天已经发过 %d 条（上限 %d）" % (rec["count"], AUTO_GREET_MAX_PER_DAY)
 
@@ -184,9 +198,11 @@ def pick_greeting(user_id, pool, record=None):
     # 记一笔：recent 只留最近 10 句
     recent.append(text)
     rec["recent"] = recent[-10:]
-    today = time.strftime("%Y-%m-%d")
+    today = _today_bj()
     rec["date"] = today
     rec["count"] = (rec.get("count", 0) + 1) if rec.get("date") == today else 1
+    # ⚠ 这里必须是**服务器真实本地时间**，不能写偏移后的时间
+    #   —— _hours_since 用 mktime 反解它，写偏移值会让「距上次多久」差 8 小时。
     rec["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
     save_record(user_id, rec)
 
