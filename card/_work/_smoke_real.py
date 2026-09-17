@@ -36,7 +36,9 @@ out = []
 def p(*a):
     out.append(" ".join(str(x) for x in a))
 
-p("MAX_TOKENS = %d   temperature = %s" % (R.MAX_TOKENS, "未设置（走 DeepSeek 默认）"))
+# 2026-09-18：这行原来写死「未设置（走 DeepSeek 默认）」，加上 temperature 之后就成了
+#   **永远显示未设置的假报告**。改成读真实常量，并在每轮下面打印「实发 temperature」。
+p("MAX_TOKENS = %d   TEMPERATURE 常量 = %s" % (R.MAX_TOKENS, R.TEMPERATURE))
 p("api_key 是否读到：%s" % (not R.api_key.startswith("sk-需要替换")))
 p("")
 
@@ -55,6 +57,7 @@ for i, text in enumerate(SCRIPT, 1):
     sys_sent = (SENT[-1].get("messages") or [{}])[0].get("content", "")
     p("  实发 system 长度 = %d（cm 内 %d）" % (len(sys_sent), len(cm.messages[0]["content"])))
     p("  实发 max_tokens  = %s" % SENT[-1].get("max_tokens"))
+    p("  实发 temperature = %s" % SENT[-1].get("temperature"))
     hits = [l.strip("- ").strip() for l in sys_sent.split("\n")
             if l.startswith("- ") and l.find("（") < 0 and len(l) < 40]
     wb_start = sys_sent.find("## 相关设定")

@@ -14,6 +14,7 @@
 """
 
 import os
+import random
 import sys
 
 import requests
@@ -25,9 +26,12 @@ _WB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "世界书")
 if _WB_DIR not in sys.path:
     sys.path.insert(0, _WB_DIR)
 
-from Rafayel import CARD_POST_HISTORY, system_prompt
+from Rafayel import (
+    CARD_ALT_GREETINGS, CARD_FIRST_MES, CARD_POST_HISTORY, system_prompt,
+)
 from Rafayel_config import (
-    API_URL, MAX_TOKENS, MODEL, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
+    API_URL, MAX_TOKENS, MODEL, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
+    api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_worldbook import get_worldbook
@@ -57,6 +61,34 @@ def _build_worldbook(cm, user_message):
     except Exception as e:
         print("⚠️ 世界书注入失败（不影响对话）：%s" % e)
         return "", ""
+
+
+def take_opening(user_id: str) -> str:
+    """
+    取一条开场白 —— **只在这个用户确实是第一次聊天时**才给。
+
+    返回开场白文本；已经有过历史（记忆读回来了 / 本进程里聊过）则返回 ""，
+    ⇒ 老朋友不会被反复重新开场。
+
+    2026-09-18 修：旧版 QQ 端**完全没有开场白**（用户第一条消息进来就直接答），
+    CLI 虽然打印了但只 print 不进历史，模型根本不知道自己开场说了什么。
+    这里统一成「写进 messages + 落盘」，两端共用同一条路径。
+    """
+    if user_id not in _user_managers:
+        _user_managers[user_id] = ConversationManager(system_prompt, user_id=user_id)
+        load_memory(user_id, _user_managers[user_id])
+
+    cm = _user_managers[user_id]
+
+    # messages[0] 是 system；长度 > 1 说明已经聊过了
+    if len(cm.messages) > 1:
+        return ""
+
+    greeting = random.choice(CARD_ALT_GREETINGS) if CARD_ALT_GREETINGS else CARD_FIRST_MES
+    cm.add_assistant_message(greeting)
+    cm.update_system_message()
+    save_memory(user_id, cm)      # 立刻落盘，否则重启后又会当成新用户重新开场
+    return greeting
 
 
 def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> str:
@@ -121,7 +153,8 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
         "model": MODEL,
         "messages": request_messages,
         "stream": False,
-        "max_tokens": MAX_TOKENS
+        "max_tokens": MAX_TOKENS,
+        "temperature": TEMPERATURE,
     }
 
     try:

@@ -43,7 +43,7 @@ from Rafayel import (
 from Rafayel_config import (
     API_URL, DEFAULT_API_KEY, MAX_FACTS, MAX_HISTORY_TURNS, MAX_PROFILE_ITEMS,
     MAX_TOKENS, MEMORY_DIR, MODEL, SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
-    WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
+    TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
 )
 
 # —— 第 2 层：用户画像 ——
@@ -55,11 +55,13 @@ from Rafayel_profile import (
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 
 # —— 第 4 层：请求组装与 API 调用 ——
-from Rafayel_llm import _build_worldbook, _user_managers, get_reply
+from Rafayel_llm import (
+    _build_worldbook, _user_managers, get_reply, take_opening,
+)
 
 __all__ = [
     # 对外调用
-    "get_reply", "_user_managers",
+    "get_reply", "take_opening", "_user_managers",
     # 对话与记忆
     "ConversationManager", "save_memory", "load_memory",
     # 用户画像
@@ -69,7 +71,7 @@ __all__ = [
     "CARD_SCENARIO", "CARD_SYSTEM_PROMPT", "CARD_POST_HISTORY",
     "CARD_FIRST_MES", "CARD_ALT_GREETINGS",
     # 配置
-    "MEMORY_DIR", "MAX_TOKENS", "SUMMARY_MAX_TOKENS", "SUMMARY_INTERVAL",
+    "MEMORY_DIR", "MAX_TOKENS", "TEMPERATURE", "SUMMARY_MAX_TOKENS", "SUMMARY_INTERVAL",
     "MAX_HISTORY_TURNS", "MAX_FACTS", "MAX_PROFILE_ITEMS",
     "WB_MAX_CHARS", "WB_MAX_ENTRIES", "API_URL", "MODEL",
     "DEFAULT_API_KEY", "api_key",
@@ -91,13 +93,20 @@ def run_cli_mode():
     # 使用全局字典存储，方便后续 get_reply 调用
     _user_managers["cli"] = cli_manager
 
-    # 开场白取自酒馆卡（alternate_greetings 随机一条，没有就退回 first_mes）。
-    # ⚠ 旧版只 print 不进历史 → 模型根本不知道自己开场说了什么，下一轮会前后矛盾（P1 缺陷）。
-    #   这里必须 add_assistant_message 把它写进 messages。
-    print("\n🌊 海浪轻轻拍打着沙滩，你推开了 Mo Art Studio 的门……\n")
-    _greeting = random.choice(CARD_ALT_GREETINGS) if CARD_ALT_GREETINGS else CARD_FIRST_MES
-    print(f"💙 {name}：{_greeting}\n")
-    cli_manager.add_assistant_message(_greeting)
+    # 2026-09-18 修：旧版**从没调过 load_memory** —— 因为 get_reply 里的 load_memory
+    # 只在 `if user_id not in _user_managers` 分支里，而 CLI 一上来就把 "cli" 注册好了，
+    # 该分支永远不成立 ⇒ 每次启动都是全新会话，上一轮的记忆还在文件里却读不回来，
+    # 而且第一轮 save_memory 就把它覆盖掉了。这里显式读一次。
+    load_memory("cli", cli_manager)
+
+    # 开场白取自酒馆卡（alternate_greetings 随机一条，没有就退回 first_mes），
+    # 与 QQ 端共用 `take_opening`：只有真的第一次聊才给，且会写进历史 + 落盘。
+    _greeting = take_opening("cli")
+    if _greeting:
+        print("\n🌊 海浪轻轻拍打着沙滩，你推开了 Mo Art Studio 的门……\n")
+        print(f"💙 {name}：{_greeting}\n")
+    else:
+        print("\n（读到了上次的记忆，接着上次继续；删掉 memory\\cli.json 可从头开始）\n")
     # 2026-09-15：删除开局的五问表单（名字/爱好/食物/技能/补充）。
     #   称呼与喜好改由对话中自然引导 + 自动提取，见 UserProfile。
 

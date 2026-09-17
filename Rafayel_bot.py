@@ -12,13 +12,31 @@ _CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
-from Rafayel_chat import get_reply
+from Rafayel_chat import get_reply, take_opening
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str) -> str:
     """调用祁煜的对话引擎（Rafayel_chat）"""
     # 直接调用 get_reply，它会自动管理该用户的对话历史和记忆
     return get_reply(user_message, user_id)
+
+
+async def send_text(websocket, message_type, user_id, group_id, text):
+    """按 OneBot v11 协议发一条消息（私聊 / 群聊）"""
+    if message_type == "private":
+        response = {
+            "action": "send_private_msg",
+            "params": {"user_id": int(user_id), "message": text}
+        }
+    elif message_type == "group":
+        response = {
+            "action": "send_group_msg",
+            "params": {"group_id": group_id, "message": text}
+        }
+    else:
+        return
+    await websocket.send(json.dumps(response))
+    print(f"[💬] 已回复: {text[:50]}...")
 
 # ============================================
 # WebSocket 服务端（连接 NapCat）
@@ -58,35 +76,20 @@ async def process_napcat_message(data, websocket):
 
         print(f"[📩] 收到 {message_type} 消息: {raw_message} (来自: {user_id})")
 
+        # 2026-09-18：新用户第一次说话时，先主动打一声招呼再回答。
+        #   旧版 QQ 端完全没有开场白 —— 用户第一条消息进来就直接进入问答，
+        #   明明卡里写了 5 条 alternate_greetings 却只在 CLI 里用过。
+        #   take_opening 只在「确实是第一次」时返回文本，老朋友返回空串。
+        opening = take_opening(user_id)
+        if opening:
+            await send_text(websocket, message_type, user_id, group_id, opening)
+
         # 调用你的 AI 恋人逻辑
         reply = your_ai_lover_response(raw_message, user_id)
 
         # 构造回复消息（符合 OneBot v11 协议）
         if reply:
-            if message_type == "private":
-                # 私聊回复
-                response = {
-                    "action": "send_private_msg",
-                    "params": {
-                        "user_id": int(user_id),
-                        "message": reply
-                    }
-                }
-            elif message_type == "group":
-                # 群聊回复
-                response = {
-                    "action": "send_group_msg",
-                    "params": {
-                        "group_id": group_id,
-                        "message": reply
-                    }
-                }
-            else:
-                return
-
-            # 发送回复到 NapCat
-            await websocket.send(json.dumps(response))
-            print(f"[💬] 已回复: {reply[:50]}...")
+            await send_text(websocket, message_type, user_id, group_id, reply)
 
 async def main():
     """启动 WebSocket 服务器"""
