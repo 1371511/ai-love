@@ -59,9 +59,14 @@ from Rafayel_llm import (
     _build_worldbook, _user_managers, get_reply, take_opening,
 )
 
+# —— 旁支：主动打招呼（素材原文直发，不经过模型） ——
+from Rafayel_greet import load_pools, try_greet
+
 __all__ = [
     # 对外调用
     "get_reply", "take_opening", "_user_managers",
+    # 主动打招呼
+    "try_greet", "load_pools",
     # 对话与记忆
     "ConversationManager", "save_memory", "load_memory",
     # 用户画像

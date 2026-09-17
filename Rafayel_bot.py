@@ -1,4 +1,5 @@
 import asyncio
+import glob
 import json
 import os
 import sys
@@ -13,6 +14,10 @@ if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
 from Rafayel_chat import get_reply, take_opening
+from Rafayel_config import (
+    AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
+)
+from Rafayel_greet import try_greet
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str) -> str:
@@ -91,6 +96,50 @@ async def process_napcat_message(data, websocket):
         if reply:
             await send_text(websocket, message_type, user_id, group_id, reply)
 
+# ============================================
+# 主动打招呼（他忍不住先开口）
+# ============================================
+
+async def auto_greet_scan():
+    """
+    扫一遍私聊过的用户：谁冷场够久了，就让他主动说一句。
+
+    最后活跃时间直接取 memory\{uid}.json 里的 saved_at（save_memory 每次都会写），
+    不额外改记忆结构。uid 必须纯数字（QQ 号），免得给 "cli" 这种测试号发消息。
+    """
+    if not AUTO_GREET or not connected_clients:
+        return
+    ws = next(iter(connected_clients))
+
+    for path in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
+        uid = os.path.splitext(os.path.basename(path))[0]
+        if uid.endswith("_profile") or uid.endswith("_greet"):
+            continue
+        if not uid.isdigit():
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception:
+            continue
+
+        text = try_greet(uid, data.get("saved_at", ""))
+        if not text:
+            continue
+
+        await send_text(ws, "private", uid, None, text)
+        print("[📣] 主动打招呼 -> %s" % uid)
+
+
+async def auto_greet_loop():
+    while True:
+        await asyncio.sleep(AUTO_GREET_SCAN_SECONDS)
+        try:
+            await auto_greet_scan()
+        except Exception as e:
+            print("[⚠️] 主动打招呼扫描出错：%s" % e)
+
+
 async def main():
     """启动 WebSocket 服务器"""
     print("=" * 50)
@@ -102,6 +151,9 @@ async def main():
     # 启动 WebSocket 服务
     async with websockets.serve(handle_message, "0.0.0.0", 8080):
         print("📡 监听地址: ws://0.0.0.0:8080/onebot/v11/ws")
+        if AUTO_GREET:
+            asyncio.create_task(auto_greet_loop())
+            print("📣 主动打招呼已开启（冷场 %s 小时后他会先开口）" % AUTO_GREET_IDLE_HOURS)
         await asyncio.Future()  # 永久运行
 
 if __name__ == "__main__":
