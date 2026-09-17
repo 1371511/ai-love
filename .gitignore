@@ -17,3 +17,41 @@ cache/
 memory/
 .venv/
 venv/
+
+
+# ============================================================
+#  2026-09-17  只上传「祁煜 / 世界书」的代码
+#  —— 以下一律留在本地，不进仓库 ——
+# ============================================================
+
+# 备份：各阶段的 .bak、拆分前的 baseline
+ai-Rafayel/_backup/
+card/_work/_baseline/
+*.bak-*
+
+# 脚本草稿与临时输出
+_c.txt
+card/_work/_z.txt
+card/_work/_probe.txt
+card/_work/_wiki_raw.txt
+card/_work/_*_out.txt
+
+# 报告 / 溯源表 / 抓取原料（含他人昵称，不公开）
+card/_校验报告*.txt
+card/_溯源缺口报告.txt
+card/_work/称呼词频报告.md
+card/_work/小红书*.md
+card/_work/sources.md
+
+# ============================================================
+#  「严格模式」开关 —— 注释掉 = 上传，去掉开头的 # = 不上传
+#  下面 4 样**默认都上传**，因为少了前两样就跑不起来
+# ============================================================
+# 运行必需（不建议挡）：
+#   · Rafayel.character.json 少了 → Rafayel.py 导入时直接报错，程序起不来
+#   · worldbook.json 少了 → 不崩，但世界书每轮「注入失败」，等于没有世界书
+# card/Rafayel.character.json
+# card/worldbook.json
+# 只有「想改人设 / 重新生成世界书」才用得上：
+# card/_work/祁煜人设.md
+# card/_work/worldbook/

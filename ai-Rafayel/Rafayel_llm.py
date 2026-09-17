@@ -1,0 +1,154 @@
+# -*- coding: utf-8 -*-
+"""
+祁煜（Rafayel）的**请求组装与 API 调用**（2026-09-17 从 `Rafayel_chat.py` 拆出）。
+
+本层是整条链的最上面一层（除入口壳子）。
+只做一件事：把「人设 + 记忆 + 画像 + 世界书 + post_history」拼成一次真实请求，
+发给 DeepSeek，把回复交回对话管理器。
+
+⚠ 两条铁律（都是踩过的坑）：
+  ① 世界书与 post_history **绝不能写回 `cm.messages`**。
+     它们只进本次的 `request_messages`；一旦写回，就会被 `save_memory` 落盘，
+     每轮累积一份，越滚越大，最后固化成常驻人设。
+  ② 世界书允许失败降级（读不到只是少点上下文），人设卡相反 —— 读不到必须报错。
+"""
+
+import os
+import sys
+
+import requests
+
+# 2026-09-17 搬家：世界书代码在 ai-Rafayel\世界书\ 子目录里，**不在本文件同一层**。
+# Python 只会把「本文件所在目录」自动加进 sys.path，子目录里的模块默认搜不到，
+# 所以这里手动补一段。放在 import Rafayel_worldbook 之前 —— 顺序不能挪到后面。
+_WB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "世界书")
+if _WB_DIR not in sys.path:
+    sys.path.insert(0, _WB_DIR)
+
+from Rafayel import CARD_POST_HISTORY, system_prompt
+from Rafayel_config import (
+    API_URL, MAX_TOKENS, MODEL, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
+)
+from Rafayel_memory import ConversationManager, load_memory, save_memory
+from Rafayel_worldbook import get_worldbook
+
+
+# 全局字典，按 user_id 存储每个用户的对话管理器
+_user_managers = {}
+
+
+def _build_worldbook(cm, user_message):
+    """
+    返回 (before_text, after_text)：本轮命中的世界书条目渲染结果。
+
+    设计要点：
+    - 注入是**每轮重算**的，不写入 cm.messages（避免沉淀进记忆文件）。
+    - 这里允许失败降级：世界书只是"参考资料"，读不到最多是少一点上下文，
+      不该把整个聊天搞挂。人设卡（load_card）则相反 —— 读不到必须报错。
+    """
+    try:
+        wb = get_worldbook()
+        return wb.build(
+            cm.get_recent_messages(),
+            user_message,
+            max_chars=WB_MAX_CHARS,
+            max_entries=WB_MAX_ENTRIES,
+        )
+    except Exception as e:
+        print("⚠️ 世界书注入失败（不影响对话）：%s" % e)
+        return "", ""
+
+
+def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> str:
+    """
+    供外部调用的入口函数
+
+    参数：
+        user_message: 用户发送的消息
+        user_id: 用户的 QQ 号（用于区分不同用户，保持独立对话）
+        api_key_override: 可选，手动传入 API Key（不传则使用环境变量或默认值）
+
+    返回：
+        AI 的回复文本
+    """
+    # 确定使用的 API Key
+    effective_api_key = api_key_override if api_key_override else api_key
+
+    # 获取或创建该用户的对话管理器
+    if user_id not in _user_managers:
+        # 每个用户拥有独立的 system_prompt（但人设是共享的）
+        _user_managers[user_id] = ConversationManager(system_prompt, user_id=user_id)
+        load_memory(user_id, _user_managers[user_id])   # 读回旧记忆
+
+    cm = _user_managers[user_id]
+
+    # 1. 添加用户消息
+    cm.add_user_message(user_message)
+
+    # 2. 更新 system 消息（加入最新的记忆）
+    cm.update_system_message()
+
+    # 3. 截断历史（保留最近 N 轮）
+    cm.truncate_history()
+
+    # 4. 构建请求的 messages
+    request_messages = cm.messages.copy()
+
+    # 4a. 世界书：命中关键词的条目才注入
+    #     ⚠ system 那条是**每轮重算**的，不写回 cm.messages ——
+    #        否则命中内容会被 save_memory 沉淀进 memory\*.json，越滚越大还会变成常驻人设。
+    wb_before, wb_after = _build_worldbook(cm, user_message)
+    if wb_before:
+        request_messages[0] = {
+            "role": "system",
+            "content": cm.get_full_system_prompt() + "\n\n" + wb_before,
+        }
+    if wb_after:
+        request_messages.append({"role": "system", "content": wb_after})
+
+    # 4b. post_history_instructions：放在历史**之后**、模型回复之前。
+    # ⚠ 只加进 request_messages，不加进 cm.messages —— 否则会被 save_memory 写进
+    #    memory\*.json，每轮累积一份，越滚越大。
+    if CARD_POST_HISTORY:
+        request_messages.append({"role": "system", "content": CARD_POST_HISTORY})
+
+    # 5. 调用 DeepSeek API
+    headers = {
+        "Authorization": f"Bearer {effective_api_key}",
+        "Content-Type": "application/json"
+    }
+    data = {
+        "model": MODEL,
+        "messages": request_messages,
+        "stream": False,
+        "max_tokens": MAX_TOKENS
+    }
+
+    try:
+        response = requests.post(API_URL, headers=headers, json=data, timeout=30)
+        result = response.json()
+
+        if "choices" in result:
+            choice = result["choices"][0]
+            reply = choice["message"]["content"]
+            # 记录真实用量与结束原因：finish_reason == "length" 说明被 max_tokens 截断
+            cm.last_finish_reason = choice.get("finish_reason")
+            cm.last_usage = result.get("usage")
+            # 6. 添加助手消息到对话管理器
+            cm.add_assistant_message(reply)
+
+            # 7. 触发摘要更新（如果到了总结间隔）
+            if cm.should_summarize():
+                cm.generate_summary(effective_api_key)
+                cm.update_system_message()
+                cm.trim_facts()
+
+            save_memory(user_id, cm)   # 每次对话后保存
+            return reply
+        else:
+            error_msg = result.get("error", {}).get("message", str(result))
+            return f"（AI 接口出错：{error_msg}）"
+    except requests.exceptions.Timeout:
+        return "（请求超时，请稍后再试 💙）"
+    except Exception as e:
+        return f"（发生错误：{e} 💙）"

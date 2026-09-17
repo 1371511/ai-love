@@ -16,9 +16,33 @@
 
 ## 🧱 项目结构
 
-- ai-love/
-- ├── ai_lover_bot.py      # WebSocket 服务端（主入口）
-- └── Rafayel.py    # ‘祁煜’核心逻辑
+```
+ai-love/                    # 项目根 = 数据 + 入口 + 文档
+├── Rafayel_bot.py         # WebSocket 服务端（主入口，QQ 接线）
+│                          #   自带 sys.path 引导，会把下面的 ai-Rafayel 挂上
+├── ai-Rafayel/            # ★ 祁煜的全部代码（2026-09-17 从根目录归拢到这里）
+│   ├── Rafayel_chat.py        # 门面：重新导出 + CLI 调试（改实现请往下找）
+│   ├── Rafayel_config.py      # ⚙️ 配置：路径 / 各项上限 / API key（调参只改这里）
+│   ├── Rafayel_profile.py     # 👤 用户画像：规则提取 + 落盘 + 渲染
+│   ├── Rafayel_memory.py      # 💾 记忆落盘 + ConversationManager（摘要 / 关键事实）
+│   ├── Rafayel_llm.py         # 🚀 get_reply：拼请求 + 调 DeepSeek（世界书在这里拼进去）
+│   ├── Rafayel.py             # 人设层：读酒馆卡，导出人设常量
+│   ├── 世界书/
+│   │   └── Rafayel_worldbook.py   # 世界书关键词注入器
+│   └── _backup/               # 各阶段的 .bak 备份
+├── card/                  # 酒馆卡产物（Rafayel.character.json、worldbook.json）
+├── card/_work/            # 唯一真相源 md + 生成器 + 审计脚本
+├── memory/                # 按 user_id 落盘：{uid}.json（对话记忆）、{uid}_profile.json（用户画像）
+└── .env                   # DEEPSEEK_API_KEY
+```
+
+> ⚠ **代码在 `ai-Rafayel/`，数据目录（`card/`、`memory/`、`.env`）仍在项目根。**
+> 各模块靠 `__file__` 上跳一层算出项目根再拼路径 —— 别顺手把 `card/` 或 `memory/`
+> 也搬进 `ai-Rafayel/`，那会让 `MEMORY_DIR` 指错地方，表现为「记忆莫名其妙全丢了」。
+
+> 对话引擎的依赖方向是**单向**的，不要反向 import：
+> `config ← profile ← memory ← llm ← chat`。
+> `Rafayel_chat.py` 只是门面，**旧写法 `from Rafayel_chat import get_reply` 依然可用**。
 
 ---
 
@@ -42,7 +66,7 @@ python3 -m venv venv
 source venv/bin/activate
 
 # 安装依赖
-pip install websockets requests
+pip install websockets requests python-dotenv
 ```
 
 ### 3. 配置环境变量
@@ -53,14 +77,17 @@ DEEPSEEK_API_KEY=sk-你的密钥
 
 ### 4.启动服务
 ```
-python ai_lover_bot.py
+python Rafayel_bot.py
+
+# 只想先在终端跟他说说话（不开 QQ）：
+python ai-Rafayel/Rafayel_chat.py
 
 # 建议使用 tmux 后台运行：
 tmux new -s aibot
 cd /home/ubuntu/ai-love
 source venv/bin/activate
 export DEEPSEEK_API_KEY="sk-你的密钥"
-python ai_lover_bot.py
+python Rafayel_bot.py
 
 # 按 Ctrl+B，再按 D 脱离会话。
 ```
@@ -77,7 +104,52 @@ python ai_lover_bot.py
 ---
 
 ## 📝 修改人设
-编辑 Rafayel.py 中的角色配置区，修改后重启服务即可生效。
+
+**不要直接改代码里的人设。** 唯一真相源在 `card/_work/`：
+
+```
+card/_work/祁煜人设.md          → 角色卡字段（改这里）
+card/_work/worldbook/          → 世界书条目（改这里，目录下 11 个 .md，
+                                 数值前缀即排序锚 + order 区间）
+
+改完跑：
+    python card/_work/_sanitize_md.py
+    python card/_work/md2card.py
+
+再重启服务即可生效。
+```
+
+- `ai-Rafayel/Rafayel.py` 只是把 `card/Rafayel.character.json` 读进来的薄薄一层。
+- 世界书是关键词触发的，聊到才注入；改完记得跑一次
+  `card/_work/_cover.py`（覆盖度）和 `_overhit.py`（误命中）。
+
+---
+
+## 👤 用户画像（自动积累，开局不填表）
+
+开局**不再问**「你叫什么 / 喜欢什么」那五条。关于她的事，让他在相处中自己留意：
+
+- **规则轨（实时）**：她说了「叫我小辞」「我不吃香菜」这类显式表述，当句就抓、当句落盘。
+- **LLM 轨（每 8 轮）**：生成对话摘要时，顺带把隐含信息总结成一段 JSON 补丁补进来
+  （职业、作息这类她不会主动说「我喜欢」的东西）。
+
+存到 `memory/{user_id}_profile.json`，**与对话记忆 `{user_id}.json` 分开**——
+清对话记忆不会把她这个人一起清掉。一条都没积累到时整段不注入，不占 token。
+
+调试用：`get_user_profile(uid)` / `set_user_profile(uid, name=…)` / `clear_user_profile(uid)`。
+日常别手动塞，会让他「知道本来不知道的事」。
+
+## ⚙️ 调节回复长度
+
+`ai-Rafayel/Rafayel_config.py` 里两个常量（2026-09-15 前是写死的 300；2026-09-17 拆分前在 `Rafayel_chat.py` 顶部）：
+
+| 常量 | 默认 | 管什么 |
+|---|---|---|
+| `MAX_TOKENS` | 1000 | 他单次回复的上限（≈ 600~1000 字） |
+| `SUMMARY_MAX_TOKENS` | 600 | 每 8 轮生成记忆摘要（含画像补丁）的上限 |
+
+调大只是**放开天花板**，不会让他变啰嗦——实际说多长由人设和
+`post_history_instructions` 决定。嫌他话多就往下调这两个数，别去改 post_history。
 
 ---
 

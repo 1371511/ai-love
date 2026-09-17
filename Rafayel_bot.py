@@ -1,13 +1,22 @@
 import asyncio
 import json
+import os
+import sys
+
 import websockets
 
-# ========== 导入你的 AI 恋人逻辑 ==========
-from Rafayel import get_reply
+# ========== 导入祁煜（Rafayel）的对话引擎 ==========
+# 2026-09-17 搬家：引擎代码都在 ai-Rafayel\ 子目录，而入口 bot 仍留在项目根 ——
+# 所以先把代码目录挂进 sys.path，下面那句 from Rafayel_chat import … 才找得到。
+_CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel")
+if _CODE_DIR not in sys.path:
+    sys.path.insert(0, _CODE_DIR)
+
+from Rafayel_chat import get_reply
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str) -> str:
-    """调用你的 AI 恋人逻辑"""
+    """调用祁煜的对话引擎（Rafayel_chat）"""
     # 直接调用 get_reply，它会自动管理该用户的对话历史和记忆
     return get_reply(user_message, user_id)
 
