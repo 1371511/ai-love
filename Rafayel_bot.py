@@ -52,13 +52,13 @@ async def send_text(websocket, message_type, user_id, group_id, text):
 # 目前只有「手动测试指令」这一条通路 —— 在 QQ 里发：
 #     #发说说 内容       → **默认私有**：只发信人可见
 #     #发说说公开 内容   → 所有人可见
-# 就会真的发一条说说，并把 NapCat 的 retcode 回给你。
+# 就会真的发一条说说；NapCat 的回执（如果有）会打进服务端日志（[🧾]）。
 # ⚠ 排期 / 选条 / LLM 兜底都还没做：先把「这个号到底发不发得出去」验证掉，
 #   否则风控一拦，后面全白写。
 
 # 请求回执表 {echo: asyncio.Future}
 #   ⚠ 为什么非要有它：send_qzone_msg 会因为风控 / 权限在**业务层**失败
-#      （返回 retcode != 0），**不会抛异常** —— 光 await ws.send() 什么都不知道。
+#      （返回 retcode != 0），**不会抛异常** —— 光 await ws.send() 什么都看不出来。
 _pending_receipts = {}
 _receipt_seq = 0
 
@@ -69,45 +69,68 @@ def _next_echo():
     return "qzone-%d" % _receipt_seq
 
 
-async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None,
-                     timeout=None):
-    """
-    发一条说说，并**等 NapCat 的回执**。
-
-    返回 (ok, info)，**三态**：
-        True  → 收到回执且 retcode == 0，info 是说说 tid
-        False → 收到回执但 retcode != 0，info 是失败原因
-        None  → **压根没收到回执**，发没发出去未知
-                （2026-09-19 实测：超时那次说说其实已经发出去了，所以别把 None 当失败用）
-    """
-    if timeout is None:
-        timeout = QZONE_RECEIPT_TIMEOUT
-
-    echo = _next_echo()
-    payload = build_payload(content, ugc_right=ugc_right,
-                            target_uins=target_uins, echo=echo)
-
-    fut = asyncio.get_running_loop().create_future()
-    _pending_receipts[echo] = fut
-    try:
-        await websocket.send(json.dumps(payload))
-        try:
-            receipt = await asyncio.wait_for(fut, timeout=timeout)
-        except asyncio.TimeoutError:
-            # ⚠ 2026-09-19 实测：**超时 ≠ 失败**。
-            #   她说「说说发成功了，但回复的是等回执超时」—— 也就是说
-            #   说说确实发出去了、空间能看到，只是 NapCat 没把回执送回来。
-            #   ⇒ 返回 None（未知），绝不能谎报失败。
-            return None, "等回执超时（%ss）" % timeout
-    finally:
-        _pending_receipts.pop(echo, None)
-
+def _judge_receipt(receipt):
+    """把一条回执翻译成 (ok, info)。"""
     if receipt.get("retcode") == 0:
         tid = (receipt.get("data") or {}).get("tid")
         return True, (str(tid) if tid else "未返回 tid")
     return False, "retcode=%s / %s" % (
         receipt.get("retcode"),
         receipt.get("message") or receipt.get("wording") or "")
+
+
+async def _watch_receipt(echo, fut):
+    """
+    ⭐ **在后台任务里**等回执 —— 只能这么做，绝不能再挡在主流程里。
+
+    ⚠⚠ 真根因（2026-09-19 读码定位，**不是 NapCat 的锅**）：
+      bot 的接收循环是
+          async for message in websocket:
+              await process_napcat_message(message, ws)
+      —— **处理当前这条消息的期间，循环不会去读下一帧**。
+      所以在 `process_napcat_message` 里 `await` 等回执 = 自己锁死自己：
+      回执确实回来了，但它排在**后面那帧**里，要等当前这条处理完才会被读到
+      ⇒ **必然超时**，跟 NapCat 回不回、跟可见范围都没关系。
+
+      旁证：公开（ugc_right=1）和私有（16）**两次都超时**，而两次说说其实都发出去了。
+
+    所以现在改成 fire-and-forget：送出即返回，回执真回来了就在后台记一条日志。
+    """
+    try:
+        receipt = await asyncio.wait_for(fut, timeout=QZONE_RECEIPT_TIMEOUT)
+        ok, info = _judge_receipt(receipt)
+        print("[🧾] 说说回执 %s -> %s %s" % (echo, "成功" if ok else "失败", info))
+    except asyncio.TimeoutError:
+        print("[🧾] 说说回执 %s 没到（该接口可能不回响应；不影响发送）" % echo)
+    except Exception as e:
+        print("[🧾] 说说回执 %s 处理出错：%s" % (echo, e))
+    finally:
+        _pending_receipts.pop(echo, None)
+
+
+async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None):
+    """
+    把一条说说**送出去**（不等回执，立即返回）。
+
+    返回 (sent, info)：
+        True  → 请求已交给 NapCat（**只代表送出去了**，不代表一定发布成功）
+        False → 连送都没送出去（WS 异常）
+
+    ⚠ 为什么不等回执：见 `_watch_receipt` 的注释 —— 在主流程里等**必然超时**。
+      实测两次（公开 / 私有）说说**都真的发出去了** ⇒「没回执」≠「失败」。
+      回执结果只进日志（[🧾]），**不回传给调用方**，免得二期又把它当成功判据。
+    """
+    try:
+        echo = _next_echo()
+        payload = build_payload(content, ugc_right=ugc_right,
+                                target_uins=target_uins, echo=echo)
+        fut = asyncio.get_running_loop().create_future()
+        _pending_receipts[echo] = fut
+        await websocket.send(json.dumps(payload))
+        asyncio.create_task(_watch_receipt(echo, fut))
+        return True, "已送出"
+    except Exception as e:
+        return False, "发送异常：%s" % e
 
 
 async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw_message):
@@ -143,15 +166,15 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
 
     print("[🧪] 朋友圈测试：ugc_right=%s targets=%s / 正文 %r"
           % (ugc, targets, content[:40]))
-    ok, info = await send_qzone(websocket, content,
-                                ugc_right=ugc, target_uins=targets)
+    sent, note = await send_qzone(websocket, content,
+                                  ugc_right=ugc, target_uins=targets)
 
-    if ok is True:
-        tip = "✅ 说说已发出（tid=%s）" % info
-    elif ok is False:
-        tip = "❌ 说说发送失败：%s" % info
+    # ⚠ 2026-09-19：改成「送出即回」，不再干等 20 秒回执
+    #   （在主流程里等**必然超时**，原因见 _watch_receipt 的注释）。
+    if sent:
+        tip = "✅ 说说已送出 —— 去空间看看；回执（如果有）我打在服务端日志里"
     else:
-        tip = "⚠️ 没收到回执（%s）—— 说说**可能已经发出**了，去空间看看" % info
+        tip = "❌ 没送出去：%s" % note
     await send_text(websocket, message_type, user_id, group_id, tip)
     print("[🧪] " + tip)
     return True
