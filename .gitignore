@@ -35,6 +35,8 @@ card/_work/_z.txt
 card/_work/_probe.txt
 card/_work/_wiki_raw.txt
 card/_work/_*_out.txt
+# 2026-09-19：S2 语料生成器的自检报告（本地对账用，数字已抄进方案文档）
+card/_work/_md2qzone_report.txt
 
 # 报告 / 溯源表 / 抓取原料（含他人昵称，不公开）
 card/_校验报告*.txt
