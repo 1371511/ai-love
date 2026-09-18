@@ -91,6 +91,37 @@ def take_opening(user_id: str) -> str:
     return greeting
 
 
+def record_proactive(user_id: str, text: str) -> bool:
+    """
+    把**主动打招呼发出去的那句话**也写进对话历史（2026-09-18 修）。
+
+    ⚠ 为什么必须写：主动打招呼一开始刻意「不进记忆」（怕摘要越滚越大），
+      结果她回话时**模型根本不知道上一句是他自己说的** ——
+      实测：「要是这时候有人能跟我聊聊读后感就完美了」被回成完全不搭的内容，
+      她说「祁煜的回复并没有接住」。
+      ⇒ 现在与开场白走同一条路：写进 messages + 立刻落盘（重启也不会失忆）。
+
+    由调用方（bot）在**消息确实发出去之后**调用，避免发送失败却留下他"说过"的假记录。
+    返回是否写成功（文本为空 / 异常 → False）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+    try:
+        if user_id not in _user_managers:
+            _user_managers[user_id] = ConversationManager(system_prompt, user_id=user_id)
+            load_memory(user_id, _user_managers[user_id])
+
+        cm = _user_managers[user_id]
+        cm.add_assistant_message(text)
+        cm.update_system_message()
+        save_memory(user_id, cm)
+        return True
+    except Exception as e:
+        print("⚠️ 主动打招呼写入历史失败（不影响已发出的消息）：%s" % e)
+        return False
+
+
 def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> str:
     """
     供外部调用的入口函数

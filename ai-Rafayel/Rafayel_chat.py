@@ -56,7 +56,7 @@ from Rafayel_memory import ConversationManager, load_memory, save_memory
 
 # —— 第 4 层：请求组装与 API 调用 ——
 from Rafayel_llm import (
-    _build_worldbook, _user_managers, get_reply, take_opening,
+    _build_worldbook, _user_managers, get_reply, record_proactive, take_opening,
 )
 
 # —— 旁支：主动打招呼（素材原文直发，不经过模型） ——
@@ -64,7 +64,7 @@ from Rafayel_greet import load_pools, try_greet
 
 __all__ = [
     # 对外调用
-    "get_reply", "take_opening", "_user_managers",
+    "get_reply", "take_opening", "record_proactive", "_user_managers",
     # 主动打招呼
     "try_greet", "load_pools",
     # 对话与记忆

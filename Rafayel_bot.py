@@ -13,7 +13,7 @@ _CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
-from Rafayel_chat import get_reply, take_opening
+from Rafayel_chat import get_reply, record_proactive, take_opening
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
 )
@@ -128,6 +128,10 @@ async def auto_greet_scan():
             continue
 
         await send_text(ws, "private", uid, None, text)
+        # ⚠ 发出去之后立刻写进对话历史 —— 否则她回话时模型不知道上一句是他说的，
+        #   会出现「接不住」的回复（她 2026-09-18 实测反馈）。
+        #   放在 send 之后：发送失败（抛异常）就不留下"他说过"的假记录。
+        record_proactive(uid, text)
         print("[📣] 主动打招呼 -> %s" % uid)
 
 
