@@ -238,9 +238,7 @@ def pick_greeting(user_id, pool, record=None, now=None):
         fresh = lines
         recent = []
 
-    text = random.choice(fresh)
-
-    # 占位符换成她真正的称呼（画像里记着的；没引导过就是「保镖小姐」）
+    # 占位符要换成她真正的称呼（画像里记着的；没引导过就是「保镖小姐」）
     name = ""
     try:
         # ⚠ get_user_profile 返回的是 dict 不是 UserProfile 对象
@@ -248,10 +246,14 @@ def pick_greeting(user_id, pool, record=None, now=None):
         name = (prof.get("name") or "").strip()
     except Exception:
         name = ""
-    text = text.replace("她的名字", name or _DEFAULT_NAME)
 
-    # 记一笔：recent 只留最近 10 句
-    recent.append(text)
+    raw = random.choice(fresh)
+
+    # ⚠ 2026-09-19 修：避重的账要记**原文**（带「她的名字」占位符那版），
+    #   别记替换过的那版 —— 否则 `l not in recent` 永远为真
+    #   （`（她的名字）？…` 对不上 `（保镖小姐）？…`），避重彻底失效，
+    #   带占位符的那几句会连着被抽到。
+    recent.append(raw)
     rec["recent"] = recent[-10:]
     today = time.strftime("%Y-%m-%d", now or _now_bj())
     # ⚠ 先判「是不是同一天」再覆盖 date —— 反过来写的话比较永远为真，
@@ -266,7 +268,7 @@ def pick_greeting(user_id, pool, record=None, now=None):
     rec["next_at"] = _next_at_text(now)
     save_record(user_id, rec)
 
-    return text
+    return raw.replace("她的名字", name or _DEFAULT_NAME)
 
 
 def try_greet(user_id, last_active, now=None):

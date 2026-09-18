@@ -2,6 +2,7 @@ import asyncio
 import glob
 import json
 import os
+import random
 import sys
 
 import websockets
@@ -16,10 +17,16 @@ if _CODE_DIR not in sys.path:
 from Rafayel_chat import get_reply, record_proactive, take_opening
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
+    QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
+    QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT, QZONE_TEST_TEXT,
 )
 from Rafayel_greet import try_greet
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
+from Rafayel_qzone_auto import (
+    image_paths, mark_posted, pick_post, pool_stats, reminder_text, render_text,
+    should_post,
+)
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str) -> str:
@@ -108,9 +115,12 @@ async def _watch_receipt(echo, fut):
         _pending_receipts.pop(echo, None)
 
 
-async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None):
+async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None, images=None):
     """
     把一条说说**送出去**（不等回执，立即返回）。
+
+    images：**本地绝对路径**的列表（配图）；留空 = 纯文字。
+    ⚠ 别传 base64 —— WS 单帧 ~16 MB，本项目最大一张配图 3.5 MB，base64 还有 ~33% 膨胀。
 
     返回 (sent, info)：
         True  → 请求已交给 NapCat（**只代表送出去了**，不代表一定发布成功）
@@ -123,7 +133,7 @@ async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None):
     try:
         echo = _next_echo()
         payload = build_payload(content, ugc_right=ugc_right,
-                                target_uins=target_uins, echo=echo)
+                                target_uins=target_uins, images=images, echo=echo)
         fut = asyncio.get_running_loop().create_future()
         _pending_receipts[echo] = fut
         await websocket.send(json.dumps(payload))
@@ -301,6 +311,78 @@ async def auto_greet_loop():
             print("[⚠️] 主动打招呼扫描出错：%s" % e)
 
 
+# ============================================
+# 主动发朋友圈（S2：他自己按排期挑一条发出来）
+# ============================================
+# ⚠⚠ 与上面「主动打招呼」是**两条独立排期**：各自记录（{uid}_greet.json / {uid}_qzone.json）、
+#    各自日上限、各自后台 task，**绝不共用闸**。代价是**同一天可能既打招呼又发说说**
+#    （双份非消息类主动行为），这是刻意接受的 —— 共用闸会让两条互相抢当天名额。
+# 选条 / 排期 / 去重都在 ai-Rafayel\Rafayel_qzone_auto.py 里，本函数只管「发送 + 提醒」。
+
+async def auto_qzone_scan():
+    """
+    扫一遍私聊过的用户：谁排期到了，就替他发一条**只有她可见**的说说，再私聊提醒一句。
+
+    ⚠ NapCat 没连上时**静默什么都不做**（开头就 return，不打日志）⇒ 排查前先确认
+      启动时印过 `[✅] NapCat 已连接`。
+    ⚠ uid 必须纯数字（QQ 号），免得给 "cli" 这种测试号发说说。
+    """
+    if not QZONE_AUTO or not connected_clients:
+        return
+    ws = next(iter(connected_clients))
+
+    for path in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
+        uid = os.path.splitext(os.path.basename(path))[0]
+        # ⚠ 只认「对话记忆」文件本身；带后缀的都是旁支记录（画像 / 打招呼 / 发说说）
+        if uid.endswith("_profile") or uid.endswith("_greet") or uid.endswith("_qzone"):
+            continue
+        if not uid.isdigit():
+            continue
+
+        ok, why = should_post(uid)
+        if not ok:
+            continue          # 绝大多数是「排期未到」，别刷日志
+
+        entry, note = pick_post(uid)
+        if not entry:
+            print("[📮] 朋友圈跳过 %s：%s" % (uid, note))
+            continue
+
+        text = render_text(entry, uid)          # 「用户」/`@用户` → 她的称呼（每人不同，不能预烘）
+        imgs = image_paths(entry)               # 带图篇目必须带图发；缺图在选条阶段已排除
+
+        sent, msg = await send_qzone(ws, text, ugc_right=UGC_PARTIAL,
+                                    target_uins=[uid], images=imgs or None)
+        # ⚠ 成败都要记一笔：成功了这条对这个人作废；失败了只推进排期、**不进 sent**
+        #   —— 既不会每 15 分钟重试同一条，也不会白白耗掉一条语料。
+        mark_posted(uid, entry, delivered=sent)
+
+        if not sent:
+            print("[📮] 说说没送出去 %s：%s（%s）" % (uid, msg, entry["id"]))
+            continue
+
+        print("[📮] 发说说 -> %s：%r%s（%s）"
+              % (uid, text[:30], (" +%d图" % len(imgs)) if imgs else "", entry["id"]))
+
+        # —— 私聊提醒：QQ 空间入口太深，不提醒她基本看不到 ——
+        await asyncio.sleep(random.uniform(QZONE_AUTO_REMIND_DELAY_MIN,
+                                          QZONE_AUTO_REMIND_DELAY_MAX))
+        remind = reminder_text(uid)
+        await send_text(ws, "private", uid, None, remind)
+        # ⚠ 提醒也是「他说过的话」，必须进对话记忆 —— 否则她回「什么说说？」
+        #   模型根本不知道上一句是他说的，会出现接不住的回复。
+        record_proactive(uid, remind)
+
+
+async def auto_qzone_loop():
+    while True:
+        await asyncio.sleep(QZONE_AUTO_SCAN_SECONDS)
+        try:
+            await auto_qzone_scan()
+        except Exception as e:
+            print("[⚠️] 发朋友圈扫描出错：%s" % e)
+
+
 async def main():
     """启动 WebSocket 服务器"""
     print("=" * 50)
@@ -315,6 +397,13 @@ async def main():
         if AUTO_GREET:
             asyncio.create_task(auto_greet_loop())
             print("📣 主动打招呼已开启（冷场 %s 小时后他会先开口）" % AUTO_GREET_IDLE_HOURS)
+        if QZONE_AUTO:
+            # ⚠ 与 auto_greet_loop 是**两个独立 task**、各自排期 —— 别把这两个合成一个循环。
+            asyncio.create_task(auto_qzone_loop())
+            st = pool_stats()
+            print("📮 发朋友圈已开启（每人每 %s~%s 天一条；池子 %d 条 = 可发 %d + hold %d，其中带图 %d）"
+                  % (QZONE_AUTO_GAP_DAYS_MIN, QZONE_AUTO_GAP_DAYS_MAX,
+                     st["total"], st["after_hold"], st["held"], st["with_image"]))
         if QZONE_CMD_PREFIX:
             print("🧪 朋友圈测试指令已开启：「%s 内容」=只你可见；「%s公开 内容」=所有人可见"
                   % (QZONE_CMD_PREFIX, QZONE_CMD_PREFIX))

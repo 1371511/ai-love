@@ -10,8 +10,10 @@
     沿着 NapCat 反连进来的那条 WS 回发 {"action": …, "params": …}
   不用开 NapCat 的 HTTP 服务端，不用加端口，也不用重启 NapCat。
 
-⚠ 本文件目前**只有「手动测试」这一条通路在用**（见 bot 里的 #发说说 指令）。
-  排期、选条、LLM 兜底都还没做 —— 先验证「这个号到底发不发得出去」。
+⚠ 本文件目前有**两条通路**在用：
+  ① 手动测试指令（bot 里的 `#发说说`）—— S1 阶段留下的验证口子，仍在；
+  ② **S2 自动化**（`Rafayel_qzone_auto.py` 选条 + 排期，`Rafayel_bot.py::auto_qzone_scan()` 发送）。
+  本文件自己**不碰排期、不碰选条**，只提供接口名 + 拼请求体。
 """
 
 # ============================================================
@@ -37,7 +39,15 @@ UGC_EXCLUDE = 128   # 部分好友不可见 —— 需要 target_uins
 UGC_NEEDS_TARGET = (UGC_PARTIAL, UGC_EXCLUDE)
 
 
-def build_payload(content, ugc_right=UGC_ALL, target_uins=None, echo=None):
+# ⚠⚠ **待实测**：`images` 到底收**字符串数组**（`["/path/a.png", …]`）
+#   还是**对象数组**（`[{"file": "/path/a.png"}, …]`）—— NapCat 文档没写死这一条。
+#   猜错的后果很阴：**「正文发出去了、图没上」，不报错，只静默丢图**。
+#   ⇒ S2 第一次真机发**必须发一条带图的**，去空间看图上没上；没上就把这个开关翻成 True。
+#   实现见 `build_payload` 的 `images` 分支。
+QZONE_IMAGES_AS_OBJECTS = False
+
+
+def build_payload(content, ugc_right=UGC_ALL, target_uins=None, images=None, echo=None):
     """
     拼一条 send_qzone_msg 请求体（**只拼，不发**）。
 
@@ -45,6 +55,9 @@ def build_payload(content, ugc_right=UGC_ALL, target_uins=None, echo=None):
     ugc_right   : 见上面的枚举
     target_uins : 可见 / 不可见名单（QQ 号）。ugc_right 为 16 或 128 时**必填**，
                   其它取值下即使传了也不生效（NapCat 会忽略）。
+    images      : 配图。传**本地绝对路径**的列表 —— 别传 base64
+                  （WS 单帧 ~16 MB，base64 还有 ~33% 膨胀；本项目配图最大一张 3.5 MB）。
+                  留空 = 纯文字说说。
     echo        : 回执标识。**发说说务必带上** —— 否则业务层失败（retcode != 0）
                   时收不到任何信号，会误以为发成功了。
 
@@ -61,6 +74,12 @@ def build_payload(content, ugc_right=UGC_ALL, target_uins=None, echo=None):
         if not uins:
             raise ValueError("ugc_right=%d 时必须提供 target_uins" % right)
         params["target_uins"] = uins
+
+    imgs = [str(i) for i in (images or []) if i]
+    if imgs:
+        # ⚠ 形状由 QZONE_IMAGES_AS_OBJECTS 决定（待实测，见上面的注释）
+        params["images"] = ([{"file": i} for i in imgs]
+                            if QZONE_IMAGES_AS_OBJECTS else imgs)
 
     payload = {"action": QZONE_SEND_ACTION, "params": params}
     if echo:
