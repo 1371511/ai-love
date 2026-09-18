@@ -69,8 +69,12 @@ TEMPERATURE = 0.8
 
 AUTO_GREET = True               # 总开关
 AUTO_GREET_IDLE_HOURS = 6       # 冷场够这么久他才忍不住开口
-AUTO_GREET_MAX_PER_DAY = 2      # 每天最多主动发几条
-AUTO_GREET_MIN_GAP_HOURS = 4    # 两条主动消息之间至少隔多久
+AUTO_GREET_MAX_PER_DAY = 1      # 每天最多主动发几条（保险丝；主判据是下面的排期）
+AUTO_GREET_MIN_GAP_HOURS = 24   # 兜底硬下限：只在旧记录没有 next_at 时起作用
+# 🎲 排期：每次发完就随机约好「下次最早什么时候」——隔 2~3 个自然日，
+#    时刻在 8:00~22:59 之间随机。实测效果 ≈ 每周 2~3 次（改前上限是每天 2 条）。
+AUTO_GREET_GAP_DAYS_MIN = 2
+AUTO_GREET_GAP_DAYS_MAX = 3
 AUTO_GREET_HOUR_START = 8       # 只在 8:00–23:00 之间发，不半夜打扰
 AUTO_GREET_HOUR_END = 23
 AUTO_GREET_SCAN_SECONDS = 900   # 后台每 15 分钟扫一遍谁该被惦记了

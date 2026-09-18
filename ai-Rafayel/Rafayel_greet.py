@@ -7,8 +7,12 @@
 
 只做三件事：
   ① 读语料 `card\greetings.md`（素材原文，一句未改）
-  ② 判断某个 user_id 此刻该不该主动发（冷场时长 / 时段 / 当天条数 / 最小间隔）
-  ③ 记住发过什么（避免短期内重复）
+  ② 判断某个 user_id 此刻该不该主动发（冷场时长 / 时段 / 当天条数 / **排期**）
+  ③ 记住发过什么、以及**下次最早什么时候能发**（避免短期内重复，也避免太频繁）
+
+🎲 排期（2026-09-18 加）：每次发完就随机约好下次——
+  隔 AUTO_GREET_GAP_DAYS_MIN ~ MAX 个自然日，时刻落在 8:00~22:59 随机一分钟。
+  写在记录的 `next_at` 字段里，到点之前一律不开口。实测 ≈ 每周 2~3 次。
 
 ⚠ 与对话引擎的关系：本模块**不碰** `get_reply`，也不写 `cm.messages`。
    主动发出的话只是 QQ 上的一条消息，下一轮她回话时模型自然接得上
@@ -20,9 +24,11 @@ import json
 import os
 import random
 import time
+from datetime import datetime, timedelta
 
 from Rafayel_config import (
-    AUTO_GREET, AUTO_GREET_HOUR_END, AUTO_GREET_HOUR_START,
+    AUTO_GREET, AUTO_GREET_GAP_DAYS_MAX, AUTO_GREET_GAP_DAYS_MIN,
+    AUTO_GREET_HOUR_END, AUTO_GREET_HOUR_START,
     AUTO_GREET_IDLE_HOURS, AUTO_GREET_MAX_PER_DAY, AUTO_GREET_MIN_GAP_HOURS,
     AUTO_GREET_TZ_OFFSET, MEMORY_DIR,
 )
@@ -35,12 +41,15 @@ GREETINGS_MD = os.path.join(ROOT, "card", "greetings.md")
 # 池子名 ↔ md 里的 `## ` 小节标题
 # ⚠ 这两个字符串必须与 card\greetings.md 里的 `## ` 小节标题**逐字一致**，
 #   改标题就要同步改这里，否则 load_pools 拿到的池名对不上，那个池直接空掉。
-POOL_REUNION = "重逢（冷场超过 24 小时才用）"
+POOL_REUNION = "重逢（冷场超过 3 天才用）"
 POOL_DAY = "白天（8:00–17:00）"
 POOL_EVENING = "傍晚与夜里（17:00–21:00）"
 POOL_NIGHT = "深夜（21:00–23:00）"
 
-REUNION_IDLE_HOURS = 24     # 冷场超过这么久才算「重逢」
+REUNION_IDLE_HOURS = 72     # 冷场超过这么久才算「重逢」（3 天）
+# ⚠ 这个值必须 ≥ 排期上限（GAP_DAYS_MAX 天），否则会退化成「每次都走重逢池」——
+#   因为排期本身就隔 2~3 天，若阈值还是 24h，他每次开口时冷场都早已超线，
+#   白天/傍晚/深夜三个池永远轮不到。2026-09-18 从 24 提到 72 就是为了这个。
 
 _DEFAULT_NAME = "保镖小姐"
 
@@ -89,12 +98,16 @@ def _record_path(user_id):
 def load_record(user_id):
     path = _record_path(user_id)
     if not os.path.exists(path):
-        return {"date": "", "count": 0, "last": "", "recent": []}
+        return {"date": "", "count": 0, "last": "", "recent": [], "next_at": ""}
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            rec = json.load(f)
+        if isinstance(rec, dict):
+            rec.setdefault("next_at", "")
+            return rec
+        return {"date": "", "count": 0, "last": "", "recent": [], "next_at": ""}
     except Exception:
-        return {"date": "", "count": 0, "last": "", "recent": []}
+        return {"date": "", "count": 0, "last": "", "recent": [], "next_at": ""}
 
 
 def save_record(user_id, rec):
@@ -130,6 +143,27 @@ def _hours_since(stamp):
         return None
 
 
+def _valid_stamp(text):
+    """next_at 形如 '2026-09-20 14:37'。长度和分隔符对就认，杜绝脏数据把比较搞歪。"""
+    return bool(text) and len(text) == 16 and text[4] == "-" and text[7] == "-" and text[10] == " "
+
+
+def _next_at_text(now=None):
+    """
+    随机排下一次：隔 N 个自然日（N 在 GAP_DAYS_MIN~MAX 之间抽），
+    时刻落在 8:00~22:59 之间随机一分钟。
+
+    ⚠ 用 _now_bj() 的年月日做基准，产出的字符串也只会跟 _now_bj() 比 —— 两端同一个钟，
+      所以 AUTO_GREET_TZ_OFFSET 怎么改都不会算歪（不需要 mktime 反解）。
+    """
+    now = now or _now_bj()
+    days = random.randint(AUTO_GREET_GAP_DAYS_MIN, AUTO_GREET_GAP_DAYS_MAX)
+    hour = random.randint(AUTO_GREET_HOUR_START, AUTO_GREET_HOUR_END - 1)   # 8..22 点
+    minute = random.randint(0, 59)
+    base = datetime(now.tm_year, now.tm_mon, now.tm_mday) + timedelta(days=days)
+    return "%04d-%02d-%02d %02d:%02d" % (base.year, base.month, base.day, hour, minute)
+
+
 def should_greet(user_id, last_active, now=None):
     """
     判断现在该不该给这个用户主动发一句。
@@ -157,9 +191,18 @@ def should_greet(user_id, last_active, now=None):
     if rec.get("date") == today and rec.get("count", 0) >= AUTO_GREET_MAX_PER_DAY:
         return False, "今天已经发过 %d 条（上限 %d）" % (rec["count"], AUTO_GREET_MAX_PER_DAY)
 
-    gap = _hours_since(rec.get("last", ""))
-    if gap is not None and gap < AUTO_GREET_MIN_GAP_HOURS:
-        return False, "距上次主动发才 %.1f 小时（最小间隔 %s 小时）" % (gap, AUTO_GREET_MIN_GAP_HOURS)
+    # 🎲 排期：上次发完就约好了下次最早什么时候，没到点一律不开口。
+    # ⚠ 字符串比较（'2026-09-20 14:37' 定宽可直接比大小），两端都出自 _now_bj()。
+    nxt = (rec.get("next_at") or "").strip()
+    if _valid_stamp(nxt):
+        if time.strftime("%Y-%m-%d %H:%M", now) < nxt:
+            return False, "排期未到（下次最早 %s）" % nxt
+    else:
+        # 兼容旧记录（那时候还没有 next_at 字段）→ 退回「距上次满 N 小时」
+        gap = _hours_since(rec.get("last", ""))
+        if gap is not None and gap < AUTO_GREET_MIN_GAP_HOURS:
+            return False, "距上次主动发才 %.1f 小时（兜底下限 %s 小时）" % (
+                gap, AUTO_GREET_MIN_GAP_HOURS)
 
     pool = _pool_for(idle, hour)
     if not pool:
@@ -168,7 +211,7 @@ def should_greet(user_id, last_active, now=None):
     return True, pool
 
 
-def pick_greeting(user_id, pool, record=None):
+def pick_greeting(user_id, pool, record=None, now=None):
     """
     从指定池里挑一句，避开最近发过的。
     返回文本；池子为空或无语料返回 ""。
@@ -200,12 +243,17 @@ def pick_greeting(user_id, pool, record=None):
     # 记一笔：recent 只留最近 10 句
     recent.append(text)
     rec["recent"] = recent[-10:]
-    today = _today_bj()
+    today = time.strftime("%Y-%m-%d", now or _now_bj())
+    # ⚠ 先判「是不是同一天」再覆盖 date —— 反过来写的话比较永远为真，
+    #   count 会一直涨、从不归零，每天上限就废了（原版就是这个顺序，2026-09-18 顺手修）。
+    same_day = (rec.get("date") == today)
     rec["date"] = today
-    rec["count"] = (rec.get("count", 0) + 1) if rec.get("date") == today else 1
+    rec["count"] = (rec.get("count", 0) + 1) if same_day else 1
     # ⚠ 这里必须是**服务器真实本地时间**，不能写偏移后的时间
     #   —— _hours_since 用 mktime 反解它，写偏移值会让「距上次多久」差 8 小时。
     rec["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
+    # 🎲 顺手把下次也约好：隔 2~3 个自然日的随机时刻
+    rec["next_at"] = _next_at_text(now)
     save_record(user_id, rec)
 
     return text
