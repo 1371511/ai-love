@@ -50,8 +50,8 @@ async def send_text(websocket, message_type, user_id, group_id, text):
 # 主动发朋友圈（2026-09-19 新增 · 最小验证版）
 # ============================================
 # 目前只有「手动测试指令」这一条通路 —— 在 QQ 里发：
-#     #发说说 内容       → 所有人可见
-#     #发说说私 内容     → 只发信人可见
+#     #发说说 内容       → **默认私有**：只发信人可见
+#     #发说说公开 内容   → 所有人可见
 # 就会真的发一条说说，并把 NapCat 的 retcode 回给你。
 # ⚠ 排期 / 选条 / LLM 兜底都还没做：先把「这个号到底发不发得出去」验证掉，
 #   否则风控一拦，后面全白写。
@@ -113,6 +113,14 @@ async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None,
 async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw_message):
     """
     朋友圈测试指令。命中并处理了返回 True，否则 False（交回给正常对话流程）。
+
+        #发说说 内容       → **默认私有**：仅发信人可见（ugc_right=16 + target_uins=[发信人]）
+        #发说说公开 内容   → 所有人可见（ugc_right=1）
+        #发说说私 内容     → 「私」保留为别名，等价于默认
+
+    ⚠ 2026-09-19 把**默认翻了**：原来默认公开、要私有得写「私」。
+      她实测踩到坑（A 发指令、B 也看到）⇒ 二期方案本来就是「每人一条私有」，
+      默认就不该是公开。想公开发就明写「公开」，不靠记一个字。
     """
     text = (raw_message or "").strip()
     if not QZONE_CMD_PREFIX or not text.startswith(QZONE_CMD_PREFIX):
@@ -122,15 +130,19 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
         return False
 
     rest = text[len(QZONE_CMD_PREFIX):].strip()
-    only_sender = rest.startswith("私")
-    if only_sender:
+    public = rest.startswith("公开")
+    if public:
+        rest = rest[2:].strip()
+    elif rest.startswith("私"):
+        # 兼容旧写法：#发说说私 xxx —— 现在默认就是私有，这个「私」只是别名
         rest = rest[1:].strip()
 
     content = rest or QZONE_TEST_TEXT
-    ugc = UGC_PARTIAL if only_sender else UGC_ALL
-    targets = [user_id] if only_sender else None
+    ugc = UGC_ALL if public else UGC_PARTIAL
+    targets = None if public else [user_id]
 
-    print("[🧪] 朋友圈测试：ugc_right=%s / 正文 %r" % (ugc, content[:40]))
+    print("[🧪] 朋友圈测试：ugc_right=%s targets=%s / 正文 %r"
+          % (ugc, targets, content[:40]))
     ok, info = await send_qzone(websocket, content,
                                 ugc_right=ugc, target_uins=targets)
 
@@ -281,7 +293,8 @@ async def main():
             asyncio.create_task(auto_greet_loop())
             print("📣 主动打招呼已开启（冷场 %s 小时后他会先开口）" % AUTO_GREET_IDLE_HOURS)
         if QZONE_CMD_PREFIX:
-            print("🧪 朋友圈测试指令已开启：私聊发「%s 内容」" % QZONE_CMD_PREFIX)
+            print("🧪 朋友圈测试指令已开启：「%s 内容」=只你可见；「%s公开 内容」=所有人可见"
+                  % (QZONE_CMD_PREFIX, QZONE_CMD_PREFIX))
         await asyncio.Future()  # 永久运行
 
 if __name__ == "__main__":
