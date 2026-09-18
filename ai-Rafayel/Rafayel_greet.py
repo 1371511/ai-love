@@ -11,8 +11,10 @@
   ③ 记住发过什么、以及**下次最早什么时候能发**（避免短期内重复，也避免太频繁）
 
 🎲 排期（2026-09-18 加）：每次发完就随机约好下次——
-  隔 AUTO_GREET_GAP_DAYS_MIN ~ MAX 个自然日，时刻落在 8:00~22:59 随机一分钟。
-  写在记录的 `next_at` 字段里，到点之前一律不开口。实测 ≈ 每周 2~3 次。
+  从本次开口时刻起隔 48~72 小时（2~3 天，按**实际时长**算，不是日历天数），
+  时刻落在 8:00~22:59 随机一分钟。写在记录的 `next_at` 字段里，到点之前一律不开口。
+  ⚠ 冷场门槛（IDLE_HOURS=16）与排期是**两个独立的闸门**：冷场管「她是不是真的走了」，
+    排期管「我上次说过话到现在够不够久」，两个都满足才开口。
 
 ⚠ 与对话引擎的关系：本模块**不碰** `get_reply`，也不写 `cm.messages`。
    主动发出的话只是 QQ 上的一条消息，下一轮她回话时模型自然接得上
@@ -47,9 +49,11 @@ POOL_EVENING = "傍晚与夜里（17:00–21:00）"
 POOL_NIGHT = "深夜（21:00–23:00）"
 
 REUNION_IDLE_HOURS = 72     # 冷场超过这么久才算「重逢」（3 天）
-# ⚠ 这个值必须 ≥ 排期上限（GAP_DAYS_MAX 天），否则会退化成「每次都走重逢池」——
-#   因为排期本身就隔 2~3 天，若阈值还是 24h，他每次开口时冷场都早已超线，
-#   白天/傍晚/深夜三个池永远轮不到。2026-09-18 从 24 提到 72 就是为了这个。
+# 两档语义（配合 IDLE_HOURS=16 的门槛）：
+#   16h ~ 3 天没说话 → 按发送当时的钟点走「白天 / 傍晚与夜里 / 深夜」池；
+#   超过 3 天        → 走「重逢」池（那批语料是「你终于回来了 / 好久不见」，本来就是给久别用的）。
+# ⚠ 别把这个值降到 16h 门槛附近：那样冷场一满足就直接进重逢档，时段池会全废。
+#   也别再回到「6 小时门槛」那种配置 —— 门槛比一晚睡眠短，等于每天早上都触发。
 
 _DEFAULT_NAME = "保镖小姐"
 
@@ -150,18 +154,24 @@ def _valid_stamp(text):
 
 def _next_at_text(now=None):
     """
-    随机排下一次：隔 N 个自然日（N 在 GAP_DAYS_MIN~MAX 之间抽），
-    时刻落在 8:00~22:59 之间随机一分钟。
+    随机排下一次：GAP_DAYS_MIN~MAX 个自然日后的 8:00~22:59 之间某个随机钟点。
 
-    ⚠ 用 _now_bj() 的年月日做基准，产出的字符串也只会跟 _now_bj() 比 —— 两端同一个钟，
-      所以 AUTO_GREET_TZ_OFFSET 怎么改都不会算歪（不需要 mktime 反解）。
+    ⚠ 光按「日历 +N 天」算不够：会出现「17:15 发完、后天 14:30 发」= 实际只隔 45 小时，
+      用户要的「至少 2 天」就不成立。所以**不足 GAP_DAYS_MIN 天就顺延一天**。
+    ⚠ 也不要把钟点绑死在「上次同一钟点」（那样每隔 2~3 天都在 13:00 冒出来，很机器），
+      所以钟点是独立随机抽的。
+    ⚠ 结果字符串只跟 _now_bj() 比，两端同一个钟，AUTO_GREET_TZ_OFFSET 怎么改都不会算歪。
     """
     now = now or _now_bj()
+    base_ts = time.mktime(tuple(now))
     days = random.randint(AUTO_GREET_GAP_DAYS_MIN, AUTO_GREET_GAP_DAYS_MAX)
     hour = random.randint(AUTO_GREET_HOUR_START, AUTO_GREET_HOUR_END - 1)   # 8..22 点
     minute = random.randint(0, 59)
-    base = datetime(now.tm_year, now.tm_mon, now.tm_mday) + timedelta(days=days)
-    return "%04d-%02d-%02d %02d:%02d" % (base.year, base.month, base.day, hour, minute)
+    day = datetime(now.tm_year, now.tm_mon, now.tm_mday) + timedelta(days=days)
+    cand = datetime(day.year, day.month, day.day, hour, minute)
+    if time.mktime(cand.timetuple()) - base_ts < AUTO_GREET_GAP_DAYS_MIN * 86400:
+        cand += timedelta(days=1)
+    return "%04d-%02d-%02d %02d:%02d" % (cand.year, cand.month, cand.day, cand.hour, cand.minute)
 
 
 def should_greet(user_id, last_active, now=None):
