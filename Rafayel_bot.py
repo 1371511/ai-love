@@ -74,7 +74,11 @@ async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None,
     """
     发一条说说，并**等 NapCat 的回执**。
 
-    返回 (ok, info)：ok=True 时 info 是说说 tid；ok=False 时 info 是失败原因。
+    返回 (ok, info)，**三态**：
+        True  → 收到回执且 retcode == 0，info 是说说 tid
+        False → 收到回执但 retcode != 0，info 是失败原因
+        None  → **压根没收到回执**，发没发出去未知
+                （2026-09-19 实测：超时那次说说其实已经发出去了，所以别把 None 当失败用）
     """
     if timeout is None:
         timeout = QZONE_RECEIPT_TIMEOUT
@@ -90,7 +94,11 @@ async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None,
         try:
             receipt = await asyncio.wait_for(fut, timeout=timeout)
         except asyncio.TimeoutError:
-            return False, "等回执超时（%ss）—— 该版本 NapCat 可能没有这个接口" % timeout
+            # ⚠ 2026-09-19 实测：**超时 ≠ 失败**。
+            #   她说「说说发成功了，但回复的是等回执超时」—— 也就是说
+            #   说说确实发出去了、空间能看到，只是 NapCat 没把回执送回来。
+            #   ⇒ 返回 None（未知），绝不能谎报失败。
+            return None, "等回执超时（%ss）" % timeout
     finally:
         _pending_receipts.pop(echo, None)
 
@@ -126,7 +134,12 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
     ok, info = await send_qzone(websocket, content,
                                 ugc_right=ugc, target_uins=targets)
 
-    tip = ("✅ 说说已发出（tid=%s）" % info) if ok else ("❌ 说说发送失败：%s" % info)
+    if ok is True:
+        tip = "✅ 说说已发出（tid=%s）" % info
+    elif ok is False:
+        tip = "❌ 说说发送失败：%s" % info
+    else:
+        tip = "⚠️ 没收到回执（%s）—— 说说**可能已经发出**了，去空间看看" % info
     await send_text(websocket, message_type, user_id, group_id, tip)
     print("[🧪] " + tip)
     return True
@@ -161,11 +174,17 @@ async def process_napcat_message(data, websocket):
     # 2026-09-19：API 回执 —— 没有 post_type，只带 echo / retcode。
     #   以前这里会被静默丢弃（下面的判断只认 post_type == "message"），
     #   所以「发说说到底成没成功」永远查不到。现在按 echo 找回来。
-    echo = data.get("echo")
-    if echo is not None and "post_type" not in data:
-        fut = _pending_receipts.get(echo)
+    # ⚠ 2026-09-19 加的探针：把**任何没有 post_type 的帧**原样打出来。
+    #   实测教训：#发说说 会报「等回执超时」，可那句说说**其实发成功了**（她在空间能看到）
+    #   ⇒ 先搞清楚 NapCat 到底回没回、回的是什么形状，再决定二期敢不敢依赖回执。
+    if "post_type" not in data:
+        echo = data.get("echo")
+        fut = _pending_receipts.get(echo) if echo is not None else None
         if fut is not None and not fut.done():
             fut.set_result(data)
+        else:
+            print("[🔎] 无 post_type 的帧（echo=%r）：%s"
+                  % (echo, json.dumps(data, ensure_ascii=False)[:300]))
         return
 
     # 只处理消息事件（私聊和群聊）
