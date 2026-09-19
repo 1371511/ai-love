@@ -33,7 +33,7 @@ from Rafayel_config import (
     AUTO_GREET_TZ_OFFSET,               # ⏱ 时区沿用打招呼那一份：整条链上只该有一个「现在几点」
     MEMORY_DIR, QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_HOUR_END, QZONE_AUTO_HOUR_START, QZONE_AUTO_MAX_PER_DAY,
-    QZONE_BDAY, QZONE_BDAY_RAFAYEL,
+    QZONE_BDAY, QZONE_BDAY_RAFAYEL, QZONE_RELEVANT,
 )
 from Rafayel_profile import get_user_birthday, get_user_profile
 
@@ -297,11 +297,97 @@ def candidates(user_id, record=None):
     return fresh or out                      # 软多样性：能避就避，避不开就用全量
 
 
-def pick_post(user_id, now=None):
+# ============================================================
+#  🎯 相关性选条（2026-09-19）
+# ============================================================
+# 她的要求：「自动发说说的内容，要尽量挑选和用户最近聊的/聊过的内容相关」。
+#
+# ⚠ 做法是**关键词软相关**（零 API 成本、可解释），**不是**让 LLM 来挑：
+#    发说说本来就是低频动作，再挂一次 LLM 调用既慢、又多一处出错点，
+#    而且「挑得准不准」没法验证；关键词至少能一眼看出命中了什么。
+# ⚠ **软**相关：命中了就优先，**全没命中就退回随机** —— 绝不因为相关性把自己饿死。
+# ⚠ 关键一步是**滤掉万金油词**：不做这步的话「今天」「我们」会命中一大片，
+#    相关性等于没做（看起来在工作，实际挑出来还是随机的）。
+
+_CJK_RE = re.compile(r"[\u4e00-\u9fff]+")
+_DF_CACHE = None
+# ⚠ 0.25 是**量出来的**（`lysk\_df_stat.py`，199 篇可发池），不是拍的：
+#     日常 87.9% · 时间 41.2% · 牵绊 29.1%   ← 类目词，命中等于没做相关性 ⇒ 滤掉
+#     拍照 12.6%                            ← 真正的主题词（25 篇）⇒ **必须留下**
+#     今天 4.5% · 我们 0.5%                  ← 看着像万金油，其实在这批语料里很稀有，滤不滤都行
+#   ⇒ 阈值正好卡在「牵绊 29%」和「拍照 13%」之间。别随手改小，改小会把类目词放进来。
+_DF_RATIO = 0.25
+_KW_TOPK = 12
+
+
+def _grams(run, n=2):
+    return [run[i:i + n] for i in range(len(run) - n + 1)]
+
+
+def _df_table():
+    """每个 2-gram 出现在多少条语料里（用来滤「今天」这类万金油）。整个进程只算一次。"""
+    global _DF_CACHE
+    if _DF_CACHE is not None:
+        return _DF_CACHE
+    pool = [e for e in load_pool() if not e.get("hold") and not e.get("bday")]
+    df = {}
+    for e in pool:
+        blob = (e.get("text") or "") + " " + (e.get("cat") or "")
+        seen = set()
+        for run in _CJK_RE.findall(blob):
+            seen.update(_grams(run))
+        for g in seen:
+            df[g] = df.get(g, 0) + 1
+    _DF_CACHE = (df, max(1, len(pool)))
+    return _DF_CACHE
+
+
+def relevance_keywords(context, topk=_KW_TOPK):
+    """从「她最近在聊什么」里挑出**有区分度**的关键词。"""
+    if not context:
+        return []
+    df, total = _df_table()
+    freq = {}
+    for run in _CJK_RE.findall(context or ""):
+        for g in _grams(run):
+            freq[g] = freq.get(g, 0) + 1
+    cand = [(c, g) for g, c in freq.items()
+            if df.get(g, 0) / float(total) <= _DF_RATIO]
+    cand.sort(reverse=True)
+    return [g for _, g in cand[:topk]]
+
+
+def _score_entry(entry, kws):
+    blob = (entry.get("text") or "") + " " + (entry.get("cat") or "")
+    return sum(1 for g in kws if g in blob)
+
+
+def _relevant_or_all(cand, context):
+    """
+    按相关性**收窄**候选；命中不了就原样退回。
+
+    ⚠ 只取**最高分组**：分数低的那些本来就是噪声级匹配（命中一个通用词），
+      混进来等于没做相关性。
+    """
+    if not (QZONE_RELEVANT and context):
+        return cand, []
+    kws = relevance_keywords(context)
+    if not kws:
+        return cand, []
+    scored = [(_score_entry(e, kws), e) for e in cand]
+    best = max(s for s, _ in scored)
+    if best <= 0:
+        return cand, kws                 # 全没命中 ⇒ 退回随机（软相关）
+    return [e for s, e in scored if s == best], kws
+
+
+def pick_post(user_id, now=None, context=None):
     """
     挑一条（**不落盘**）。返回 (entry, 说明)；挑不出返回 (None, 原因)。
 
-    ⚠ 池子耗尽 ⇒ `cycle + 1`、`sent` 清空、从头再来（202 条 ÷ 2.5 天 ≈ 16 个月，实际碰不到）。
+    context = `Rafayel_memory.recent_context(uid)`（她最近在聊什么）⇒ 用于相关性选条。
+
+    ⚠ 池子耗尽 ⇒ `cycle + 1`、`sent` 清空、从头再来（197 条 ÷ 2.5 天 ≈ 16 个月，实际碰不到）。
     ⚠ 若重置后仍然挑不出（比如剩余的**全缺图**）⇒ 返回 None，**宁可今天不发，也不挑没图的发**。
     """
     now = now or _now_bj()
@@ -312,9 +398,12 @@ def pick_post(user_id, now=None):
     for attempt in range(2):
         cand = candidates(user_id)
         if cand:
-            e = random.choice(cand)
+            narrowed, kws = _relevant_or_all(cand, context)
+            e = random.choice(narrowed)
             note = "选中 %s%s" % (e["id"], "" if attempt == 0 else "（池子已翻新到第 %d 轮）"
                                   % (int(load_record(user_id).get("cycle", 0)) + 1))
+            if kws and len(narrowed) < len(cand):
+                note += "（相关性命中 %d/%d 条）" % (len(narrowed), len(cand))
             return e, note
         # 池子耗尽 ⇒ 翻新一轮
         rec = load_record(user_id)
@@ -324,6 +413,37 @@ def pick_post(user_id, now=None):
         save_record(user_id, rec)
 
     return None, "池子耗尽且翻新后仍无可发（很可能是剩下的篇目配图全缺）"
+
+
+def pick_manual(user_id, want_image=False, context=None):
+    """
+    手动指令（`#发说说` / `#发说说图`）用的挑条。返回 (entry, 说明)。
+
+    ⚠ 与 `pick_post` 的关键区别：**不落盘、不推进排期、不写进 `sent`** ——
+      手动测试不该消耗她的语料，也不该把自动排期打乱。
+    ⚠ want_image=True ⇒ **只挑带图的**（验「图到底上没上」专用）；挑不到就退回全量。
+    """
+    pool = load_pool()
+    if not pool:
+        return None, "语料池为空（card/qzone_pool.json 没生成？）"
+    cand = candidates(user_id)
+    if not cand:
+        return None, "池子里没有可发篇目（全发过 / 全被 hold）"
+
+    forced = False
+    if want_image:
+        with_img = [e for e in cand if e.get("images")]
+        if with_img:
+            cand, forced = with_img, True
+
+    narrowed, kws = _relevant_or_all(cand, context)
+    e = random.choice(narrowed)
+    note = "池子随机 %s" % e["id"]
+    if forced:
+        note += "（强制带图，共 %d 条可选）" % len(cand)
+    if kws and len(narrowed) < len(cand):
+        note += "（相关性命中 %d/%d 条）" % (len(narrowed), len(cand))
+    return e, note
 
 
 def mark_posted(user_id, entry, delivered=True, now=None):

@@ -52,7 +52,8 @@ from Rafayel_profile import (
 )
 
 # —— 第 3 层：记忆与对话管理 ——
-from Rafayel_memory import ConversationManager, load_memory, save_memory
+from Rafayel_memory import (ConversationManager, load_memory, recent_context,
+                            save_memory)
 
 # —— 第 4 层：请求组装与 API 调用 ——
 from Rafayel_llm import (
@@ -68,7 +69,7 @@ __all__ = [
     # 主动打招呼
     "try_greet", "load_pools",
     # 对话与记忆
-    "ConversationManager", "save_memory", "load_memory",
+    "ConversationManager", "save_memory", "load_memory", "recent_context",
     # 用户画像
     "UserProfile", "get_user_profile", "set_user_profile", "clear_user_profile",
     # 人设

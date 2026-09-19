@@ -14,7 +14,7 @@ _CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
-from Rafayel_chat import get_reply, record_proactive, take_opening
+from Rafayel_chat import get_reply, recent_context, record_proactive, take_opening
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
@@ -26,7 +26,7 @@ from Rafayel_greet import try_greet
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
-    pick_post, pool_stats, reminder_text, render_text, should_post,
+    pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
 )
 
 # ============================================
@@ -148,13 +148,18 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
     """
     朋友圈测试指令。命中并处理了返回 True，否则 False（交回给正常对话流程）。
 
-        #发说说 内容       → **默认私有**：仅发信人可见（ugc_right=16 + target_uins=[发信人]）
-        #发说说公开 内容   → 所有人可见（ugc_right=1）
-        #发说说私 内容     → 「私」保留为别名，等价于默认
+        #发说说            → **从语料池随机挑一条**（只你可见；带图的会带图发）
+        #发说说图          → 强制挑**带图**的一条（验「图到底上没上」专用）
+        #发说说公开        → 池子随机 + 所有人可见（ugc_right=1）
+        #发说说 内容       → 仍发你写的字（老行为，调试可见范围/风控用）
+        #发说说私          → 「私」保留为别名，等价于默认
 
     ⚠ 2026-09-19 把**默认翻了**：原来默认公开、要私有得写「私」。
       她实测踩到坑（A 发指令、B 也看到）⇒ 二期方案本来就是「每人一条私有」，
       默认就不该是公开。想公开发就明写「公开」，不靠记一个字。
+    ⚠⭐ 2026-09-19 二改：**默认改成从池子挑**，且**带图篇目真的带图发**。
+      之前这条指令调 `send_qzone()` 根本没传 `images` ⇒ 它永远只发纯文字，
+      **验不出图能不能上**（我先前说「用 #发说说 验带图」是错的，特此更正）。
     """
     text = (raw_message or "").strip()
     if not QZONE_CMD_PREFIX or not text.startswith(QZONE_CMD_PREFIX):
@@ -171,14 +176,34 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
         # 兼容旧写法：#发说说私 xxx —— 现在默认就是私有，这个「私」只是别名
         rest = rest[1:].strip()
 
-    content = rest or QZONE_TEST_TEXT
     ugc = UGC_ALL if public else UGC_PARTIAL
     targets = None if public else [user_id]
 
-    print("[🧪] 朋友圈测试：ugc_right=%s targets=%s / 正文 %r"
-          % (ugc, targets, content[:40]))
-    sent, note = await send_qzone(websocket, content,
-                                  ugc_right=ugc, target_uins=targets)
+    # 🎯 默认改成「从语料池挑一条」，走**和自动发完全同一条**渲染路径（含配图）
+    imgs = None
+    want_img = rest.startswith("图")
+    if want_img:
+        rest = rest[1:].strip()
+
+    if rest and not want_img:
+        content, note = rest, "手动正文"          # 老行为：发你写的字
+    else:
+        entry, note = pick_manual(user_id, want_image=want_img,
+                                  context=recent_context(user_id))
+        if not entry:
+            # 池子读不到时不让整条指令废掉 —— 退回固定测试句，至少还能验风控/可见范围
+            content, imgs = QZONE_TEST_TEXT, None
+            note = "池子挑不出（%s）⇒ 用兜底测试句" % note
+        else:
+            content = render_text(entry, user_id)
+            imgs = image_paths(entry) or None
+            note = "%s｜%s" % (note, entry["id"])
+
+    print("[🧪] 朋友圈测试：ugc_right=%s targets=%s %s / 正文 %r"
+          % (ugc, targets, ("+%d图" % len(imgs)) if imgs else "无图", content[:40]))
+    sent, note2 = await send_qzone(websocket, content, ugc_right=ugc,
+                                   target_uins=targets, images=imgs)
+    note = "%s → %s" % (note, note2)
 
     # ⚠ 2026-09-19：改成「送出即回」，不再干等 20 秒回执
     #   （在主流程里等**必然超时**，原因见 _watch_receipt 的注释）。
@@ -399,7 +424,8 @@ async def auto_qzone_scan():
         if not ok:
             continue          # 绝大多数是「排期未到」，别刷日志
 
-        entry, note = pick_post(uid)
+        # 🎯 带上「她最近在聊什么」⇒ 挑条时优先挑相关的（软相关，命中不了就退回随机）
+        entry, note = pick_post(uid, context=recent_context(uid))
         if not entry:
             print("[📮] 朋友圈跳过 %s：%s" % (uid, note))
             continue

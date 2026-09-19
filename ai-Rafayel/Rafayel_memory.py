@@ -133,6 +133,43 @@ def load_memory(user_id: str, cm) -> bool:
         return False
 
 
+def recent_context(user_id, n=6):
+    """
+    🎯 取「她最近在聊什么」的一段文本（给**发说说挑条**做相关性用）。
+
+    内容 = 她最近 n 条消息 + 长期摘要尾部 + 最近几条关键事实。
+
+    ⚠ 直接读 `memory\{uid}.json`，**不碰** `ConversationManager` ——
+      发说说那条链（后台 task）不该依赖对话引擎的进程内状态，
+      而且它跑在**另一个协程**里，去摸 `cm.messages` 既没必要也不安全。
+    """
+    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    if not os.path.exists(path):
+        return ""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception:
+        return ""
+    if not isinstance(data, dict):
+        return ""
+
+    parts = []
+    for m in (data.get("messages") or []):
+        if isinstance(m, dict) and m.get("role") == "user":
+            parts.append(str(m.get("content") or ""))
+    parts = parts[-n:]
+
+    summary = (data.get("long_term_summary") or "").strip()
+    if summary and summary != "（你们刚开始聊天，还没有值得记录的重要事件。）":
+        parts.append(summary[-300:])          # 摘要可能很长，只取尾巴（越近越有用）
+
+    for f in (data.get("key_facts") or [])[-5:]:
+        parts.append(str(f))
+
+    return "\n".join(parts)
+
+
 # ============================================================
 #  🗂 对话管理
 # ============================================================
