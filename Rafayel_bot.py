@@ -21,7 +21,8 @@ from Rafayel_config import (
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
-    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_SUB_TYPE,
+    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_FILE_URI,
+    STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
 from Rafayel_sticker import available_tags, pick_sticker, plain_text, split_segments
@@ -39,9 +40,16 @@ def your_ai_lover_response(user_message: str, user_id: str) -> str:
 
 
 def _img_uri(p):
-    """裸本地路径 ⇒ file:// URI（NapCat 把 file 的值当 URL 解析，裸路径会「识别URL失败」）。"""
+    """
+    裸本地路径 ⇒ file:// URI（说说配图真机证明 NapCat 把 file 的值当 URL 解析）。
+
+    ⚠ 聊天表情包这条路径**没真机验过** ⇒ 留了退路 `STICKER_IMAGE_AS_FILE_URI`：
+      `#表情` 发出去什么都没收到的话，把它翻成 False 退回裸路径再试。
+    """
     p = str(p)
-    return p if "://" in p else "file://" + p
+    if "://" in p or not STICKER_IMAGE_AS_FILE_URI:
+        return p
+    return "file://" + p
 
 
 def build_message(text):
