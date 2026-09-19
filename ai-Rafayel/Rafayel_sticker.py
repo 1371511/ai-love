@@ -184,6 +184,96 @@ def plain_text(text):
 
 
 # ============================================================
+#  她发来的消息 ⇒ 他和模型都看得懂的话
+# ============================================================
+
+def random_reply_tag():
+    """她甩表情过来时，他回哪一张（**排除低把握档**：那几个语料里才出现一两次）。"""
+    tags = [t for t in available_tags() if t not in LOW_CONF_TAGS]
+    return random.choice(tags) if tags else None
+
+
+# 段数组没给（老实现只给 raw_message）时，从 CQ 码字符串里抠类型 / 剥码用的
+_CQ_RE = re.compile(r"\[CQ:[^\]]*\]")
+_CQ_SEG_RE = re.compile(r"\[CQ:(\w+)([^\]]*)\]")
+
+
+def parse_incoming(data):
+    """
+    NapCat 上报的一条消息 ⇒ **喂给模型的那段话**。
+
+    ⭐ 起因（2026-09-20 她报的 bug）：她发表情包时 `raw_message` **不是文字**，
+      而是一串 CQ 码（`[CQ:image,file=…,sub_type=1]`）甚至空串 ——
+      模型看不懂 ⇒ 有时猜出「她发了张图」回一句，有时觉得无从接话就回空，
+      bot 那边 `if reply:` 一空就整条不发 ⇒ 她看到的就是「没反应」，
+      而且**时好时坏**，因为那串机器码对模型本来就只是噪声。
+
+    返回 dict：
+      text     她打的字（没打字就是 ""）
+      sticker  她是不是甩了表情包（image 且 sub_type=1 / mface / face）
+      photo    她是不是发了张普通照片（image 且 sub_type≠1）
+      pure     纯表情：**一个字都没说，只有图**（C 方案的触发条件）
+      prompt   喂给模型的那段 —— **绝不会是空串，也绝不会是 CQ 码**
+      probe    给服务端日志看的段类型摘要（只记类型，绝不打印图片内容）
+    """
+    segs = data.get("message")
+    raw = (data.get("raw_message") or "").strip()
+    texts, kinds = [], []
+
+    if isinstance(segs, list):
+        for seg in segs:
+            if not isinstance(seg, dict):
+                continue
+            t = seg.get("type")
+            d = seg.get("data") or {}
+            if t == "text":
+                v = (d.get("text") or "").strip()
+                if v:
+                    texts.append(v)
+            elif t == "image":
+                # sub_type=1 ⇒ 表情包样式；否则是普通图片（照片）
+                kinds.append("image:1" if str(d.get("sub_type")) == "1" else "image:0")
+            elif t:
+                kinds.append(t)          # mface / face / record / video / at / reply … 只记类型
+    else:
+        # 退化：没有段数组，只有 CQ 码字符串 ⇒ 从码里抠类型
+        #   （image 还要看 code 里有没有 sub_type=1，不然分不清表情包和照片）
+        for m in _CQ_SEG_RE.finditer(raw):
+            t, params = m.group(1), m.group(2)
+            if t == "image":
+                kinds.append("image:1" if "sub_type=1" in params else "image:0")
+            else:
+                kinds.append(t)
+        texts.append(_CQ_RE.sub("", raw).strip())
+
+    text = " ".join(x for x in texts if x).strip()
+    sticker = any(k in ("mface", "face", "image:1") for k in kinds)
+    photo = "image:0" in kinds
+
+    if text and sticker:
+        prompt = text + "（她还甩了一张表情包）"
+    elif text and photo:
+        prompt = text + "（她还发了张照片 —— 我看不见图里是什么，别去猜）"
+    elif text:
+        prompt = text
+    elif sticker:
+        prompt = "（她没打字，就甩了一张表情包过来）"
+    elif photo:
+        prompt = "（她没打字，发来一张照片 —— 我看不见图里是什么，别去猜）"
+    else:
+        prompt = _CQ_RE.sub("", raw).strip() or "（她什么都没说）"
+
+    return {
+        "text": text,
+        "sticker": sticker,
+        "photo": photo,
+        "pure": (not text) and sticker,
+        "prompt": prompt,
+        "probe": "+".join(kinds),
+    }
+
+
+# ============================================================
 #  冷却闸：低频这件事**代码说了算**
 # ============================================================
 

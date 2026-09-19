@@ -22,10 +22,12 @@ from Rafayel_config import (
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
-    STICKER_IMAGE_AS_FILE_URI, STICKER_SUB_TYPE,
+    STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
-from Rafayel_sticker import available_tags, pick_sticker, plain_text, split_segments
+from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
+                             pick_sticker, plain_text, random_reply_tag,
+                             split_segments)
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
@@ -374,6 +376,15 @@ async def process_napcat_message(data, websocket):
 
         print(f"[📩] 收到 {message_type} 消息: {raw_message} (来自: {user_id})")
 
+        # 2026-09-20：她发来的常常**不是文字**（表情包 / 照片 / 商城表情）。
+        #   raw_message 那时只是一串 CQ 码（甚至空串），直接喂给模型 ⇒
+        #   它有时猜得出「她发了张图」就回一句，有时觉得无从接话就回空
+        #   ⇒ 下面 if reply: 一空就整条不发，她看到的就是「没反应」，而且时好时坏。
+        #   现在先翻译成他能看懂的话。
+        parsed = parse_incoming(data)
+        if parsed["probe"]:
+            print(f"[🔎] 消息段: {parsed['probe']} (来自: {user_id})")
+
         # 2026-09-19：朋友圈测试指令（#发说说 …）—— 命中就直接处理掉，不进对话。
         if await maybe_handle_qzone_cmd(websocket, message_type, user_id,
                                         group_id, raw_message):
@@ -392,8 +403,23 @@ async def process_napcat_message(data, websocket):
         if opening:
             await send_text(websocket, message_type, user_id, group_id, opening)
 
-        # 调用你的 AI 恋人逻辑
-        reply = your_ai_lover_response(raw_message, user_id)
+        # 调用你的 AI 恋人逻辑（喂的是翻译过的那段话，不是 CQ 码）
+        reply = your_ai_lover_response(parsed["prompt"], user_id)
+
+        # 2026-09-20：她只甩了张表情、一个字没说 ⇒ 他也甩一张（对打）。
+        #   ⚠ 必须放在 get_reply **之后**：冷却闸在里面跑，这里补的图不会被它剥掉；
+        #      而冷却闸本来就只看**他自己**最近发没发过 —— 她是发起方，他回一张天经地义。
+        if parsed["pure"] and STICKER_REPLY_TO_STICKER and not has_sticker(reply):
+            tag = random_reply_tag()
+            if tag:
+                reply = "[表情:%s]" % tag + (reply or "").strip()
+
+        # 空回复兜底：模型一个字都没回 ⇒ 至少甩一张图，别让她等个寂寞。
+        #   （reply 一空就整条不发，是「发出去没反应」里最伤的一种。）
+        if not (reply or "").strip():
+            tag = random_reply_tag()
+            if tag:
+                reply = "[表情:%s]" % tag
 
         # 构造回复消息（符合 OneBot v11 协议）
         if reply:
