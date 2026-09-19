@@ -221,12 +221,8 @@ class ConversationManager:
             facts_text = "\n".join([f"- {f}" for f in self.key_facts[-MAX_FACTS:]])
             full_prompt += f"\n\n## 📌 关键事实（用户让你记住的事）\n{facts_text}"
 
-        # 🕐 追加「现在几点 + 隔了多久」—— 放在**最后**：system 里越靠后越受关注。
-        #    ⚠ 这段每轮重算（system 是每轮重算的），所以写进 messages[0] 也没关系，
-        #      落盘那份是上一轮的快照，下次 `_now_bj()` 一算就覆盖掉了。
-        now_text = now_prompt_text(self.gap_hours)
-        if now_text:
-            full_prompt += "\n\n" + now_text
+        # 🕐 「现在几点 + 隔了多久」**不在这里**了 —— 见下面 `now_hint_text()` 的注释。
+        #    2026-09-20 挪走：这段每轮都变，留在 system 里会把 DeepSeek 的**前缀缓存**拦腰截断。
 
         # 💬 回复格式（2026-09-19 她挑的：一律一行，像 QQ 打字）。
         #    ⚠ 代码层还有一道保底（Rafayel_llm 发出前压平换行）—— 这里只是让模型少犯错。
@@ -234,6 +230,24 @@ class ConversationManager:
             full_prompt += "\n\n" + REPLY_ONE_LINE_HINT
 
         return full_prompt
+
+    def now_hint_text(self):
+        """
+        🕐 「现在几点 + 隔了多久」那一段 —— 由调用方**追加在聊天历史之后**送出去。
+
+        ⭐ 2026-09-20 从 `get_full_system_prompt()` 末尾挪到这里，为的是**钱**：
+          DeepSeek 的缓存是**前缀匹配** —— 只要前缀里有一处变了，从那一点往后
+          **全部**按「未命中」计费。这段每轮都变（几点、隔了多久），它待在 system 里
+          ⇒ system 每轮不同 ⇒ 它后面那**整段聊天历史**（12 轮 ≈ 2000+ tokens）
+          永远吃不到缓存。挪到最后一条 ⇒ system + 历史整段稳定 ⇒ 命中率大涨。
+          （9/19 实测：命中 404K / 未命中 142K，命中率 74% ⇒ 目标 90%+。）
+
+        ⚠ 只进 request_messages，**绝不写回 cm.messages**（跟世界书/表情说明同一个口径）：
+          否则会被 save_memory 落盘，每轮累积一份，还会变成常驻人设。
+        ⚠ 注意力：原来靠「system 越靠后越受关注」，现在改成「整段 prompt 的最后一条」，
+          位置同样是最靠后 ⇒ 真机 A/B 验过再定，不行就往回挪。
+        """
+        return now_prompt_text(self.gap_hours)
 
     def _compute_gap_hours(self):
         """

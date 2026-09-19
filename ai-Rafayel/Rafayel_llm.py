@@ -81,6 +81,20 @@ def _build_worldbook(cm, user_message):
         return "", ""
 
 
+def _system_with_now(cm, tail=""):
+    """
+    一次性 prompt（`comment_opening` / `comment_reply` 这类）用的 system。
+
+    这两处**没有聊天历史**，也就没有「前缀缓存」可赚 ⇒ 时间感照旧拼在 system 里，
+    跟主对话那条路（走 `request_messages` 追加）不一样。别搞混。
+    """
+    s = cm.get_full_system_prompt()
+    n = cm.now_hint_text()
+    if n:
+        s += "\n\n" + n
+    return s + tail
+
+
 def comment_opening(user_id: str, post_text: str) -> str:
     """
     她在他那条说说底下留了话 ⇒ 他**主动跑来私聊**的第一句。
@@ -113,7 +127,7 @@ def comment_opening(user_id: str, post_text: str) -> str:
         data = {
             "model": MODEL,
             "messages": [
-                {"role": "system", "content": cm.get_full_system_prompt() + hint},
+                {"role": "system", "content": _system_with_now(cm, hint)},
                 {"role": "user", "content": "（他来找她）"},
             ],
             "stream": False,
@@ -164,7 +178,7 @@ def comment_reply(user_id: str, post_text: str, her_comment: str) -> str:
         data = {
             "model": MODEL,
             "messages": [
-                {"role": "system", "content": cm.get_full_system_prompt() + hint},
+                {"role": "system", "content": _system_with_now(cm, hint)},
                 {"role": "user", "content": "（回复她这条评论）"},
             ],
             "stream": False,
@@ -304,6 +318,16 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
     _sticker = sticker_instructions()
     if _sticker:
         request_messages.append({"role": "system", "content": _sticker})
+
+    # 4d. 🕐 时间感（2026-09-20 从 system 末尾挪到这里，见 `now_hint_text` 的注释）。
+    #     ⭐ 为了**钱**：这段每轮都变，留在 system 里会把 DeepSeek 的前缀缓存拦腰截断，
+    #        后面的整段聊天历史就永远按「未命中」计费。挪到最后 ⇒ system + 历史可缓存。
+    #     ⚠ 同样只进 request_messages，绝不写回 cm.messages。
+    #     ⚠ 位置 = 整段 prompt 的最后一条（原来靠「system 越靠后越受关注」，
+    #        现在换成「全局最靠后」，注意力不比原来差；真机 A/B 再定）。
+    _now = cm.now_hint_text()
+    if _now:
+        request_messages.append({"role": "system", "content": _now})
 
     # 5. 调用 DeepSeek API
     headers = {
