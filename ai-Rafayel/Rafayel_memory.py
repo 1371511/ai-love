@@ -19,7 +19,8 @@ import requests
 
 from Rafayel_config import (
     API_URL, AUTO_GREET_TZ_OFFSET, MAX_FACTS, MAX_HISTORY_TURNS, MEMORY_DIR,
-    MODEL, NOW_GAP_HOURS, NOW_PROMPT, SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
+    MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_ONE_LINE, REPLY_ONE_LINE_HINT,
+    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
 from Rafayel_profile import UserProfile
 
@@ -226,6 +227,11 @@ class ConversationManager:
         now_text = now_prompt_text(self.gap_hours)
         if now_text:
             full_prompt += "\n\n" + now_text
+
+        # 💬 回复格式（2026-09-19 她挑的：一律一行，像 QQ 打字）。
+        #    ⚠ 代码层还有一道保底（Rafayel_llm 发出前压平换行）—— 这里只是让模型少犯错。
+        if REPLY_ONE_LINE and REPLY_ONE_LINE_HINT:
+            full_prompt += "\n\n" + REPLY_ONE_LINE_HINT
 
         return full_prompt
 

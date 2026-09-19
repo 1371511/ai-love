@@ -30,8 +30,8 @@ from Rafayel import (
     CARD_ALT_GREETINGS, CARD_FIRST_MES, CARD_POST_HISTORY, system_prompt,
 )
 from Rafayel_config import (
-    API_URL, MAX_TOKENS, MODEL, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
-    api_key,
+    API_URL, MAX_TOKENS, MODEL, REPLY_ONE_LINE, TEMPERATURE, WB_MAX_CHARS,
+    WB_MAX_ENTRIES, api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
@@ -40,6 +40,23 @@ from Rafayel_worldbook import get_worldbook
 
 # 全局字典，按 user_id 存储每个用户的对话管理器
 _user_managers = {}
+
+
+def _to_one_line(text):
+    """
+    把回复**压成一行**（她 2026-09-19 挑的口径：像 QQ 随手打字，不分行）。
+
+        （没躲，任你蹭过来，手落在你发顶）\n贴够了没。\n（嘴上这么说，另一只手却没拿开）
+        ⇒ （没躲，任你蹭过来，手落在你发顶）贴够了没。（嘴上这么说，另一只手却没拿开）
+
+    ⚠ 这是**保底**：prompt 里已经明说了「不要换行」（REPLY_ONE_LINE_HINT），
+      但模型不一定每轮都听 —— 听话最好，不听话也**发不出多行**。
+    ⚠ 只把换行拼掉，内容一字不动；空行直接丢。说说正文（render_text）不走这里。
+    """
+    if not REPLY_ONE_LINE or "\n" not in (text or ""):
+        return text
+    lines = [l.strip() for l in text.replace("\r\n", "\n").split("\n")]
+    return "".join(l for l in lines if l)
 
 
 def _build_worldbook(cm, user_message):
@@ -218,6 +235,9 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
             reply, _cooled = apply_cooldown(reply, _his_recent)
             if _cooled:
                 print("[🖼️] 表情冷却：他最近几条已经发过表情 ⇒ 本条不再发")
+
+            # 5.6 回复格式保底：压成一行（她挑的口径；prompt 里也说了，这里是兜底）
+            reply = _to_one_line(reply)
 
             # 6. 添加助手消息到对话管理器
             cm.add_assistant_message(reply)
