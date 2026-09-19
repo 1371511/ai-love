@@ -53,6 +53,12 @@ COMMENT_MARK = "◇"
 # hold 名单只认这几种开头的 id 行（防止把说明段/附录的 bullet 当 id —— 第一版就栽在这）
 HOLD_PREFIXES = ("活动/", "日常/", "其他/", "剧情/")
 
+# 🎂 生日专项：按**语料文件名**自动识别（随时可撤 —— 改口径只改这里）
+#   为什么不能留在普通随机池：随机排期 ≈ 每 2~3 天一条，撞到 4 月某天发「生日快乐」
+#   她一眼就知道发错了 ⇒ 生日篇目必须**按日期触发**。
+#   ⚠ 判据是文件名里的「祁煜生日」/「玩家生日」，**正文不判** —— 正文里写「生日」的日常篇目很多。
+BDAY_TAGS = (("祁煜生日", "rafayel"), ("玩家生日", "player"))
+
 
 # ============================================================
 #  源表 1：标记 → emoji
@@ -192,6 +198,7 @@ def build_entry(raw, cid, cat):
         "images": images,
         "extra": extra,
         "hold": "",
+        "bday": "",
     }, warns
 
 
@@ -245,6 +252,12 @@ def main():
                 n_bad += 1
                 continue
 
+            # 🎂 生日篇目（按文件名判，不按正文）
+            for tag, kind in BDAY_TAGS:
+                if tag in fn:
+                    entry["bday"] = kind
+                    break
+
             entry["text"] = apply_emoji(entry["text"], emap, warns)
             if not entry["text"].strip():
                 warns.append("%s :: emoji 清理后正文为空（跳过）" % cid)
@@ -277,15 +290,20 @@ def main():
     hold_missing = sorted(hold_ids - set(ids))        # 写在表里、池子里查不到的
     hold_unused = sorted({e["id"] for e in entries if e["hold"]} ^ hold_ids)
 
-    pool_after = [e for e in entries if not e["hold"]]
+    # 🎂 生日篇目**双向都不进**普通池：既要从随机候选里剔除，也要单独列表给发圈模块用
+    bdays = [e for e in entries if e.get("bday")]
+    bday_raf = [e for e in bdays if e["bday"] == "rafayel"]
+    bday_me = [e for e in bdays if e["bday"] == "player"]
+    pool_after = [e for e in entries if not e["hold"] and not e["bday"]]
     sendable = [e for e in pool_after if not e["extra"]]
 
     data = {
-        "schema": 1,
+        "schema": 2,
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "corpus_root": CORPUS,
         "count": len(entries),
         "held": len(held),
+        "bday": len(bdays),
         "with_image": len(with_img),
         "extra": len(extras),
         "entries": entries,
@@ -300,8 +318,15 @@ def main():
     L.append("  构建失败（跳过）        = %d" % n_bad)
     L.append("  ⇒ 入池                 = %d" % len(entries))
     L.append("  ⇒ hold                 = %d" % len(held))
-    L.append("  ⇒ 可发（去 hold）       = %d" % len(pool_after))
+    L.append("  ⇒ 🎂 生日专项（移出普通池）= %d（祁煜 %d / 她的 %d）"
+             % (len(bdays), len(bday_raf), len(bday_me)))
+    L.append("  ⇒ 可发（去 hold、去生日）= %d" % len(pool_after))
     L.append("  ⇒ S2 实发（再跳 extra） = %d" % len(sendable))
+    L.append("")
+    L.append("=== 🎂 生日专项清单 ===")
+    for e in bdays:
+        L.append("  [%s] %-9s img=%d :: %s"
+                 % (e["bday"], e["id"], len(e["images"]), e["text"][:52]))
     L.append("")
     L.append("=== 自检（全部应为空/0）===")
     L.append("  重复 id                = %d %s" % (len(dup), dup[:5]))

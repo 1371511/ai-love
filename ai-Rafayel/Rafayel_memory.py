@@ -225,6 +225,8 @@ class ConversationManager:
 - likes：她喜欢什么（数组）
 - dislikes：她讨厌 / 不吃 / 不喜欢什么（数组）
 - traits：其他稳定特征，比如职业、习惯、作息（数组）
+- birthday：她**自己**的生日，形如 "03-06"（公历，月-日两位）。
+  ⚠ 只填她**明确说过**的（「我生日是3月6号」）；她没说过、或是**祁煜**的生日，一律空字符串。
 
 对话内容：
 {json.dumps(to_summarize, ensure_ascii=False, indent=2)}
@@ -232,7 +234,7 @@ class ConversationManager:
 输出格式（严格照做，不要加别的小标题）：
 先写任务一的摘要正文，
 然后换行，最后单独一行写：
-PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": []}}
+PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""}}
 """
         try:
             headers = {

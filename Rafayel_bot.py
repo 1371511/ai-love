@@ -19,13 +19,14 @@ from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
+    QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT, QZONE_TEST_TEXT,
 )
 from Rafayel_greet import try_greet
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_auto import (
-    image_paths, mark_posted, pick_post, pool_stats, reminder_text, render_text,
-    should_post,
+    bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
+    pick_post, pool_stats, reminder_text, render_text, should_post,
 )
 
 # ============================================
@@ -319,6 +320,46 @@ async def auto_greet_loop():
 #    （双份非消息类主动行为），这是刻意接受的 —— 共用闸会让两条互相抢当天名额。
 # 选条 / 排期 / 去重都在 ai-Rafayel\Rafayel_qzone_auto.py 里，本函数只管「发送 + 提醒」。
 
+async def _send_one_qzone(ws, uid, entry, bday=None):
+    """
+    发一条说说 + 私聊提醒一句。返回是否真发出去。
+
+    bday=None  ⇒ 普通排期那条，记进 `{uid}_qzone.json`（`mark_posted`）
+    bday=kind  ⇒ 生日那条，记进 `{uid}_bday.json`（`mark_bday_sent`），**不碰**普通排期
+    """
+    text = render_text(entry, uid)          # 「用户」/`@用户` → 她的称呼（每人不同，不能预烘）
+    imgs = image_paths(entry)               # 带图篇目必须带图发；缺图在选条阶段已排除
+
+    sent, msg = await send_qzone(ws, text, ugc_right=UGC_PARTIAL,
+                                 target_uins=[uid], images=imgs or None)
+    if bday:
+        # ⚠ 只有**真发出去**才记「今年发过了」—— 没发出去就让它 15 分钟后再试一次
+        if sent:
+            mark_bday_sent(uid, bday)
+    else:
+        # ⚠ 成败都要记一笔：成功了这条对这个人作废；失败了只推进排期、**不进 sent**
+        #   —— 既不会每 15 分钟重试同一条，也不会白白耗掉一条语料。
+        mark_posted(uid, entry, delivered=sent)
+
+    if not sent:
+        print("[📮] 说说没送出去 %s：%s（%s）" % (uid, msg, entry["id"]))
+        return False
+
+    tag = "🎂%s生日 " % ("祁煜" if bday == "rafayel" else "她的" if bday else "")
+    print("[📮] %s发说说 -> %s：%r%s（%s）"
+          % (tag, uid, text[:30], (" +%d图" % len(imgs)) if imgs else "", entry["id"]))
+
+    # —— 私聊提醒：QQ 空间入口太深，不提醒她基本看不到 ——
+    await asyncio.sleep(random.uniform(QZONE_AUTO_REMIND_DELAY_MIN,
+                                       QZONE_AUTO_REMIND_DELAY_MAX))
+    remind = reminder_text(uid)
+    await send_text(ws, "private", uid, None, remind)
+    # ⚠ 提醒也是「他说过的话」，必须进对话记忆 —— 否则她回「什么说说？」
+    #   模型根本不知道上一句是他说的，会出现接不住的回复。
+    record_proactive(uid, remind)
+    return True
+
+
 async def auto_qzone_scan():
     """
     扫一遍私聊过的用户：谁排期到了，就替他发一条**只有她可见**的说说，再私聊提醒一句。
@@ -326,6 +367,8 @@ async def auto_qzone_scan():
     ⚠ NapCat 没连上时**静默什么都不做**（开头就 return，不打日志）⇒ 排查前先确认
       启动时印过 `[✅] NapCat 已连接`。
     ⚠ uid 必须纯数字（QQ 号），免得给 "cli" 这种测试号发说说。
+    ⚠🎂 生日**优先于**普通排期：今天有生日就只发生日那条（两者不共用闸，
+      但同一天连发两条太吵 ⇒ 发生日那条，普通那条等下次排期）。
     """
     if not QZONE_AUTO or not connected_clients:
         return
@@ -333,10 +376,23 @@ async def auto_qzone_scan():
 
     for path in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
         uid = os.path.splitext(os.path.basename(path))[0]
-        # ⚠ 只认「对话记忆」文件本身；带后缀的都是旁支记录（画像 / 打招呼 / 发说说）
-        if uid.endswith("_profile") or uid.endswith("_greet") or uid.endswith("_qzone"):
+        # ⚠ 只认「对话记忆」文件本身；带后缀的都是旁支记录（画像 / 打招呼 / 发说说 / 生日）
+        if uid.endswith(("_profile", "_greet", "_qzone", "_bday")):
             continue
         if not uid.isdigit():
+            continue
+
+        # 🎂 生日专项（独立排期，不占每天名额、不推进 next_at）
+        kind, bentry, bnote = bday_due(uid)
+        if bentry:
+            # 新用户**第一天**就撞上生日：普通记录还没建 ⇒ 先建好，
+            # 否则「第一条最早第二天」会失效（next_at 空 ⇒ 下次扫描立刻发普通那条）。
+            if not has_record(uid):
+                should_post(uid)
+            await _send_one_qzone(ws, uid, bentry, bday=kind)
+            continue
+        if kind:
+            print("[🎂] 生日跳过 %s：%s" % (uid, bnote))
             continue
 
         ok, why = should_post(uid)
@@ -348,30 +404,7 @@ async def auto_qzone_scan():
             print("[📮] 朋友圈跳过 %s：%s" % (uid, note))
             continue
 
-        text = render_text(entry, uid)          # 「用户」/`@用户` → 她的称呼（每人不同，不能预烘）
-        imgs = image_paths(entry)               # 带图篇目必须带图发；缺图在选条阶段已排除
-
-        sent, msg = await send_qzone(ws, text, ugc_right=UGC_PARTIAL,
-                                    target_uins=[uid], images=imgs or None)
-        # ⚠ 成败都要记一笔：成功了这条对这个人作废；失败了只推进排期、**不进 sent**
-        #   —— 既不会每 15 分钟重试同一条，也不会白白耗掉一条语料。
-        mark_posted(uid, entry, delivered=sent)
-
-        if not sent:
-            print("[📮] 说说没送出去 %s：%s（%s）" % (uid, msg, entry["id"]))
-            continue
-
-        print("[📮] 发说说 -> %s：%r%s（%s）"
-              % (uid, text[:30], (" +%d图" % len(imgs)) if imgs else "", entry["id"]))
-
-        # —— 私聊提醒：QQ 空间入口太深，不提醒她基本看不到 ——
-        await asyncio.sleep(random.uniform(QZONE_AUTO_REMIND_DELAY_MIN,
-                                          QZONE_AUTO_REMIND_DELAY_MAX))
-        remind = reminder_text(uid)
-        await send_text(ws, "private", uid, None, remind)
-        # ⚠ 提醒也是「他说过的话」，必须进对话记忆 —— 否则她回「什么说说？」
-        #   模型根本不知道上一句是他说的，会出现接不住的回复。
-        record_proactive(uid, remind)
+        await _send_one_qzone(ws, uid, entry)
 
 
 async def auto_qzone_loop():
@@ -401,9 +434,12 @@ async def main():
             # ⚠ 与 auto_greet_loop 是**两个独立 task**、各自排期 —— 别把这两个合成一个循环。
             asyncio.create_task(auto_qzone_loop())
             st = pool_stats()
-            print("📮 发朋友圈已开启（每人每 %s~%s 天一条；池子 %d 条 = 可发 %d + hold %d，其中带图 %d）"
+            print("📮 发朋友圈已开启（每人每 %s~%s 天一条；池子 %d 条 = 可发 %d + hold %d + 🎂生日 %d，其中带图 %d）"
                   % (QZONE_AUTO_GAP_DAYS_MIN, QZONE_AUTO_GAP_DAYS_MAX,
-                     st["total"], st["after_hold"], st["held"], st["with_image"]))
+                     st["total"], st["after_hold"], st["held"], st["bday"], st["with_image"]))
+            if QZONE_BDAY:
+                print("🎂 生日专项已开启：祁煜生日 %s 发（%d 篇）；她的生日抓到画像 birthday 才发"
+                      % (QZONE_BDAY_RAFAYEL, len(bday_pool("rafayel"))))
         if QZONE_CMD_PREFIX:
             print("🧪 朋友圈测试指令已开启：「%s 内容」=只你可见；「%s公开 内容」=所有人可见"
                   % (QZONE_CMD_PREFIX, QZONE_CMD_PREFIX))

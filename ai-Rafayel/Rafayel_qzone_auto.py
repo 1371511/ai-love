@@ -33,8 +33,9 @@ from Rafayel_config import (
     AUTO_GREET_TZ_OFFSET,               # ⏱ 时区沿用打招呼那一份：整条链上只该有一个「现在几点」
     MEMORY_DIR, QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_HOUR_END, QZONE_AUTO_HOUR_START, QZONE_AUTO_MAX_PER_DAY,
+    QZONE_BDAY, QZONE_BDAY_RAFAYEL,
 )
-from Rafayel_profile import get_user_profile
+from Rafayel_profile import get_user_birthday, get_user_profile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))      # …\ai-Rafayel
 ROOT = os.path.dirname(_HERE)                            # 项目根
@@ -79,10 +80,11 @@ def pool_stats():
     """启动时打一行状态用。"""
     pool = load_pool()
     held = [e for e in pool if e.get("hold")]
-    after = [e for e in pool if not e.get("hold")]
+    bday = [e for e in pool if e.get("bday")]
+    after = [e for e in pool if not e.get("hold") and not e.get("bday")]
     sendable = [e for e in after if not e.get("extra")]
     return {
-        "total": len(pool), "held": len(held),
+        "total": len(pool), "held": len(held), "bday": len(bday),
         "after_hold": len(after), "sendable": len(sendable),
         "with_image": len([e for e in sendable if e.get("images")]),
     }
@@ -270,7 +272,7 @@ def candidates(user_id, record=None):
 
     ⚠ **去重按用户独立**（她 2026-09-19 纠正，推翻先前「全局去重」）：
       只认**自己这份** `sent` ⇒ 给 A 发过**不影响** B 的池子。
-    ⚠ 过滤顺序：hold → extra（链接/视频，S2 不发）→ 已发 → **配图缺失**。
+    ⚠ 过滤顺序：hold → **生日** → extra（链接/视频，S2 不发）→ 已发 → **配图缺失**。
     ⚠ 「最近 3 条用过同一 `cat`」是**软**多样性：命中就避开，全避开了就不避（别把自己饿死）。
     """
     rec = record if record is not None else load_record(user_id)
@@ -281,11 +283,13 @@ def candidates(user_id, record=None):
     for e in load_pool():
         if e.get("hold"):                    # ① 暂缓名单，候选阶段直接滤掉
             continue
-        if e.get("extra"):                   # ② 链接 / 视频，S2 不发（别发半截的 @ 或 BV 号）
+        if e.get("bday"):                    # ② 🎂 生日篇目：只在对应日期发，绝不进随机池
             continue
-        if e.get("id") in sent:              # ③ 这个人已经发过
+        if e.get("extra"):                   # ③ 链接 / 视频，S2 不发（别发半截的 @ 或 BV 号）
             continue
-        if not _images_ok(e):                # ④ 带图但图缺失 ⇒ 不发（不降级纯文字）
+        if e.get("id") in sent:              # ④ 这个人已经发过
+            continue
+        if not _images_ok(e):                # ⑤ 带图但图缺失 ⇒ 不发（不降级纯文字）
             continue
         out.append(e)
 
@@ -355,6 +359,122 @@ def mark_posted(user_id, entry, delivered=True, now=None):
     rec["last"] = time.strftime("%Y-%m-%d %H:%M:%S")
     rec["next_at"] = _next_at_text(now)
     save_record(user_id, rec)
+    return rec
+
+
+# ============================================================
+#  🎂 生日专项（2026-09-19）
+# ============================================================
+# 生日篇目**不进随机池**（见 `candidates`），只在这里按日期触发：
+#   · rafayel = 祁煜生日（人设 3.6 ⇒ 3 月 6 日）⇒ **每个**她都发（2 篇轮流）
+#   · player  = 她的生日（画像 `birthday`，抓到才发；没抓到 ⇒ 那 3 篇永远不发，绝不随手乱发）
+#
+# ⚠⚠ 与上面的普通排期**完全独立**：
+#    · **不占**「每天 1 条」的名额，也**不推进** `next_at` —— 生日该发就发，
+#      普通排期照自己的节奏走（共用闸 ⇒ 3 月 6 日发完生日就把普通那条顶掉了）。
+#    · 记录写 `memory\{uid}_bday.json`，与 `{uid}_qzone.json` 分开。
+# ⚠ 去重按**年**（不是「这条发过没有」）：明年同一天还要再发一次的，
+#   所以生日篇目**不写进 `sent`** —— 写进去的话第二年就没得发了。
+# ⚠ 仍受时段闸（8–23 点）约束：生日也不半夜打扰。
+
+def _bday_path(user_id):
+    return os.path.join(MEMORY_DIR, "%s_bday.json" % user_id)
+
+
+def _blank_bday_record():
+    # idx = 轮到第几篇（跨年累加，取模轮流）
+    return {"rafayel": {"year": "", "idx": 0},
+            "player": {"year": "", "idx": 0}}
+
+
+def load_bday_record(user_id):
+    path = _bday_path(user_id)
+    if not os.path.exists(path):
+        return _blank_bday_record()
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            rec = json.load(f)
+        if not isinstance(rec, dict):
+            return _blank_bday_record()
+        base = _blank_bday_record()
+        for k in base:                      # 老记录缺字段时自动补默认值
+            if isinstance(rec.get(k), dict):
+                base[k].update(rec[k])
+        return base
+    except Exception:
+        return _blank_bday_record()
+
+
+def save_bday_record(user_id, rec):
+    os.makedirs(MEMORY_DIR, exist_ok=True)
+    path = _bday_path(user_id)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(rec, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
+def bday_pool(kind):
+    """
+    某一种生日的可发篇目（缺图的跳过 —— 带图篇目必须带图发，不降级纯文字）。
+    给启动自检 / 排查看用；`bday_due` 内部也调它。
+    """
+    return [e for e in load_pool() if e.get("bday") == kind and _images_ok(e)]
+
+
+def bday_due(user_id, now=None):
+    """
+    这个人**今天**该发的生日说说。返回 (kind, entry, 说明)；没有则返回 ("", None, 原因)。
+
+    kind: "rafayel"（祁煜生日）/ "player"（她的生日）
+    """
+    if not QZONE_BDAY:
+        return "", None, "生日专项已关闭"
+    if not QZONE_AUTO:
+        return "", None, "发朋友圈总开关已关闭"
+
+    now = now or _now_bj()
+    hour = now.tm_hour
+    if not (QZONE_AUTO_HOUR_START <= hour < QZONE_AUTO_HOUR_END):
+        return "", None, "%d 点，不在 %d–%d 点" % (
+            hour, QZONE_AUTO_HOUR_START, QZONE_AUTO_HOUR_END)
+
+    today_md = time.strftime("%m-%d", now)
+    year = "%04d" % now.tm_year
+    rec = load_bday_record(user_id)
+
+    for kind, md in (("rafayel", (QZONE_BDAY_RAFAYEL or "").strip()),
+                     ("player", get_user_birthday(user_id))):
+        if not md or md != today_md:
+            continue
+        slot = rec.get(kind) or {}
+        if str(slot.get("year") or "") == year:
+            # ⚠ kind 回空串：这是**正常**的「今天已经发过了」，不该每 15 分钟刷一行日志。
+            return "", None, "%s 的生日今年（%s）已经发过了" % (kind, year)
+        pool = bday_pool(kind)
+        if not pool:
+            # ⚠ 这里**回 kind**：日期对上了却发不出来是真故障，调用方会打日志
+            return kind, None, "%s 生日篇目不可用（池子里没有，或配图缺失）" % kind
+        idx = int(slot.get("idx") or 0)
+        e = pool[idx % len(pool)]
+        return kind, e, "%s 生日（%s）⇒ 第 %d 篇 %s" % (kind, md, idx % len(pool) + 1, e["id"])
+
+    return "", None, "今天不是谁生日（今天 %s）" % today_md
+
+
+def mark_bday_sent(user_id, kind, now=None):
+    """
+    记一笔「今年这个生日发过了」，并把轮流指针 +1。
+
+    ⚠ 只在**真的发出去**之后调（没发出去就让它 15 分钟后再试一次）。
+    ⚠ **不碰** `{uid}_qzone.json`：不占当天名额、不推进 `next_at`、不写 `sent`。
+    """
+    now = now or _now_bj()
+    rec = load_bday_record(user_id)
+    slot = rec.setdefault(kind, {"year": "", "idx": 0})
+    slot["year"] = "%04d" % now.tm_year
+    slot["idx"] = int(slot.get("idx") or 0) + 1
+    save_bday_record(user_id, rec)
     return rec
 
 

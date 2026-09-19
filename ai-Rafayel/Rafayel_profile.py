@@ -65,6 +65,51 @@ NAME_CTX_LEN = 4
 # 中文称呼不含代词，命中就整条丢弃（宁可漏记一条，也不能记错成「她叫这个」）。
 NAME_PRONOUN_RE = re.compile(r"[你我他她它咱您]")
 
+# ---- 🎂 生日（2026-09-19 新增）----
+# 为什么要单独一个字段：朋友圈里有 3 篇「她的生日」语料，只能在**她生日当天**发。
+#   放进普通随机池 ⇒ 会在 7 月某天冒出一句「生日快乐」，她当场就知道是错的。
+#   ⇒ 生日必须是**画像里的一个字段**（双轨抓），由发圈模块按日期触发。
+# 正则只认「**她的**生日」：主语必须是「我」，不含「我」的一律不收
+#   （「祁煜生日是 3 月 6 号」是她告诉我**他**的生日，记反了就给他自己发错日子）。
+BDAY_PATTERNS = [
+    # ①「我生日（是）3月6号」—— 允许带年份（「2026年3月6号」）
+    r"我(?:的)?生日(?:是|在|为)?\s*[:：]?\s*(?:\d{4}\s*年)?\s*(\d{1,2})\s*[月.\-/]\s*(\d{1,2})\s*[日号]?",
+    # ②「我3月6号生日」/「我是3月6号的生日」—— `是|在|过` **必须可选**，
+    #    写死的话「我3月6号生日」这种最常见说法会整条漏掉。
+    r"我(?:的)?(?:是|在|过)?\s*(\d{1,2})\s*[月.\-/]\s*(\d{1,2})\s*[日号]?\s*(?:的)?生日",
+    # ③「3月6号是我生日」
+    r"(\d{1,2})\s*[月.\-/]\s*(\d{1,2})\s*[日号]?\s*(?:是|为)?\s*我(?:的)?生日",
+]
+# ⚠ **没有**「就近否定」闸（跟 name 那套不同，别照抄）：
+#    这里靠**正则结构**挡否定 —— `(?:是|在|为)?` 紧贴「生日」后面，
+#    「我生日不是3月6号」的「不」既不在可选组里、又挡着后面的数字 ⇒ 直接匹配不上。
+#    曾经照抄 name 的做法加了就近否定闸，结果「其他的先不说，我生日是3月6号」
+#    被前 4 字的「先不说」误杀 —— 那句是**肯定**句。宁可不收，也不能收反，
+#    但这次是收反的风险为零、误杀的风险很大 ⇒ 不设这道闸。
+BDAY_OTHER_RE = re.compile(r"(祁煜|他|她|它|别人|人家)")
+
+
+def _parse_birthday(month, day):
+    """
+    (月, 日) ⇒ 规范成 `MM-DD`；不合法返回 ""。
+
+    ⚠ 只认**公历**：农历要转公历得查表，跨年还会变，宁可不收也别记错。
+    ⚠ 月日都要校验范围（`2 月 30 号` 这种输入不收）。
+    """
+    try:
+        m, d = int(month), int(day)
+    except (TypeError, ValueError):
+        return ""
+    if not (1 <= m <= 12) or not (1 <= d <= 31):
+        return ""
+    return "%02d-%02d" % (m, d)
+
+
+# 落盘前最后一道：把「3月6号」/「3/6」/「03-06」统统收成 `MM-DD`。
+# ⚠ 不含「年」—— 「2026年3月6号」这种输入交给上面的正则去抓，这里只认月日。
+_BDAY_VALUE_RE = re.compile(r"(\d{1,2})\s*[月.\-/]\s*(\d{1,2})\s*[日号]?")
+
+
 # 归一化：只用于**比较**，绝不改存储值（存进去的永远是她的原话）。
 #   规则轨（实时、每句）→ 用原文严格比：保守，宁可多记一条也不误并；
 #   LLM 轨（每 8 轮总结）→ 用归一化比：「吃甜的」与「甜食」归一后同源，不再重复记。
@@ -95,7 +140,10 @@ class UserProfile:
       本类     = 你**自己观察留意**到的她的喜好与习惯
     """
 
-    KINDS = ("name", "likes", "dislikes", "traits")
+    # ⚠ `birthday` 是**单值**（字符串），不是 list —— 落盘/读取必须走另一条路，
+    #   跟 `KINDS` 里其余三类（数组）分开。混着按 `list(...)` 处理会把 "03-06" 拆成字符。
+    KINDS = ("name", "likes", "dislikes", "traits", "birthday")
+    SCALAR_KINDS = ("name", "birthday")
 
     def __init__(self, user_id: str):
         self.user_id = user_id
@@ -106,6 +154,7 @@ class UserProfile:
             "likes": [],
             "dislikes": [],
             "traits": [],
+            "birthday": None,
             "updated_at": None,
         }
         self.load()
@@ -117,8 +166,8 @@ class UserProfile:
             with open(self.path, "r", encoding="utf-8") as f:
                 saved = json.load(f)
             for k in self.KINDS:
-                if k == "name":
-                    self.data["name"] = saved.get("name")
+                if k in self.SCALAR_KINDS:
+                    self.data[k] = saved.get(k)
                 else:
                     self.data[k] = list(saved.get(k) or [])
             self.data["updated_at"] = saved.get("updated_at")
@@ -144,6 +193,8 @@ class UserProfile:
         loose=True （LLM 轨）       ：先归一化再比，能收「吃甜的」/「甜食」这类语义重复。
         """
         value = (value or "").strip()
+        if kind == "birthday":
+            return self._set_birthday(value, loose=loose)
         if kind == "name":
             value = NAME_PARTICLE_RE.sub("", value).strip()
             if NAME_PRONOUN_RE.search(value):
@@ -169,6 +220,30 @@ class UserProfile:
             self.data[kind] = bucket[-MAX_PROFILE_ITEMS:]
         return True
 
+    def _set_birthday(self, value: str, loose: bool = False) -> bool:
+        """
+        写入生日（规范成 `MM-DD`）。返回是否真变化。
+
+        ⚠ 覆盖策略（两轨不同）：
+          · 规则轨（她自己明说，loose=False）⇒ **允许改** —— 她说「我生日是 5 月 1 号」就该生效。
+          · LLM 轨（每 8 轮总结，loose=True）⇒ **只在原来没有时写**，绝不覆盖。
+            模型每次总结都可能把「她 3 月 6 号生日」换个说法再输出一次，
+            让它能覆盖 ⇒ 哪次抽风写错就把真生日冲掉了，而且是静默的。
+        """
+        m = _BDAY_VALUE_RE.search(value or "")
+        if not m:
+            return False
+        mmdd = _parse_birthday(m.group(1), m.group(2))
+        if not mmdd:
+            return False
+        old = (self.data.get("birthday") or "").strip()
+        if old == mmdd:
+            return False
+        if old and loose:
+            return False
+        self.data["birthday"] = mmdd
+        return True
+
     def merge(self, patch: dict) -> bool:
         """合并一组提取结果（规则命中 或 LLM 总结）。返回是否有变化。"""
         changed = False
@@ -177,6 +252,11 @@ class UserProfile:
         name = patch.get("name")
         if isinstance(name, str) and name.strip():
             if self._add_one("name", name):
+                changed = True
+        # 🎂 生日：LLM 轨（loose=True）⇒ 只在原来没有时写，不覆盖（见 _set_birthday）
+        bday = patch.get("birthday")
+        if isinstance(bday, str) and bday.strip():
+            if self._add_one("birthday", bday, loose=True):
                 changed = True
         for kind in ("likes", "dislikes", "traits"):
             items = patch.get(kind) or []
@@ -201,7 +281,29 @@ class UserProfile:
                         continue
                 if self._add_one(kind, m.group(1)):
                     changed = True
+        if self._extract_birthday(text):
+            changed = True
         return changed
+
+    def _extract_birthday(self, text: str) -> bool:
+        """
+        🎂 规则轨抓生日（实时，她一说明天就能用）。
+
+        ⚠ 两道闸，跟称呼那套同理，拆任何一道都会记错：
+          ① **就近否定**：「我生日不是 3 月 6 号」—— 命中 `不是/不/没` 就丢这条。
+          ② **别人主语**：「祁煜生日是 3 月 6 号」—— 那是**他**的生日，记成她的就全反了。
+        """
+        s = text or ""
+        for pat in BDAY_PATTERNS:
+            for m in re.finditer(pat, s):
+                ctx = s[max(0, m.start() - 4):m.start()]
+                # ⚠ 只查**就近 4 字**，不查整句：整句查会把「其他的先不说，我生日是…」
+                #   里的「其**他**」当成第三人称主语，白白漏记一条真生日。
+                if BDAY_OTHER_RE.search(ctx):
+                    continue
+                if self._add_one("birthday", m.group(0)):
+                    return True
+        return False
 
     def to_prompt_text(self) -> str:
         """渲染成注入 system_prompt 的文本；一条都没有就返回空串。"""
@@ -212,6 +314,15 @@ class UserProfile:
             items = self.data.get(kind) or []
             if items:
                 lines.append(f"- {label}：{'、'.join(items)}")
+        # 🎂 生日照常注入：他得知道，不然她生日当天他只会发那条朋友圈、聊天里却不会说一句。
+        #   形态写成「3月6日」而不是「03-06」—— 后者是内部存储格式，模型照抄会很出戏。
+        bday = (self.data.get("birthday") or "").strip()
+        if bday:
+            try:
+                mm, dd = bday.split("-")
+                lines.append(f"- 她的生日：{int(mm)}月{int(dd)}日")
+            except Exception:
+                pass
         if not lines:
             return ""
         return PROFILE_TEMPLATE.format(lines="\n".join(lines))
@@ -233,6 +344,21 @@ def get_user_profile(user_id: str) -> dict:
     if not p.to_prompt_text():
         return None
     return p.data
+
+
+def get_user_birthday(user_id: str) -> str:
+    """
+    🎂 取她的生日（`MM-DD`）；没抓到返回 ""。
+
+    ⚠ 为什么不复用 `get_user_profile`：那个函数在**空画像**时返回 None
+      （本意是「没得注入就别注入」），但发圈模块要的是「有没有生日」，
+      空画像（只记了生日、没别的）也得照读 ⇒ 这里直接读文件。
+    """
+    try:
+        p = UserProfile(user_id)
+        return (p.data.get("birthday") or "").strip()
+    except Exception:
+        return ""
 
 
 def set_user_profile(user_id: str, **kwargs) -> bool:
