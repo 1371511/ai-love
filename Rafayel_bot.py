@@ -20,8 +20,8 @@ from Rafayel_config import (
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
-    QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT, QZONE_TEST_TEXT,
-    STICKER_SUB_TYPE,
+    QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
+    QZONE_TEST_TEXT, STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
 from Rafayel_sticker import plain_text, split_segments
@@ -245,14 +245,23 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
                                    target_uins=targets, images=imgs)
     note = "%s → %s" % (note, note2)
 
-    # ⚠ 2026-09-19：改成「送出即回」，不再干等 20 秒回执
-    #   （在主流程里等**必然超时**，原因见 _watch_receipt 的注释）。
+    # ⚠ 2026-09-19 三改：回她的这句话**必须是他本人的口气**。
+    #   之前回「✅ 说说已送出 —— 回执（如果有）我打在服务端日志里」——
+    #   ✅ / 回执 / 服务端日志 全是后台那一面，一眼机器人（她当场指出）。
+    #   ⇒ 成功 ⇒ 走提醒语料 `card/qzone_reminds.md`（轮换避重 + 「她的名字」替换成她的称呼）；
+    #     失败 ⇒ 只说一句他自己的话，真实原因**只进服务端日志**（下面 [🧪] 那行）。
     if sent:
-        tip = "✅ 说说已送出 —— 去空间看看；回执（如果有）我打在服务端日志里"
+        tip = reminder_text(user_id)
     else:
-        tip = "❌ 没送出去：%s" % note
+        tip = QZONE_CMD_FAIL_TEXT
     await send_text(websocket, message_type, user_id, group_id, tip)
-    print("[🧪] " + tip)
+
+    # ⚠ 这句是他**真的说出口**的话 ⇒ 必须进对话记忆，否则她回一句「发了什么？」
+    #   模型根本不知道上一句是他说的（跟主动打招呼 / 自动提醒同一个口径：
+    #   任何绕开 get_reply 直接发出去的话都要补写）。
+    record_proactive(user_id, tip)
+
+    print("[🧪] 指令回执 sent=%s｜回她的话 %r｜内部原因 %s" % (sent, tip, note))
     return True
 
 # ============================================
