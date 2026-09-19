@@ -54,17 +54,27 @@ def now_prompt_text(gap_hours=None):
                                             _WEEKDAYS_CN[n.tm_wday], n.tm_hour, n.tm_min)]
 
     if gap_hours is not None and gap_hours >= NOW_GAP_HOURS:
+        # ⚠ 分钟档**必须单独写**：Python 的 `round(0.5)` 是 **0**（银行家舍入），
+        #    照旧写成「约 %d 小时前」会印出「约 0 小时前」。
         if gap_hours >= 24:
             when = "约 %d 天前" % int(round(gap_hours / 24.0))
-        else:
+        elif gap_hours >= 1:
             when = "约 %d 小时前" % int(round(gap_hours))
-        # ⚠ 这半句是重点：光给数字模型未必会用，得把它翻译成**演戏的指令**。
-        #   （「睡醒了他还在洗虾」就是少了这句 —— 它不知道上一回合已经结束了。）
+        else:
+            when = "约 %d 分钟前" % int(round(gap_hours * 60))
+
+        # ⚠ 这半句是重点：光给数字模型未必会用，得**翻译成演戏的指令**。
+        #    两层意思，缺一不可（第二层是她 2026-09-19 追加的）：
+        #      ① 上一回合已经结束了，别接着演；
+        #      ② **他手上的事也该推进了** —— 隔了一小时还说在洗虾，
+        #         做饭这种流程早该收尾（她说「正常做饭流程 1h，饭也该做完了」）。
         # ⚠ system_prompt 禁 `**` ⇒ 强调只能靠措辞，别用星号。
         if gap_hours >= 8:
-            hint = "—— 隔了这么久，那是上一回事了，别接着上次的动作继续演。"
+            hint = "—— 隔了这么久，那是上一回事了：手上的事早该做完了，别接着上次的动作继续演。"
+        elif gap_hours >= 2:
+            hint = "—— 中间隔了这么久，别接成像刚聊到一半；手上的事也该推进到下一步了。"
         else:
-            hint = "—— 中间过了好一阵，别接成像刚聊到一半。"
+            hint = "—— 中间过了这么久，你手上的事（做饭、洗澡、走路这类）也该有进展了，别还停在原地。"
         lines.append("她上一条消息是%s %s" % (when, hint))
 
     lines.append("（这是真实时间。她问就照实说，别自己编一个钟点。）")
