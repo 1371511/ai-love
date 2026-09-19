@@ -14,7 +14,8 @@ _CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
-from Rafayel_chat import get_reply, recent_context, record_proactive, take_opening
+from Rafayel_chat import (comment_opening, get_reply, recent_context,
+                         record_proactive, take_opening)
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
@@ -23,12 +24,18 @@ from Rafayel_config import (
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
+    QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
+    QZONE_CMT_MAX_PER_DAY, QZONE_CMT_POLL_SECONDS, QZONE_SELF_UIN,
 )
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
                              split_segments)
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
+from Rafayel_qzone_comment import (mark_done, note_posted, scan_new_comments,
+                                   take_ready)
+from Rafayel_qzone_comment import (mark_done, note_posted, scan_new_comments,
+                                   take_ready)
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
@@ -376,6 +383,18 @@ async def process_napcat_message(data, websocket):
 
         print(f"[📩] 收到 {message_type} 消息: {raw_message} (来自: {user_id})")
 
+        # 2026-09-20：记住他自己的 QQ 号（拉自己的空间要用）。
+        #   配置里没写死就从 NapCat 事件里的 self_id 取 —— 省得她手填。
+        _self = str(data.get("self_id") or "").strip()
+        if _self.isdigit() and not globals().get("SELF_UIN"):
+            globals()["SELF_UIN"] = _self
+
+        # 2026-09-20：记住他自己的 QQ 号（拉自己的空间要用）。
+        #   配置里没写死就从 NapCat 事件里的 self_id 取 —— 省得她手填。
+        _self = str(data.get("self_id") or "").strip()
+        if _self.isdigit() and not globals().get("SELF_UIN"):
+            globals()["SELF_UIN"] = _self
+
         # 2026-09-20：她发来的常常**不是文字**（表情包 / 照片 / 商城表情）。
         #   raw_message 那时只是一串 CQ 码（甚至空串），直接喂给模型 ⇒
         #   它有时猜得出「她发了张图」就回一句，有时觉得无从接话就回空
@@ -489,6 +508,13 @@ async def _send_one_qzone(ws, uid, entry, bday=None):
     bday=kind  ⇒ 生日那条，记进 `{uid}_bday.json`（`mark_bday_sent`），**不碰**普通排期
     """
     text = render_text(entry, uid)          # 「用户」/`@用户` → 她的称呼（每人不同，不能预烘）
+    # 2026-09-20：记下「这条正文是发给谁的」—— 评论数比对要靠它把说说认回人。
+    #   ⚠ 不能用 tid（bridge 给的 tid 每次都变），只能用正文指纹。
+    if QZONE_CMT_ENABLE:
+        try:
+            note_posted(uid, text)
+        except Exception as e:
+            print("[⚠️] 记说说正文失败（不影响发送）：%s" % e)
     imgs = image_paths(entry)               # 带图篇目必须带图发；缺图在选条阶段已排除
 
     sent, msg = await send_qzone(ws, text, ugc_right=UGC_PARTIAL,
@@ -578,6 +604,96 @@ async def auto_qzone_loop():
             print("[⚠️] 发朋友圈扫描出错：%s" % e)
 
 
+async def auto_comment_scan():
+    """
+    扫一遍：谁的评论数涨了 ⇒ 他知道她在他那条说说底下留了话 ⇒ 过几分钟跑来私聊找她。
+
+    ⚠ 为什么是「私聊」不是「在空间回复」：这台服务器上**评论内容读不到**
+      （详情 1502、列表只有 cmtnum、tid 还会漂）⇒ 只知道「她留了话」，不知道写了什么。
+      ⇒ 那就让她在私聊里说，他接得住 —— 真人也常这么跑来问一句。
+    ⚠ NapCat 没连上就什么都不做（跟打招呼、发说说同一个口径）。
+    """
+    if not QZONE_CMT_ENABLE or not connected_clients:
+        return
+    uin = QZONE_SELF_UIN or globals().get("SELF_UIN")
+    if not uin:
+        return          # 还不知道自己是谁，等下一条消息带 self_id 过来
+
+    ws = next(iter(connected_clients))
+
+    # ① 到点的：真的去找她
+    for item in take_ready():
+        uid = str(item.get("uid") or "")
+        if not uid.isdigit():
+            continue
+        line = comment_opening(uid, item.get("content") or "")
+        if not line:
+            continue          # 模型没写出来 ⇒ 这次就算了，别硬发一句不通的
+        await send_text(ws, "private", uid, None, line)
+        record_proactive(uid, line)     # ⭐ 主动说的话必须进记忆，否则她接不住
+        mark_done()
+        print("[💬] 她在说说下留话 ⇒ 他去找 %s：%s" % (uid, line[:40]))
+
+    # ② 比对评论数，排新的
+    added, logs = scan_new_comments(uin)
+    for line in logs:
+        print("[💬] %s" % line)
+
+
+async def auto_comment_loop():
+    while True:
+        await asyncio.sleep(QZONE_CMT_POLL_SECONDS)
+        try:
+            await auto_comment_scan()
+        except Exception as e:
+            print("[⚠️] 评论扫描出错：%s" % e)
+
+
+async def auto_comment_scan():
+    """
+    扫一遍：谁的评论数涨了 ⇒ 他知道她在他那条说说底下留了话 ⇒ 过几分钟跑来私聊找她。
+
+    ⚠ 为什么是「私聊」不是「在空间回复」：这台服务器上**评论内容读不到**
+      （详情 1502、列表只有 cmtnum、tid 还会漂）⇒ 只知道「她留了话」，不知道写了什么。
+      ⇒ 那就让她在私聊里说，他接得住 —— 真人也常这么跑来问一句。
+    ⚠ NapCat 没连上就什么都不做（跟打招呼、发说说同一个口径）。
+    """
+    if not QZONE_CMT_ENABLE or not connected_clients:
+        return
+    uin = QZONE_SELF_UIN or globals().get("SELF_UIN")
+    if not uin:
+        return          # 还不知道自己是谁，等下一条消息带 self_id 过来
+
+    ws = next(iter(connected_clients))
+
+    # ① 到点的：真的去找她
+    for item in take_ready():
+        uid = str(item.get("uid") or "")
+        if not uid.isdigit():
+            continue
+        line = comment_opening(uid, item.get("content") or "")
+        if not line:
+            continue          # 模型没写出来 ⇒ 这次就算了，别硬发一句不通的
+        await send_text(ws, "private", uid, None, line)
+        record_proactive(uid, line)     # ⭐ 主动说的话必须进记忆，否则她接不住
+        mark_done()
+        print("[💬] 她在说说下留话 ⇒ 他去找 %s：%s" % (uid, line[:40]))
+
+    # ② 比对评论数，排新的
+    added, logs = scan_new_comments(uin)
+    for line in logs:
+        print("[💬] %s" % line)
+
+
+async def auto_comment_loop():
+    while True:
+        await asyncio.sleep(QZONE_CMT_POLL_SECONDS)
+        try:
+            await auto_comment_scan()
+        except Exception as e:
+            print("[⚠️] 评论扫描出错：%s" % e)
+
+
 async def main():
     """启动 WebSocket 服务器"""
     print("=" * 50)
@@ -602,6 +718,16 @@ async def main():
             if QZONE_BDAY:
                 print("🎂 生日专项已开启：祁煜生日 %s 发（%d 篇）；她的生日抓到画像 birthday 才发"
                       % (QZONE_BDAY_RAFAYEL, len(bday_pool("rafayel"))))
+        if QZONE_CMT_ENABLE:
+            asyncio.create_task(auto_comment_loop())
+            print("💬 她在他朋友圈留话 ⇒ 他会来找她（每 %s 秒查一次评论数，隔 %s~%s 分钟才开口，每天最多 %s 次）"
+                  % (QZONE_CMT_POLL_SECONDS, QZONE_CMT_DELAY_MIN,
+                     QZONE_CMT_DELAY_MAX, QZONE_CMT_MAX_PER_DAY))
+        if QZONE_CMT_ENABLE:
+            asyncio.create_task(auto_comment_loop())
+            print("💬 她在他朋友圈留话 ⇒ 他会来找她（每 %s 秒查一次评论数，隔 %s~%s 分钟才开口，每天最多 %s 次）"
+                  % (QZONE_CMT_POLL_SECONDS, QZONE_CMT_DELAY_MIN,
+                     QZONE_CMT_DELAY_MAX, QZONE_CMT_MAX_PER_DAY))
         if QZONE_CMD_PREFIX:
             print("🧪 朋友圈测试指令已开启：「%s 内容」=只你可见；「%s公开 内容」=所有人可见"
                   % (QZONE_CMD_PREFIX, QZONE_CMD_PREFIX))

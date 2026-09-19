@@ -245,6 +245,27 @@ QZONE_AUTO_REMIND_DELAY_MAX = 15
 #   ⚠ 仍受时段闸（8–23 点）约束 —— 生日也不半夜打扰。
 QZONE_BDAY = True
 QZONE_BDAY_RAFAYEL = "03-06"    # 祁煜生日（MM-DD，人设 3.6）
+
+# ---------------------------------------------------------------------------
+#  💬 她在他朋友圈底下留话 ⇒ 他跑来私聊找她（2026-09-20，S4 的降级形态）
+# ---------------------------------------------------------------------------
+# 为什么是这个形态：原生 NapCat 读不到评论；装了 qzone-bridge 之后这台服务器上
+# **评论内容依然读不到**（详情 1502、列表只有 cmtnum 计数、tid 还会漂）⇒
+# 退一步：用「评论条数涨了」当信号，他不知道她写了什么，但知道她留了话 ⇒
+# 跑来私聊问，她回什么他接什么。**真人也常这么干**，比 AI 味的楼层回复自然。
+QZONE_CMT_ENABLE = True
+QZONE_CMT_POLL_SECONDS = 900    # 多久查一次评论数（跟说说/打招呼同思路，各一个 task）
+QZONE_CMT_DELAY_MIN = 3         # 发现她留话之后，隔几分钟才来找她（秒回太假）
+QZONE_CMT_DELAY_MAX = 10
+QZONE_CMT_MAX_PER_DAY = 2       # 每天最多因此找她几次（不然她评论一次就被追着问）
+QZONE_CMT_HOUR_START = 8        # 同样别半夜打扰
+QZONE_CMT_HOUR_END = 23
+QZONE_CMT_FEED_NUM = 10         # 每次拉最近几条说说来比对评论数
+# qzone-bridge 的 REST 地址（它自己起的服务，不是 NapCat 的）
+QZONE_BRIDGE_URL = "http://127.0.0.1:5700"
+QZONE_BRIDGE_TIMEOUT = 15
+# ⚠ 他的 QQ 号：拉自己的空间要用。留空时自动取 NapCat 事件里的 self_id。
+QZONE_SELF_UIN = ""
 # ⏱ 时区**不在这里**：沿用 `AUTO_GREET_TZ_OFFSET`（整条链上只该有一个「现在几点」）。
 #   见 Rafayel_qzone_auto.py 的 `_now_bj()`。
 # ⚠⚠ 与「主动打招呼」**各自独立排期，绝不共用闸** —— 共用会让两条互相抢当天名额

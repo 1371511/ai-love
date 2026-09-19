@@ -30,8 +30,8 @@ from Rafayel import (
     CARD_ALT_GREETINGS, CARD_FIRST_MES, CARD_POST_HISTORY, system_prompt,
 )
 from Rafayel_config import (
-    API_URL, MAX_TOKENS, MODEL, REPLY_ONE_LINE, TEMPERATURE, WB_MAX_CHARS,
-    WB_MAX_ENTRIES, api_key,
+    API_URL, MAX_TOKENS, MODEL, QZONE_CMT_ENABLE, REPLY_ONE_LINE, TEMPERATURE,
+    WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
@@ -79,6 +79,58 @@ def _build_worldbook(cm, user_message):
     except Exception as e:
         print("⚠️ 世界书注入失败（不影响对话）：%s" % e)
         return "", ""
+
+
+def comment_opening(user_id: str, post_text: str) -> str:
+    """
+    她在他那条说说底下留了话 ⇒ 他**主动跑来私聊**的第一句。
+
+    ⚠ 关键前提：**他看不到她写了什么**（这台服务器上评论内容读不到，只有条数变化）。
+      ⇒ 提示词必须让他「察觉她留了话」而**不是**「知道她说啥」，否则他会说漏嘴。
+
+    ⚠ 失败/异常一律返回空串 ⇒ 调用方跳过（宁可不找她，也别发一句不通的话）。
+    ⚠ 不写进对话记忆 —— 调用方发出去时会走 `record_proactive`（跟打招呼/说说同一个口径）。
+    ⚠ system_prompt 禁 `**` 与 ASCII 双引号（锁定口径）。
+    """
+    if not QZONE_CMT_ENABLE:
+        return ""
+    try:
+        if user_id not in _user_managers:
+            _user_managers[user_id] = ConversationManager(system_prompt, user_id=user_id)
+            load_memory(user_id, _user_managers[user_id])
+        cm = _user_managers[user_id]
+
+        hint = (
+            "\n\n【她在你朋友圈底下留了话】\n"
+            "你前不久发过这样一条说说：%s\n"
+            "她在那条底下留了话，但你没看清她具体写了什么。\n"
+            "现在你主动来找她，写开口的第一句话，1~2 句，用你一贯的口气。\n"
+            "规矩：不许出现系统、机器人、回复、评论数、说说的编号这类后台词；"
+            "不许解释你为什么来找她；不许把整条说说复述一遍；"
+            "可以带一点得意，也可以直接问她想说什么。"
+        ) % (post_text or "")[:80]
+
+        data = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": cm.get_full_system_prompt() + hint},
+                {"role": "user", "content": "（他来找她）"},
+            ],
+            "stream": False,
+            "max_tokens": 120,                 # 开口第一句，写长了就不像他了
+            "temperature": TEMPERATURE,
+        }
+        r = requests.post(API_URL,
+                          headers={"Authorization": "Bearer %s" % api_key,
+                                   "Content-Type": "application/json"},
+                          json=data, timeout=30)
+        result = r.json()
+        if "choices" not in result:
+            return ""
+        text = (result["choices"][0]["message"]["content"] or "").strip()
+        return _to_one_line(text)
+    except Exception:
+        return ""
 
 
 def take_opening(user_id: str) -> str:
