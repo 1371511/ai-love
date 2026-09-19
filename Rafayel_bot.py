@@ -21,8 +21,8 @@ from Rafayel_config import (
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
-    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_FILE_URI,
-    STICKER_SUB_TYPE,
+    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
+    STICKER_IMAGE_AS_FILE_URI, STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
 from Rafayel_sticker import available_tags, pick_sticker, plain_text, split_segments
@@ -39,17 +39,24 @@ def your_ai_lover_response(user_message: str, user_id: str) -> str:
     return get_reply(user_message, user_id)
 
 
-def _img_uri(p):
+def _img_payload(p):
     """
-    裸本地路径 ⇒ file:// URI（说说配图真机证明 NapCat 把 file 的值当 URL 解析）。
+    聊天表情包的图 ⇒ NapCat 认的形态。
 
-    ⚠ 聊天表情包这条路径**没真机验过** ⇒ 留了退路 `STICKER_IMAGE_AS_FILE_URI`：
-      `#表情` 发出去什么都没收到的话，把它翻成 False 退回裸路径再试。
+    ⚠ 真机梯子（2026-09-20 凌晨走完）：裸路径 ✗ → file:// ✗（NapCat ENOENT，
+      它看不见本机目录，多半在 Docker 里没挂载）⇒ 默认 **base64**，
+      把图字节直接塞进消息段，不依赖文件系统。
     """
     p = str(p)
-    if "://" in p or not STICKER_IMAGE_AS_FILE_URI:
+    if "://" in p:
         return p
-    return "file://" + p
+    if STICKER_IMAGE_AS_BASE64:
+        import base64
+        with open(p, "rb") as f:
+            return "base64://" + base64.b64encode(f.read()).decode("ascii")
+    if STICKER_IMAGE_AS_FILE_URI:
+        return "file://" + p
+    return p
 
 
 def build_message(text):
@@ -79,9 +86,9 @@ def build_message(text):
         if kind == "text":
             out.append({"type": "text", "data": {"text": val}})
         else:
-            # ⚠ 跟朋友圈配图同一个坑（2026-09-19 真机）：裸路径 NapCat 未必认 ⇒ 统一 file:// URI
+            # ⚠ 跟朋友圈配图同一个坑：裸路径/file:// NapCat 都吃不下（ENOENT）⇒ base64
             out.append({"type": "image",
-                        "data": {"file": _img_uri(val), "sub_type": STICKER_SUB_TYPE}})
+                        "data": {"file": _img_payload(val), "sub_type": STICKER_SUB_TYPE}})
     return out
 
 

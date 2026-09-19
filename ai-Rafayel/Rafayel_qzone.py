@@ -47,18 +47,32 @@ UGC_NEEDS_TARGET = (UGC_PARTIAL, UGC_EXCLUDE)
 #      ① 翻成本开关 True（对象数组） ② 再不行改 `base64://`（单张最大 3.5MB，base64 后
 #      ~4.7MB，仍远小于 WS 单帧 16MB 上限，只是费带宽）。
 QZONE_IMAGES_AS_OBJECTS = False
+# ⚠⚠ 真机实测结论（2026-09-20 凌晨，第二层）：加了 file:// 后 NapCat 仍失败，
+#   这回是 `ENOENT: no such file or directory, open '/home/.../涂鸦叽/05-得意.gif'`
+#   —— 而机器人侧 `os.path.isfile` 明明过了（选条时只返回真存在的图）。
+#   ⇒ **NapCat 看不见这台机器上的这个目录**（多半跑在 Docker 里、没挂载 ai-love）。
+#   ⇒ 文件系统这条路彻底堵死 ⇒ 改走 `base64://`：把图片字节直接塞进请求，
+#     不依赖任何挂载。体积核算：说说配图最大 3.5MB ⇒ base64 ~4.7MB，
+#     远低于 WS 单帧 ~16MB 上限（表情包 gif 更小）。
+QZONE_IMAGES_AS_BASE64 = True
 
 
 def _img_uri(p):
     """
-    把图片引用规范成 NapCat 认的 URI。
+    把图片引用规范成 NapCat 认的形态（真机梯子走完了：裸路径 ✗ → file:// ✗ → base64 ✓待验）。
 
     - 已经带 scheme（http:// https:// file:// base64://）⇒ 原样返回
-    - 裸本地路径 ⇒ 加 `file://` 前缀（Linux 绝对路径以 / 开头 ⇒ file:///home/...）
+    - `QZONE_IMAGES_AS_BASE64` ⇒ 读文件字节，`base64://<b64>`（**不依赖文件系统**，
+      NapCat 在 Docker 里没挂载目录也能收）
+    - 否则 `file://` 前缀（留作回退：哪天把目录挂进 NapCat 容器了再翻回 False）
     """
     p = str(p)
     if "://" in p:
         return p
+    if QZONE_IMAGES_AS_BASE64:
+        import base64
+        with open(p, "rb") as f:
+            return "base64://" + base64.b64encode(f.read()).decode("ascii")
     return "file://" + p
 
 
