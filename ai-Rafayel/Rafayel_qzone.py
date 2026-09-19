@@ -39,12 +39,27 @@ UGC_EXCLUDE = 128   # 部分好友不可见 —— 需要 target_uins
 UGC_NEEDS_TARGET = (UGC_PARTIAL, UGC_EXCLUDE)
 
 
-# ⚠⚠ **待实测**：`images` 到底收**字符串数组**（`["/path/a.png", …]`）
-#   还是**对象数组**（`[{"file": "/path/a.png"}, …]`）—— NapCat 文档没写死这一条。
-#   猜错的后果很阴：**「正文发出去了、图没上」，不报错，只静默丢图**。
-#   ⇒ S2 第一次真机发**必须发一条带图的**，去空间看图上没上；没上就把这个开关翻成 True。
-#   实现见 `build_payload` 的 `images` 分支。
+# ⚠⚠ 真机实测结论（2026-09-19 深夜，retcode=1200）：**裸的本地路径 NapCat 不认** ——
+#   它把 `file` 的值当 **URL** 解析，`/home/.../倒影.png` 直接「图片处理失败，识别URL失败」，
+#   而且**整条说说发不出去**（不只是丢图）。后果比原先猜的「静默丢图」重。
+#   ⇒ 现在统一把本地路径转成 `file://` URI（见 build_payload 里的 `_img_uri`）。
+#   ⏳ `file://` + 字符串数组若还不行，按这个梯子往下试：
+#      ① 翻成本开关 True（对象数组） ② 再不行改 `base64://`（单张最大 3.5MB，base64 后
+#      ~4.7MB，仍远小于 WS 单帧 16MB 上限，只是费带宽）。
 QZONE_IMAGES_AS_OBJECTS = False
+
+
+def _img_uri(p):
+    """
+    把图片引用规范成 NapCat 认的 URI。
+
+    - 已经带 scheme（http:// https:// file:// base64://）⇒ 原样返回
+    - 裸本地路径 ⇒ 加 `file://` 前缀（Linux 绝对路径以 / 开头 ⇒ file:///home/...）
+    """
+    p = str(p)
+    if "://" in p:
+        return p
+    return "file://" + p
 
 
 def build_payload(content, ugc_right=UGC_ALL, target_uins=None, images=None, echo=None):
@@ -77,9 +92,11 @@ def build_payload(content, ugc_right=UGC_ALL, target_uins=None, images=None, ech
 
     imgs = [str(i) for i in (images or []) if i]
     if imgs:
-        # ⚠ 形状由 QZONE_IMAGES_AS_OBJECTS 决定（待实测，见上面的注释）
-        params["images"] = ([{"file": i} for i in imgs]
-                            if QZONE_IMAGES_AS_OBJECTS else imgs)
+        # ⚠ 真机实测（2026-09-19）：裸路径 = retcode 1200「识别URL失败」⇒ 一律先转 file:// URI
+        uris = [_img_uri(i) for i in imgs]
+        # 形状由 QZONE_IMAGES_AS_OBJECTS 决定（若 file:// + 字符串还不行再翻 True）
+        params["images"] = ([{"file": u} for u in uris]
+                            if QZONE_IMAGES_AS_OBJECTS else uris)
 
     payload = {"action": QZONE_SEND_ACTION, "params": params}
     if echo:

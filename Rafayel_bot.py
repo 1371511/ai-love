@@ -38,6 +38,12 @@ def your_ai_lover_response(user_message: str, user_id: str) -> str:
     return get_reply(user_message, user_id)
 
 
+def _img_uri(p):
+    """裸本地路径 ⇒ file:// URI（NapCat 把 file 的值当 URL 解析，裸路径会「识别URL失败」）。"""
+    p = str(p)
+    return p if "://" in p else "file://" + p
+
+
 def build_message(text):
     """
     把他的回复翻译成 OneBot 的 message 字段。
@@ -65,8 +71,9 @@ def build_message(text):
         if kind == "text":
             out.append({"type": "text", "data": {"text": val}})
         else:
+            # ⚠ 跟朋友圈配图同一个坑（2026-09-19 真机）：裸路径 NapCat 未必认 ⇒ 统一 file:// URI
             out.append({"type": "image",
-                        "data": {"file": val, "sub_type": STICKER_SUB_TYPE}})
+                        "data": {"file": _img_uri(val), "sub_type": STICKER_SUB_TYPE}})
     return out
 
 
