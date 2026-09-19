@@ -450,7 +450,7 @@ async def auto_greet_scan():
     """
     扫一遍私聊过的用户：谁冷场够久了，就让他主动说一句。
 
-    最后活跃时间直接取 memory\{uid}.json 里的 saved_at（save_memory 每次都会写），
+    最后活跃时间直接取 memory/{uid}.json 里的 saved_at（save_memory 每次都会写），
     不额外改记忆结构。uid 必须纯数字（QQ 号），免得给 "cli" 这种测试号发消息。
     """
     if not AUTO_GREET or not connected_clients:
