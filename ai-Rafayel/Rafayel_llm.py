@@ -34,7 +34,7 @@ from Rafayel_config import (
     api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
-from Rafayel_sticker import sticker_instructions
+from Rafayel_sticker import apply_cooldown, sticker_instructions
 from Rafayel_worldbook import get_worldbook
 
 
@@ -208,6 +208,17 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
             # 记录真实用量与结束原因：finish_reason == "length" 说明被 max_tokens 截断
             cm.last_finish_reason = choice.get("finish_reason")
             cm.last_usage = result.get("usage")
+
+            # 5.5 表情冷却闸：最近几条他已经发过表情 ⇒ 这一轮不再发（低频靠代码保证，
+            #     prompt 只管「发得贴不贴切」）。
+            # ⚠ 必须在 add_assistant_message **之前** —— 写进记忆的得是最终文本，
+            #    否则下一轮看到的「他发过没有」是错的，闸就废了。
+            _his_recent = [m.get("content") or ""
+                           for m in cm.messages if m.get("role") == "assistant"]
+            reply, _cooled = apply_cooldown(reply, _his_recent)
+            if _cooled:
+                print("[🖼️] 表情冷却：他最近几条已经发过表情 ⇒ 本条不再发")
+
             # 6. 添加助手消息到对话管理器
             cm.add_assistant_message(reply)
 
