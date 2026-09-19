@@ -21,10 +21,10 @@ from Rafayel_config import (
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
-    QZONE_TEST_TEXT, STICKER_SUB_TYPE,
+    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
-from Rafayel_sticker import plain_text, split_segments
+from Rafayel_sticker import available_tags, pick_sticker, plain_text, split_segments
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
@@ -191,6 +191,40 @@ async def send_qzone(websocket, content, ugc_right=UGC_ALL, target_uins=None, im
         return False, "发送异常：%s" % e
 
 
+async def maybe_handle_sticker_cmd(websocket, message_type, user_id, group_id, raw_message):
+    """
+    表情包测试指令（`#表情` / `#表情 得意`）。命中并处理了返回 True，否则 False。
+
+    ⭐ 为什么非要有它：表情包链路里**唯一本地验不了的**就是「图到底显不显示」——
+      payload 形状、冷却闸、标签命中都能本地 spy 验，只有 NapCat 收到后怎么渲染不行。
+      ⇒ 用这条指令走**真实发送路径**甩一张，真机上一眼就能看出对不对。
+
+    ⚠ 跟 `#发说说` 同一个口径：只发图、**不说话**（他本来也常常只甩一张），
+      不排期、不消耗语料。标签没命中 ⇒ 随机挑一张（别弹「未找到」那种机器人腔）。
+    """
+    text = (raw_message or "").strip()
+    if not STICKER_CMD_PREFIX or not text.startswith(STICKER_CMD_PREFIX):
+        return False
+
+    tags = available_tags()
+    if not tags:
+        print("[🎭] 表情测试：标签表是空的（card/stickers.md 没读到？）")
+        return True
+
+    tag = text[len(STICKER_CMD_PREFIX):].strip()
+    if tag and pick_sticker(tag):
+        chosen, note = tag, "指定「%s」" % tag
+    else:
+        chosen = random.choice(tags)
+        note = "指定「%s」没命中 ⇒ 随机" % tag if tag else "随机"
+
+    await send_text(websocket, message_type, user_id, group_id, "[表情:%s]" % chosen)
+    # ⚠ 这也是他**真的发出来**的东西 ⇒ 进对话记忆，否则她回「这表情好可爱」他接不住
+    record_proactive(user_id, "[表情:%s]" % chosen)
+    print("[🎭] 表情测试：%s ⇒ %s" % (note, chosen))
+    return True
+
+
 async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw_message):
     """
     朋友圈测试指令。命中并处理了返回 True，否则 False（交回给正常对话流程）。
@@ -328,6 +362,11 @@ async def process_napcat_message(data, websocket):
         # 2026-09-19：朋友圈测试指令（#发说说 …）—— 命中就直接处理掉，不进对话。
         if await maybe_handle_qzone_cmd(websocket, message_type, user_id,
                                         group_id, raw_message):
+            return
+
+        # 2026-09-19：表情包测试指令（#表情 / #表情 标签）—— 命中就甩一张图，不进对话。
+        if await maybe_handle_sticker_cmd(websocket, message_type, user_id,
+                                          group_id, raw_message):
             return
 
         # 2026-09-18：新用户第一次说话时，先主动打一声招呼再回答。
