@@ -209,16 +209,19 @@ def parse_incoming(data):
       而且**时好时坏**，因为那串机器码对模型本来就只是噪声。
 
     返回 dict：
-      text     她打的字（没打字就是 ""）
+      text     她打的字（没打字就是 ""；QQ 给表情配的**摘要不算她打字**）
       sticker  她是不是甩了表情包（image 且 sub_type=1 / mface / face）
-      photo    她是不是发了张普通照片（image 且 sub_type≠1）
-      pure     纯表情：**一个字都没说，只有图**（C 方案的触发条件）
+      photo    她是不是发了张图（image 且 sub_type≠1）
+      pure     纯表情：**一个字都没说，只发了图**（C 方案的触发条件）
+        ⚠ 2026-09-20 真机结论：她存的图片表情也被 NapCat 标成 sub_type=0 ⇒
+          表情包和照片**分不出来**，且她发的绝大部分就是表情包 ⇒
+          只要是「没说话 + 只有图」就当表情包接，**不再依赖 sub_type**。
       prompt   喂给模型的那段 —— **绝不会是空串，也绝不会是 CQ 码**
       probe    给服务端日志看的段类型摘要（只记类型，绝不打印图片内容）
     """
     segs = data.get("message")
     raw = (data.get("raw_message") or "").strip()
-    texts, kinds = [], []
+    texts, kinds, summaries = [], [], []
 
     if isinstance(segs, list):
         for seg in segs:
@@ -231,8 +234,15 @@ def parse_incoming(data):
                 if v:
                     texts.append(v)
             elif t == "image":
-                # sub_type=1 ⇒ 表情包样式；否则是普通图片（照片）
+                # sub_type=1 ⇒ 表情包样式；否则是普通图片
+                #   ⚠ 2026-09-20 真机：她存的图片表情也被标成 0 ⇒ 别拿它分表情/照片
                 kinds.append("image:1" if str(d.get("sub_type")) == "1" else "image:0")
+                # QQ 会给部分表情自动配文字摘要（如 [在吗]）—— 那是图上的字，不是她打的话
+                s = (d.get("summary") or "").strip()
+                if s:
+                    s = s.strip("[]【】").strip()
+                    if s and s not in ("表情", "动画表情"):
+                        summaries.append(s)
             elif t:
                 kinds.append(t)          # mface / face / record / video / at / reply … 只记类型
     else:
@@ -247,19 +257,23 @@ def parse_incoming(data):
         texts.append(_CQ_RE.sub("", raw).strip())
 
     text = " ".join(x for x in texts if x).strip()
+    cap = " ".join(dict.fromkeys(summaries)).strip()      # 图上的字（去重）
     sticker = any(k in ("mface", "face", "image:1") for k in kinds)
     photo = "image:0" in kinds
 
     if text and sticker:
         prompt = text + "（她还甩了一张表情包）"
     elif text and photo:
-        prompt = text + "（她还发了张照片 —— 我看不见图里是什么，别去猜）"
+        prompt = text + "（她还发了张图 —— 我看不见图里是什么，别去猜）"
     elif text:
         prompt = text
-    elif sticker:
-        prompt = "（她没打字，就甩了一张表情包过来）"
-    elif photo:
-        prompt = "（她没打字，发来一张照片 —— 我看不见图里是什么，别去猜）"
+    elif sticker or photo:
+        # ⭐ 2026-09-20 真机定论：她存的图片表情也被 NapCat 标成 sub_type=0，
+        #   表情包和照片**分不出来**，而她发的绝大部分就是表情包 ⇒ 一律按表情包接。
+        if cap:
+            prompt = "（她没打字，就甩了一张图过来，图上写着「%s」）" % cap
+        else:
+            prompt = "（她没打字，就甩了一张图过来）"
     else:
         prompt = _CQ_RE.sub("", raw).strip() or "（她什么都没说）"
 
@@ -267,7 +281,7 @@ def parse_incoming(data):
         "text": text,
         "sticker": sticker,
         "photo": photo,
-        "pure": (not text) and sticker,
+        "pure": (not text) and bool(sticker or photo),
         "prompt": prompt,
         "probe": "+".join(kinds),
     }
