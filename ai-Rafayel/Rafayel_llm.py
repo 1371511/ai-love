@@ -133,6 +133,57 @@ def comment_opening(user_id: str, post_text: str) -> str:
         return ""
 
 
+def comment_reply(user_id: str, post_text: str, her_comment: str) -> str:
+    """
+    她在他那条说说底下评论了 ⇒ **在空间里回复她那条评论**（事件里带内容，真双向）。
+
+    风格按她拍板的 A 档：1~2 句、不点名、她发纯表情/没头没尾也接。
+    ⚠ 失败一律返回空串 ⇒ 调用方降级（宁可不在空间回，也别发一句不通的）。
+    ⚠ 不写进对话记忆 —— 调用方发出后会走 `record_proactive`。
+    ⚠ system_prompt 禁 `**` 与 ASCII 双引号（锁定口径）。
+    """
+    if not QZONE_CMT_ENABLE:
+        return ""
+    try:
+        if user_id not in _user_managers:
+            _user_managers[user_id] = ConversationManager(system_prompt, user_id=user_id)
+            load_memory(user_id, _user_managers[user_id])
+        cm = _user_managers[user_id]
+
+        hint = (
+            "\n\n【她在你朋友圈那条说说底下评论了】\n"
+            "你那条说说写的是：%s\n"
+            "她评论说：%s\n"
+            "现在你要**回复她这条评论**，写在评论区里，1~2 句，用你一贯的口气。\n"
+            "规矩：不许出现系统、机器人、回复、评论这类后台词；"
+            "不许把她的评论原样念一遍；不许长篇大论；"
+            "她要是没头没尾地来一句，你就顺着自己的说说接，别装作全懂。"
+        ) % ((post_text or "（一条你发过的说说）")[:80],
+             (her_comment or "（一句话）")[:80])
+
+        data = {
+            "model": MODEL,
+            "messages": [
+                {"role": "system", "content": cm.get_full_system_prompt() + hint},
+                {"role": "user", "content": "（回复她这条评论）"},
+            ],
+            "stream": False,
+            "max_tokens": 120,
+            "temperature": TEMPERATURE,
+        }
+        r = requests.post(API_URL,
+                          headers={"Authorization": "Bearer %s" % api_key,
+                                   "Content-Type": "application/json"},
+                          json=data, timeout=30)
+        result = r.json()
+        if "choices" not in result:
+            return ""
+        text = (result["choices"][0]["message"]["content"] or "").strip()
+        return _to_one_line(text)
+    except Exception:
+        return ""
+
+
 def take_opening(user_id: str) -> str:
     """
     取一条开场白 —— **只在这个用户确实是第一次聊天时**才给。

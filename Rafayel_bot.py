@@ -4,6 +4,7 @@ import json
 import os
 import random
 import sys
+import time
 
 import websockets
 
@@ -14,8 +15,8 @@ _CODE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ai-Rafayel
 if _CODE_DIR not in sys.path:
     sys.path.insert(0, _CODE_DIR)
 
-from Rafayel_chat import (comment_opening, get_reply, recent_context,
-                         record_proactive, take_opening)
+from Rafayel_chat import (comment_opening, comment_reply, get_reply,
+                         recent_context, record_proactive, take_opening)
 from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
@@ -25,17 +26,20 @@ from Rafayel_config import (
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
     QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
-    QZONE_CMT_MAX_PER_DAY, QZONE_CMT_POLL_SECONDS, QZONE_SELF_UIN,
+    QZONE_CMT_EVENT_WS, QZONE_CMT_HOUR_END, QZONE_CMT_HOUR_START,
+    QZONE_CMT_MAX_PER_DAY, QZONE_CMT_POLL_SECONDS, QZONE_CMT_REPLY_ENABLE,
+    QZONE_SELF_UIN,
 )
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
                              split_segments)
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
-from Rafayel_qzone_comment import (mark_done, note_posted, scan_new_comments,
-                                   take_ready)
-from Rafayel_qzone_comment import (mark_done, note_posted, scan_new_comments,
-                                   take_ready)
+from Rafayel_qzone_comment import (already_replied, clean_comment,
+                                   fetch_feeds, is_known_user, mark_done,
+                                   mark_replied, note_posted, refresh_baseline,
+                                   remembered_tid_content, remember_tids,
+                                   scan_new_comments, send_comment, take_ready)
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
@@ -389,12 +393,6 @@ async def process_napcat_message(data, websocket):
         if _self.isdigit() and not globals().get("SELF_UIN"):
             globals()["SELF_UIN"] = _self
 
-        # 2026-09-20：记住他自己的 QQ 号（拉自己的空间要用）。
-        #   配置里没写死就从 NapCat 事件里的 self_id 取 —— 省得她手填。
-        _self = str(data.get("self_id") or "").strip()
-        if _self.isdigit() and not globals().get("SELF_UIN"):
-            globals()["SELF_UIN"] = _self
-
         # 2026-09-20：她发来的常常**不是文字**（表情包 / 照片 / 商城表情）。
         #   raw_message 那时只是一串 CQ 码（甚至空串），直接喂给模型 ⇒
         #   它有时猜得出「她发了张图」就回一句，有时觉得无从接话就回空
@@ -635,6 +633,12 @@ async def auto_comment_scan():
         print("[💬] 她在说说下留话 ⇒ 他去找 %s：%s" % (uid, line[:40]))
 
     # ② 比对评论数，排新的
+    #   ⭐ 顺便把「当次解析」的 tid→正文 记下来：事件流里的 post_tid 靠它认正文
+    #      （tid 每次解析都变，只在本批次内有效 —— 见 Rafayel_qzone_comment 文件头）
+    posts, ferr = fetch_feeds(uin)
+    if not ferr:
+        remember_tids([(p["tid"], p["content"])
+                       for p in posts if p.get("tid")])
     added, logs = scan_new_comments(uin)
     for line in logs:
         print("[💬] %s" % line)
@@ -649,49 +653,118 @@ async def auto_comment_loop():
             print("[⚠️] 评论扫描出错：%s" % e)
 
 
-async def auto_comment_scan():
-    """
-    扫一遍：谁的评论数涨了 ⇒ 他知道她在他那条说说底下留了话 ⇒ 过几分钟跑来私聊找她。
+def _bridge_ws_connect(url):
+    """兼容各版 websockets：优先 asyncio 客户端，退回老接口。"""
+    import websockets as _w
+    fn = getattr(_w, "connect", None)
+    if fn is None:
+        import websockets.asyncio.client as _c
+        fn = _c.connect
+    return fn(url)
 
-    ⚠ 为什么是「私聊」不是「在空间回复」：这台服务器上**评论内容读不到**
-      （详情 1502、列表只有 cmtnum、tid 还会漂）⇒ 只知道「她留了话」，不知道写了什么。
-      ⇒ 那就让她在私聊里说，他接得住 —— 真人也常这么跑来问一句。
-    ⚠ NapCat 没连上就什么都不做（跟打招呼、发说说同一个口径）。
+
+async def comment_event_loop():
     """
-    if not QZONE_CMT_ENABLE or not connected_clients:
+    订阅 qzone-bridge 的评论事件 ⇒ **在空间里直接回复她那条评论**（真双向）。
+
+    2026-09-20 深夜真机实测：bridge 的 WS 事件流里**带评论内容**
+      {"post_type":"notice", "notice_type":"qzone_comment",
+       "user_id":她的QQ, "comment_content":"…什么巧合？", "post_tid":"…"}
+    而 REST 那边读不到内容（tid 会漂 + 详情 1502 + 列表只有 cmtnum）
+      ⇒ 这条是**主路**；计数轮询（auto_comment_scan）降级为兜底。
+
+    ⚠ 每条事件**另起一个 task**：回复要隔几分钟，不能把事件流堵住。
+    ⚠ 断线自动重连；一切异常吞掉 —— 她不能察觉这一路的存在。
+    """
+    if not (QZONE_CMT_ENABLE and QZONE_CMT_REPLY_ENABLE):
         return
-    uin = QZONE_SELF_UIN or globals().get("SELF_UIN")
-    if not uin:
-        return          # 还不知道自己是谁，等下一条消息带 self_id 过来
-
-    ws = next(iter(connected_clients))
-
-    # ① 到点的：真的去找她
-    for item in take_ready():
-        uid = str(item.get("uid") or "")
-        if not uid.isdigit():
-            continue
-        line = comment_opening(uid, item.get("content") or "")
-        if not line:
-            continue          # 模型没写出来 ⇒ 这次就算了，别硬发一句不通的
-        await send_text(ws, "private", uid, None, line)
-        record_proactive(uid, line)     # ⭐ 主动说的话必须进记忆，否则她接不住
-        mark_done()
-        print("[💬] 她在说说下留话 ⇒ 他去找 %s：%s" % (uid, line[:40]))
-
-    # ② 比对评论数，排新的
-    added, logs = scan_new_comments(uin)
-    for line in logs:
-        print("[💬] %s" % line)
-
-
-async def auto_comment_loop():
     while True:
-        await asyncio.sleep(QZONE_CMT_POLL_SECONDS)
         try:
-            await auto_comment_scan()
+            async with _bridge_ws_connect(QZONE_CMT_EVENT_WS) as ev_ws:
+                print("[💬] 评论事件流已连上：%s" % QZONE_CMT_EVENT_WS)
+                async for raw in ev_ws:
+                    try:
+                        ev = json.loads(raw)
+                    except Exception:
+                        continue
+                    asyncio.create_task(handle_qzone_comment_event(ev))
         except Exception as e:
-            print("[⚠️] 评论扫描出错：%s" % e)
+            print("[💬] 评论事件流断开（%s），1 分钟后重连" % e)
+            await asyncio.sleep(60)
+
+
+async def handle_qzone_comment_event(ev):
+    """一条评论事件 ⇒ 认人 → 隔几分钟 → 生成回复 → 写回空间（失败降级私聊）。"""
+    try:
+        if not isinstance(ev, dict):
+            return
+        if ev.get("post_type") != "notice" or ev.get("notice_type") != "qzone_comment":
+            return
+
+        uid = str(ev.get("user_id") or "")
+        post_tid = str(ev.get("post_tid") or "")
+        her = clean_comment(ev.get("comment_content") or "")
+        # ⚠ bridge 不一定给 comment_id ⇒ 用「谁+哪条+写了啥」拼一个指纹兜底去重
+        cid = str(ev.get("comment_id") or "") or "%s|%s|%s" % (uid, post_tid[:10], her[:24])
+
+        if not uid.isdigit() or not her:
+            return                    # 认不出是谁 / 纯符号评论
+        if already_replied(cid):
+            return                    # 这条回过了
+        if not is_known_user(uid):
+            return                    # 陌生人（说说只她可见，正常不会有）
+
+        uin = str(QZONE_SELF_UIN or globals().get("SELF_UIN") or ev.get("post_uin") or "")
+
+        # ⭐ 立刻拉一次列表刷新 tid→正文：事件里的 post_tid 是「bridge 那次解析」的 tid，
+        #   只有**同一批次**才对得上 ⇒ 趁热刷，比用几小时前那张表命中率高得多。
+        fresh, ferr = await asyncio.to_thread(fetch_feeds, uin) if uin else ([], "no uin")
+        if not ferr:
+            remember_tids([(p["tid"], p["content"]) for p in fresh if p.get("tid")])
+        tids = remembered_tid_content()
+        post_text = tids.get(post_tid) or (list(tids.values())[0] if tids else "")
+
+        # 隔几分钟再回（秒回太假）；深夜就等天亮 —— 他睡着了，明早才看见
+        wait = random.randint(QZONE_CMT_DELAY_MIN * 60, QZONE_CMT_DELAY_MAX * 60)
+        now = time.localtime()
+        if not (QZONE_CMT_HOUR_START <= now.tm_hour < QZONE_CMT_HOUR_END):
+            wait += _seconds_until_hour(QZONE_CMT_HOUR_START)
+        print("[💬] %s 在说说下评论：%s（%d 秒后回）" % (uid, her[:20], wait))
+        await asyncio.sleep(wait)
+
+        if already_replied(cid):
+            return                    # 等的这几分钟里别处已经回了
+        reply = comment_reply(uid, post_text, her)
+        if not reply:
+            return                    # 模型没写出来 ⇒ 不硬回
+
+        ok, why = await asyncio.to_thread(send_comment, uin, post_tid, reply)
+        if ok:
+            mark_replied(cid)
+            record_proactive(uid, reply)      # ⭐ 绕开 get_reply 发的话都要进记忆
+            refresh_baseline(uin)             # ⭐ 刷基线，计数轮询才不会重复找她
+            print("[💬] 已在空间回复 %s 的评论：%s" % (uid, reply[:40]))
+        else:
+            # 写回空间失败 ⇒ 降级：私聊去找她（她留了话，他接得住）
+            print("[💬] 空间回复失败（%s）⇒ 降级私聊" % why)
+            line = comment_opening(uid, post_text)
+            if line and connected_clients:
+                ws = next(iter(connected_clients))
+                await send_text(ws, "private", uid, None, line)
+                record_proactive(uid, line)
+                refresh_baseline(uin)     # ⭐ 同样刷基线：这条已经处理过了，轮询别再来一遍
+    except Exception as e:
+        print("[⚠️] 评论事件处理出错：%s" % e)
+
+
+def _seconds_until_hour(hour):
+    """现在离下一个 hour 点还有几秒（给「等天亮再回」用）。"""
+    now = time.localtime()
+    target = time.mktime((now.tm_year, now.tm_mon, now.tm_mday,
+                          hour, 0, 0, now.tm_wday, now.tm_yday, now.tm_isdst))
+    if target <= time.mktime(now):
+        target += 86400
+    return int(target - time.mktime(now))
 
 
 async def main():
@@ -719,13 +792,12 @@ async def main():
                 print("🎂 生日专项已开启：祁煜生日 %s 发（%d 篇）；她的生日抓到画像 birthday 才发"
                       % (QZONE_BDAY_RAFAYEL, len(bday_pool("rafayel"))))
         if QZONE_CMT_ENABLE:
+            if QZONE_CMT_REPLY_ENABLE:
+                asyncio.create_task(comment_event_loop())
+                print("💬 她评论说说 ⇒ 他隔 %s~%s 分钟在空间回她那条（深夜等天亮；写不进去就私聊找她）"
+                      % (QZONE_CMT_DELAY_MIN, QZONE_CMT_DELAY_MAX))
             asyncio.create_task(auto_comment_loop())
-            print("💬 她在他朋友圈留话 ⇒ 他会来找她（每 %s 秒查一次评论数，隔 %s~%s 分钟才开口，每天最多 %s 次）"
-                  % (QZONE_CMT_POLL_SECONDS, QZONE_CMT_DELAY_MIN,
-                     QZONE_CMT_DELAY_MAX, QZONE_CMT_MAX_PER_DAY))
-        if QZONE_CMT_ENABLE:
-            asyncio.create_task(auto_comment_loop())
-            print("💬 她在他朋友圈留话 ⇒ 他会来找她（每 %s 秒查一次评论数，隔 %s~%s 分钟才开口，每天最多 %s 次）"
+            print("💬 兜底：评论数涨了也会去找她（每 %s 秒查一次，隔 %s~%s 分钟，每天最多 %s 次）"
                   % (QZONE_CMT_POLL_SECONDS, QZONE_CMT_DELAY_MIN,
                      QZONE_CMT_DELAY_MAX, QZONE_CMT_MAX_PER_DAY))
         if QZONE_CMD_PREFIX:

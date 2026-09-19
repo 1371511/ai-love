@@ -254,6 +254,11 @@ QZONE_BDAY_RAFAYEL = "03-06"    # 祁煜生日（MM-DD，人设 3.6）
 # 退一步：用「评论条数涨了」当信号，他不知道她写了什么，但知道她留了话 ⇒
 # 跑来私聊问，她回什么他接什么。**真人也常这么干**，比 AI 味的楼层回复自然。
 QZONE_CMT_ENABLE = True
+# ⭐ 事件订阅（2026-09-20 深夜实测）：bridge 的 WS 事件流里**带评论内容**（qzone_comment 通知，
+#   含 user_id / comment_content / post_tid）⇒ 真·双向：他直接在空间回复她那条评论。
+#   REST 那边读不到内容（tid 会漂 + 评论区不嵌），只有计数 ⇒ 计数轮询留作**降级**。
+QZONE_CMT_REPLY_ENABLE = True
+QZONE_CMT_EVENT_WS = "ws://127.0.0.1:5700/event"   # bridge 的 WS 事件流
 QZONE_CMT_POLL_SECONDS = 900    # 多久查一次评论数（跟说说/打招呼同思路，各一个 task）
 QZONE_CMT_DELAY_MIN = 3         # 发现她留话之后，隔几分钟才来找她（秒回太假）
 QZONE_CMT_DELAY_MAX = 10

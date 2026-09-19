@@ -148,6 +148,8 @@ def fetch_feeds(uin, num=None):
                     "key": text_key(content),
                     "content": content,
                     "cmtnum": int(o.get("cmtnum") or 0),
+                    # ⚠ tid 每次解析都变，只用于「当次解析批次内」对事件（见文件头）
+                    "tid": str(o.get("tid") or ""),
                 })
             for v in o.values():
                 walk(v)
@@ -283,3 +285,97 @@ def mark_done(now=None):
         st["today"] = 0
     st["today"] = int(st.get("today", 0)) + 1
     save_state(st)
+
+
+# ============================================================
+#  ⭐ 事件订阅（2026-09-20 深夜实测：WS 事件里带评论内容！）
+# ============================================================
+# bridge 的事件形状（真机抓到的）：
+#   {"post_type":"notice", "notice_type":"qzone_comment",
+#    "user_id":<她的QQ>, "sender_name":<昵称>, "comment_id":"2",
+#    "comment_content":"\\t\\t…什么巧合？ \\t\\t…",   ← 一堆制表符，要清洗
+#    "post_uin":<他的QQ>, "post_tid":"873aeeda…"}      ← tid 仍是那一次解析的，会漂
+
+def clean_comment(text):
+    """评论正文清洗：掐掉 HTML 带的一堆制表符/换行/首尾空白。"""
+    s = (text or "").replace("\\t", " ").replace("\\n", " ")
+    s = s.replace("\t", " ").replace("\n", " ").replace("\r", " ")
+    return " ".join(s.split()).strip()
+
+
+def is_known_user(user_id):
+    """评论者是不是我们认识的（私聊过的）用户 —— 陌生人不理。"""
+    p = os.path.join(MEMORY_DIR, "%s.json" % str(user_id))
+    return os.path.isfile(p)
+
+
+def remembered_tid_content():
+    """最近一次拉列表时记下的 tid → 正文（事件里的 post_tid 就拿它来认正文）。"""
+    st = load_state()
+    return st.get("tids") or {}
+
+
+def remember_tids(pairs):
+    """拉完列表把 tid→正文 存起来（⭐ 只存**最近一次**的解析结果，旧的覆盖掉）。"""
+    st = load_state()
+    st["tids"] = dict(pairs)
+    save_state(st)
+
+
+def mark_replied(comment_id):
+    """这条评论已经回过了 ⇒ 记下来，别回第二次。"""
+    if not comment_id:
+        return
+    st = load_state()
+    ids = list(st.get("replied") or [])
+    cid = str(comment_id)
+    if cid not in ids:
+        ids.append(cid)
+    st["replied"] = ids[-50:]             # 只留最近 50 条，别无限涨
+    save_state(st)
+
+
+def already_replied(comment_id):
+    return str(comment_id) in (load_state().get("replied") or [])
+
+
+def refresh_baseline(uin):
+    """
+    事件路径回复成功后把计数基线刷一遍 ——
+    ⚠ 否则计数轮询（A 方案那条路）看到 cmtnum 涨了会**重复触发**（他又私聊来问一遍）。
+    """
+    posts, err = fetch_feeds(uin)
+    if err:
+        return
+    st = load_state()
+    counts = st.get("counts") or {}
+    tids = {}
+    for p in posts:
+        counts[p["key"]] = p["cmtnum"]
+        if p.get("tid"):
+            tids[p["tid"]] = p["content"]
+    st["counts"] = counts
+    if tids:
+        st["tids"] = tids
+    save_state(st)
+
+
+def send_comment(target_uin, target_tid, content):
+    """
+    在空间里回复她那条评论（走 bridge 的 `send_comment`）。
+    返回 (True, "") 或 (False, 原因) —— 失败一律静默降级，不抛异常。
+    """
+    try:
+        r = requests.post(
+            QZONE_BRIDGE_URL.rstrip("/") + "/send_comment",
+            json={"target_uin": str(target_uin),
+                  "target_tid": str(target_tid),
+                  "content": content},
+            timeout=QZONE_BRIDGE_TIMEOUT,
+        )
+        d = r.json()
+    except Exception as e:
+        return False, "bridge 请求失败：%s" % e
+    if d.get("status") == "failed" or (d.get("retcode") not in (0, None)):
+        return False, "bridge 返回失败：%s" % (d.get("message") or d)
+    return True, ""
