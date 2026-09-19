@@ -21,8 +21,10 @@ from Rafayel_config import (
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT, QZONE_TEST_TEXT,
+    STICKER_SUB_TYPE,
 )
 from Rafayel_greet import try_greet
+from Rafayel_sticker import plain_text, split_segments
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
@@ -36,22 +38,60 @@ def your_ai_lover_response(user_message: str, user_id: str) -> str:
     return get_reply(user_message, user_id)
 
 
+def build_message(text):
+    """
+    把他的回复翻译成 OneBot 的 message 字段。
+
+    返回两种形状（OneBot v11 都认）：
+      · **纯文字** ⇒ 直接返回 str（跟以前一模一样，所有老调用方无感）
+      · **带表情** ⇒ 消息段数组 `[{"type":"text"…}, {"type":"image"…}]`
+
+    ⭐ **纯表情形态**：语料里 6 成以上他是不说话、只甩一张图的 ⇒
+       segments 里只有 image 段，这里原样返回 —— 她收到的就是一张图。
+    ⚠ **任何情况下都不许把 `[表情:xxx]` 原样发出去**：标签没命中 / 图缺了 /
+       功能关了，一律走 `plain_text` 把标记剥掉（她会真的看见那六个字）。
+    ⚠ `sub_type` = 贴图样式（`STICKER_SUB_TYPE`），不放大图；待真机实测确认。
+    """
+    segments, dropped = split_segments(text)
+    if dropped:
+        print("[🖼️] %d 个表情标签没匹配到图，已丢掉（不会原样发出去）" % dropped)
+
+    imgs = [v for k, v in segments if k == "image"]
+    if not imgs:
+        return plain_text(text)
+
+    out = []
+    for kind, val in segments:
+        if kind == "text":
+            out.append({"type": "text", "data": {"text": val}})
+        else:
+            out.append({"type": "image",
+                        "data": {"file": val, "sub_type": STICKER_SUB_TYPE}})
+    return out
+
+
 async def send_text(websocket, message_type, user_id, group_id, text):
     """按 OneBot v11 协议发一条消息（私聊 / 群聊）"""
+    message = build_message(text)
     if message_type == "private":
         response = {
             "action": "send_private_msg",
-            "params": {"user_id": int(user_id), "message": text}
+            "params": {"user_id": int(user_id), "message": message}
         }
     elif message_type == "group":
         response = {
             "action": "send_group_msg",
-            "params": {"group_id": group_id, "message": text}
+            "params": {"group_id": group_id, "message": message}
         }
     else:
         return
     await websocket.send(json.dumps(response))
-    print(f"[💬] 已回复: {text[:50]}...")
+    if isinstance(message, list):
+        kinds = "+".join(seg["type"] for seg in message)
+        preview = " ".join((seg["data"].get("text") or "[图]") for seg in message)
+        print(f"[💬] 已回复({kinds}): {preview[:50]}...")
+    else:
+        print(f"[💬] 已回复: {message[:50]}...")
 
 
 # ============================================

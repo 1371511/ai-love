@@ -34,6 +34,7 @@ from Rafayel_config import (
     api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
+from Rafayel_sticker import sticker_instructions
 from Rafayel_worldbook import get_worldbook
 
 
@@ -174,6 +175,15 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
     #    memory\*.json，每轮累积一份，越滚越大。
     if CARD_POST_HISTORY:
         request_messages.append({"role": "system", "content": CARD_POST_HISTORY})
+
+    # 4c. 表情包说明（2026-09-19 接进来）：让模型**知道**自己有涂鸦叽可以用、
+    #     以及「只想表态时可以只甩一张图、不说话」这条形态规矩。
+    #     ⚠ 与上面两节同一个口径：只进 request_messages，绝不写回 cm.messages
+    #       —— 否则会被 save_memory 落盘，每轮累积一份（跟世界书那个坑一模一样）。
+    #     ⚠ 标签表是从 card/stickers.md 现读的 ⇒ 加图只改 md，不用改代码。
+    _sticker = sticker_instructions()
+    if _sticker:
+        request_messages.append({"role": "system", "content": _sticker})
 
     # 5. 调用 DeepSeek API
     headers = {
