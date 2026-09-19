@@ -18,10 +18,57 @@ import time
 import requests
 
 from Rafayel_config import (
-    API_URL, MAX_FACTS, MAX_HISTORY_TURNS, MEMORY_DIR, MODEL,
-    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
+    API_URL, AUTO_GREET_TZ_OFFSET, MAX_FACTS, MAX_HISTORY_TURNS, MEMORY_DIR,
+    MODEL, NOW_GAP_HOURS, NOW_PROMPT, SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
 from Rafayel_profile import UserProfile
+
+# ============================================================
+#  🕐 当前时间（2026-09-19）
+# ============================================================
+# ⚠ 这条链上**只该有一个「现在几点」** —— 打招呼 / 发朋友圈 / 对话注入全用
+#   `AUTO_GREET_TZ_OFFSET` 换算，别再自己新开一个偏移（换服务器时只改一处）。
+_WEEKDAYS_CN = ("星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日")
+
+
+def _now_bj():
+    """按 `AUTO_GREET_TZ_OFFSET` 换算后的「现在」（北京时间）。"""
+    return time.localtime(time.time() + AUTO_GREET_TZ_OFFSET * 3600)
+
+
+def now_prompt_text(gap_hours=None):
+    """
+    拼「## 🕐 现在」那一段；`NOW_PROMPT` 关掉就返回空串。
+
+    ⚠ 两件必须说清的事（都是她实测踩出来的）：
+      ① **照实说**：模型没时间感知，不注入就会瞎编钟点 ⇒ 明确写「她问就照实说」。
+      ② **隔了多久**：她睡一觉回来，模型看到的历史是**连续的**，
+         不点明「隔了一整夜」它就会接着上次的动作演（睡前洗虾、睡醒还在洗）。
+    ⚠ system_prompt 禁 `**` 与 ASCII 双引号 ⇒ 这段一律用「」或不用引号。
+    """
+    if not NOW_PROMPT:
+        return ""
+    n = _now_bj()
+    lines = ["## 🕐 现在（北京时间）",
+             "%d年%d月%d日 %s %02d:%02d" % (n.tm_year, n.tm_mon, n.tm_mday,
+                                            _WEEKDAYS_CN[n.tm_wday], n.tm_hour, n.tm_min)]
+
+    if gap_hours is not None and gap_hours >= NOW_GAP_HOURS:
+        if gap_hours >= 24:
+            when = "约 %d 天前" % int(round(gap_hours / 24.0))
+        else:
+            when = "约 %d 小时前" % int(round(gap_hours))
+        # ⚠ 这半句是重点：光给数字模型未必会用，得把它翻译成**演戏的指令**。
+        #   （「睡醒了他还在洗虾」就是少了这句 —— 它不知道上一回合已经结束了。）
+        # ⚠ system_prompt 禁 `**` ⇒ 强调只能靠措辞，别用星号。
+        if gap_hours >= 8:
+            hint = "—— 隔了这么久，那是上一回事了，别接着上次的动作继续演。"
+        else:
+            hint = "—— 中间过了好一阵，别接成像刚聊到一半。"
+        lines.append("她上一条消息是%s %s" % (when, hint))
+
+    lines.append("（这是真实时间。她问就照实说，别自己编一个钟点。）")
+    return "\n".join(lines)
 
 
 # ============================================================
@@ -37,6 +84,8 @@ def save_memory(user_id: str, cm):
         "key_facts": cm.key_facts,
         "turn_count": cm.turn_count,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        # 🕐 她最后一条消息的时间戳（用于重启后第一条也算得出「隔了多久」）
+        "last_msg_at": cm.last_msg_at,
     }
     path = os.path.join(MEMORY_DIR, f"{user_id}.json")
     tmp = path + ".tmp"
@@ -57,6 +106,17 @@ def load_memory(user_id: str, cm) -> bool:
         cm.long_term_summary = data.get("long_term_summary", cm.long_term_summary)
         cm.key_facts = data.get("key_facts", [])
         cm.turn_count = data.get("turn_count", 0)
+        # 🕐 读回「她最后一条消息」的时间戳。
+        #    老文件没有 `last_msg_at` ⇒ 退回 `saved_at`（那是上次**存盘**的时刻，
+        #    比她真正说话晚一轮回复，够用）；都读不到就 None ⇒ 这一轮不显示间隔。
+        stamp = data.get("last_msg_at")
+        if stamp is None:
+            saved = data.get("saved_at")
+            try:
+                stamp = time.mktime(time.strptime(saved, "%Y-%m-%d %H:%M:%S"))
+            except Exception:
+                stamp = None
+        cm.last_msg_at = stamp
         return True
     except Exception as e:
         print(f"⚠️ 读取记忆失败（{user_id}）：{e}，将从头开始")
@@ -83,6 +143,15 @@ class ConversationManager:
         self.last_finish_reason = None
         self.last_usage = None
 
+        # 🕐 她**上一条消息**的时间戳（epoch 秒）—— 用来算「隔了多久」。
+        #    ⚠ 只由 `add_user_message` 推进：发说说/打招呼那些**他说的话**不算她开口，
+        #      否则他刚提醒过一句，下次就变成「隔了 0 小时」，间隔提示永远不出现。
+        self.last_msg_at = None
+        # ⚠ `gap_hours` 是**快照**（收她这条消息那一刻算的），不是实时算：
+        #    `get_reply` 的顺序是先 add_user_message 再 update_system_message，
+        #    等拼 system 时 `last_msg_at` 已经被推进到「现在」了 ⇒ 实时算永远是 0。
+        self.gap_hours = None
+
         # 用户画像：独立文件，从对话里慢慢积累
         self.profile = UserProfile(user_id)
 
@@ -104,7 +173,25 @@ class ConversationManager:
             facts_text = "\n".join([f"- {f}" for f in self.key_facts[-MAX_FACTS:]])
             full_prompt += f"\n\n## 📌 关键事实（用户让你记住的事）\n{facts_text}"
 
+        # 🕐 追加「现在几点 + 隔了多久」—— 放在**最后**：system 里越靠后越受关注。
+        #    ⚠ 这段每轮重算（system 是每轮重算的），所以写进 messages[0] 也没关系，
+        #      落盘那份是上一轮的快照，下次 `_now_bj()` 一算就覆盖掉了。
+        now_text = now_prompt_text(self.gap_hours)
+        if now_text:
+            full_prompt += "\n\n" + now_text
+
         return full_prompt
+
+    def _compute_gap_hours(self):
+        """
+        距她上一条消息过了多少小时；没有基准（第一次聊 / 记录缺失）返回 None。
+        """
+        if not self.last_msg_at:
+            return None
+        try:
+            return (time.time() - float(self.last_msg_at)) / 3600.0
+        except (TypeError, ValueError):
+            return None
 
     def update_system_message(self):
         """更新 messages 中的 system 消息"""
@@ -112,6 +199,10 @@ class ConversationManager:
 
     def add_user_message(self, content):
         """添加用户消息"""
+        # 🕐 先算「隔了多久」再推进时间戳 —— 顺序反了就永远算成 0。
+        self.gap_hours = self._compute_gap_hours()
+        self.last_msg_at = time.time()
+
         self.messages.append({"role": "user", "content": content})
         self.turn_count += 1
         self.pending_summary.append({"role": "user", "content": content})
