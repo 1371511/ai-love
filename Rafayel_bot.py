@@ -41,7 +41,7 @@ from Rafayel_qzone_comment import (already_replied, clean_comment,
                                    remembered_tid_content, remember_tids,
                                    scan_new_comments, send_comment, take_ready)
 from Rafayel_qzone_auto import (
-    bday_due, bday_pool, has_record, image_paths, mark_bday_sent, mark_posted,
+    bday_due, bday_pool, has_schedule, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
 )
 
@@ -570,9 +570,10 @@ async def auto_qzone_scan():
         # 🎂 生日专项（独立排期，不占每天名额、不推进 next_at）
         kind, bentry, bnote = bday_due(uid)
         if bentry:
-            # 新用户**第一天**就撞上生日：普通记录还没建 ⇒ 先建好，
+            # 新用户**第一天**就撞上生日：普通排期还没排 ⇒ 先排好，
             # 否则「第一条最早第二天」会失效（next_at 空 ⇒ 下次扫描立刻发普通那条）。
-            if not has_record(uid):
+            # ⚠ 用 `has_schedule` 不是 `has_record`：空记录（旁路建的）也得重新排。
+            if not has_schedule(uid):
                 should_post(uid)
             await _send_one_qzone(ws, uid, bentry, bday=kind)
             continue

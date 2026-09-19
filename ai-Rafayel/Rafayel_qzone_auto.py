@@ -122,7 +122,29 @@ def _blank_record():
 
 
 def has_record(user_id):
+    """记录文件在不在。
+
+    ⚠ **别拿它单独判「是不是老用户」** —— 见 `has_schedule`：文件可能被旁路凭空建出来。
+    """
     return os.path.exists(_record_path(user_id))
+
+
+def has_schedule(user_id):
+    """
+    这个人**排期已经初始化过了**吗（= 真正的老用户）。
+
+    ⭐ 为什么不能只看文件在不在（2026-09-20 修的边角 bug）：
+      `reminder_text()` 这类旁路会 `save_record` 出一个**空记录**（她测 `#发说说` 就会建）。
+      空记录的 `next_at` 是空串 ⇒ 排期闸 ④ 里 `_valid_stamp("")` 为假 ⇒ 闸不拦
+      ⇒ 她被当成老用户 ⇒ **当天 8 点后立刻收到一条自动说说**，
+      「第一条最早第二天」这条规矩当场破功。
+
+    ⇒ 判据必须是「排期字段真的写过了」：`next_at` 合法，或真的发过（`last` 非空）。
+    """
+    if not has_record(user_id):
+        return False
+    rec = load_record(user_id)
+    return _valid_stamp((rec.get("next_at") or "").strip()) or bool(rec.get("last"))
 
 
 def load_record(user_id):
@@ -233,12 +255,14 @@ def should_post(user_id, now=None):
 
     now = now or _now_bj()
 
-    # ① 新用户：先初始化排期，今天不发
-    if not has_record(user_id):
-        rec = _blank_record()
+    # ① 新用户（或**只有空记录**的人）：先初始化排期，今天不发
+    #    ⚠ 用 `has_schedule` 不是 `has_record`：空记录也算新用户，重新排到明天。
+    #    ⚠ 用 `load_record` 不是 `_blank_record`：文件可能已经存在（旁路建的），别把已有字段冲掉。
+    if not has_schedule(user_id):
+        rec = load_record(user_id)
         rec["next_at"] = _first_at_text(now)
         save_record(user_id, rec)
-        return False, "新用户首次扫到 —— 只初始化排期（第一条最早 %s）" % rec["next_at"]
+        return False, "首次排期 —— 只初始化（第一条最早 %s）" % rec["next_at"]
 
     # ② 时段
     hour = now.tm_hour
@@ -656,8 +680,13 @@ def reminder_text(user_id, record=None):
     fresh = [l for l in lines if l not in recent]
     raw = random.choice(fresh or lines)
 
-    recent.append(raw)
-    rec["remind_recent"] = recent[-4:]
-    save_record(user_id, rec)
+    # ⭐ 只在这份排期记录**本来就存在**时才记账（2026-09-20 修）：
+    #   手动测试（`#发说说`）也会走到这里，凭空 `save_record` 会造出空记录
+    #   ⇒ 她被当成老用户 ⇒ 当天就发（破坏「第一条最早第二天」）。详见 `has_schedule`。
+    #   没有排期记录 = 还没开始自动发 ⇒ 也就没有「轮换避重」的账要记。
+    if record is not None or has_record(user_id):
+        recent.append(raw)
+        rec["remind_recent"] = recent[-4:]
+        save_record(user_id, rec)
 
     return raw.replace("她的名字", display_name(user_id))
