@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import sys
+import time
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -39,6 +40,49 @@ def _load_users():
         return {}
     with open(USERS_PATH, encoding="utf-8") as f:
         return json.load(f)
+
+
+def _save_users(users):
+    """写 `web/users.json`（**不是** bot 的 memory —— 那份只读）。先写临时文件再替换。"""
+    tmp = USERS_PATH + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(users, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, USERS_PATH)
+
+
+def _mask_uid(uid):
+    """QQ 号脱敏：135*****18 —— 截图发出去也不至于泄露全号。"""
+    uid = str(uid or "")
+    if len(uid) <= 4:
+        return uid
+    return uid[:3] + "*" * (len(uid) - 5) + uid[-2:]
+
+
+# ---------------------------------------------------------------- 登录限流
+# ⚠ 统一默认密码（qiyu2026）+ 公网直开 ⇒ 光靠密码挡不住「拿 QQ 号一个个试」，
+#    这里按 IP 挡：窗口内错够次数就锁十分钟。进程内计数（重启清零，够用）。
+_LOGIN_FAILS = {}
+LOGIN_FAIL_LIMIT = 5        # 窗口内最多错几次
+LOGIN_FAIL_WINDOW = 60      # 窗口（秒）
+LOGIN_LOCK_SECONDS = 600    # 超了锁多久
+
+
+def _login_blocked(ip):
+    """被锁 ⇒ 返回还要等多少秒；没锁 ⇒ 0。"""
+    now = time.time()
+    arr = [t for t in _LOGIN_FAILS.get(ip, []) if now - t < LOGIN_FAIL_WINDOW]
+    _LOGIN_FAILS[ip] = arr
+    if len(arr) >= LOGIN_FAIL_LIMIT:
+        return max(1, int(LOGIN_LOCK_SECONDS - (now - arr[0])))
+    return 0
+
+
+def _login_note_fail(ip):
+    _LOGIN_FAILS.setdefault(ip, []).append(time.time())
+
+
+def _login_clear(ip):
+    _LOGIN_FAILS.pop(ip, None)
 
 
 def _sign(uid):
@@ -105,12 +149,20 @@ async def login_page(request: Request, err: str = ""):
 
 
 @app.post("/login")
-async def login(uid: str = Form(""), pwd: str = Form("")):
+async def login(request: Request, uid: str = Form(""), pwd: str = Form("")):
+    ip = request.client.host if request.client else "?"
+    left = _login_blocked(ip)
+    if left:
+        return RedirectResponse("/?err=" + "试太多次了，%d 秒后再试" % left, status_code=303)
+
     uid = (uid or "").strip()
     users = _load_users()
     rec = users.get(uid)
     if not rec or not hmac.compare_digest(rec.get("pwd", ""), _hash(pwd or "")):
+        _login_note_fail(ip)
         return RedirectResponse("/?err=" + "账号或密码不对", status_code=303)
+
+    _login_clear(ip)
     resp = RedirectResponse("/me", status_code=303)
     resp.set_cookie("rafael_uid", "%s.%s" % (uid, _sign(uid)), httponly=True, samesite="lax")
     return resp
@@ -129,6 +181,9 @@ async def me(request: Request):
     if not uid:
         return RedirectResponse("/")
     a = compute(uid, MEMORY_DIR)
+    # 显示名：网页自己存的优先，没有就用他记住的称呼（画像 name，来自 memory，只读）
+    rec = (_load_users().get(uid) or {})
+    shown_name = (rec.get("display_name") or "").strip() or a["name"]
 
     # 距离「下一级」的进度（用官方累计分表，不是拍脑袋的分档）
     pct = 0
@@ -197,16 +252,93 @@ async def me(request: Request):
     <div class="card"><h2>他记住的你</h2>%s</div>
     <div class="card"><h2>最近聊过</h2>%s</div>
     <div class="card"><h2>他说的那句话</h2>%s</div>
-    <p style="text-align:center"><a href="/logout" class="hint">退出</a></p>
-    """ % (a["name"] or "你",
+    <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
+    """ % (shown_name or "你",
            ("最近活跃 %s" % a["last_active"]) if a["last_active"] else "还没聊过",
-           (a["name"] or "?")[:2],
+           (shown_name or "?")[:2],
            missing,
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
            a["tier"], tier_n, tier_size, tier_pct,
            a["turns"], a["she_initiated"], a["streak"],
            chips, topics, ms)
     return _page(body)
+
+
+@app.get("/settings", response_class=HTMLResponse)
+async def settings_page(request: Request, ok: str = "", err: str = ""):
+    """
+    ⭐ 个人信息页（2026-09-21 她提的：没有改密码的地方）。
+
+    只写 `web/users.json` —— **绝不碰 bot 的 memory**（那份只读，写坏他人设就崩）。
+    ⇒ 所以「他怎么叫她」不在这里改，那得在 QQ 里跟他说。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    rec = (_load_users().get(uid) or {})
+    name = (rec.get("display_name") or "").strip()
+
+    msg = ""
+    if err:
+        msg = '<p class="err">%s</p>' % err
+    elif ok:
+        msg = '<p class="hint" style="color:#2B7A4B">%s</p>' % ok
+
+    body = """
+    <div class="card">
+      <h1>设置</h1>
+      <p class="muted" style="font-size:12px;margin:0">账号 %s　（QQ 号做了脱敏）</p>
+      %s
+      <form method="post" action="/settings" style="margin-top:16px">
+        <h2>显示名</h2>
+        <p class="hint" style="margin:0 0 6px">只改网页上怎么显示；他怎么叫你，得在 QQ 里跟他说。</p>
+        <div><input name="display_name" value="%s" placeholder="留空就用他记住的称呼"
+                    style="width:100%%;box-sizing:border-box"></div>
+
+        <h2 style="margin-top:18px">改密码</h2>
+        <div><input name="old_pwd" type="password" placeholder="现在的密码"
+                    style="width:100%%;box-sizing:border-box"></div>
+        <div style="margin-top:8px"><input name="new_pwd" type="password"
+                    placeholder="新密码（不改就留空）" style="width:100%%;box-sizing:border-box"></div>
+        <div style="margin-top:8px"><input name="new_pwd2" type="password"
+                    placeholder="再输一次新密码" style="width:100%%;box-sizing:border-box"></div>
+        <button type="submit">保存</button>
+      </form>
+      <p style="margin:12px 0 0;text-align:center"><a href="/me" class="hint">回去</a></p>
+    </div>""" % (_mask_uid(uid), msg, name)
+    return _page(body, title="设置")
+
+
+@app.post("/settings")
+async def settings_save(request: Request, display_name: str = Form(""),
+                        old_pwd: str = Form(""), new_pwd: str = Form(""),
+                        new_pwd2: str = Form("")):
+    """保存设置。⭐ 只能改**自己**的那条（uid 来自签名 cookie，不信任前端传的）。"""
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+
+    users = _load_users()
+    rec = users.get(uid)
+    if not rec:
+        return RedirectResponse("/logout")
+
+    name = (display_name or "").strip()
+    new_pwd = (new_pwd or "").strip()
+
+    if new_pwd:
+        if not old_pwd or not hmac.compare_digest(rec.get("pwd", ""), _hash(old_pwd)):
+            return RedirectResponse("/settings?err=" + "现在的密码不对", status_code=303)
+        if len(new_pwd) < 6:
+            return RedirectResponse("/settings?err=" + "新密码至少 6 位", status_code=303)
+        if new_pwd != (new_pwd2 or "").strip():
+            return RedirectResponse("/settings?err=" + "两次输入的新密码不一样", status_code=303)
+        rec["pwd"] = _hash(new_pwd)
+
+    rec["display_name"] = name
+    users[uid] = rec
+    _save_users(users)
+    return RedirectResponse("/settings?ok=" + "已保存", status_code=303)
 
 
 if __name__ == "__main__":
