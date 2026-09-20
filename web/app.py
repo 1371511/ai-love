@@ -214,17 +214,23 @@ async def me(request: Request):
         ms = '<p style="margin:0;font-size:12px" class="hint">' \
              '跨过一级的时候他会说一句话，到时候这里就有</p>'
 
-    # ⭐⭐ **绝不把 `a["missing"]` 显示给用户** —— 那是后台口径（memory/xxx.json、落盘、bot 侧），
-    #    一上页面就破「不露机器人那一面」（2026-09-21 她指出的同类问题：不要露出机器人那一面）。
-    #    用户能看的只有这句人话：
+    # ⭐ 2026-09-21 她定的：**互动天数 / 连续天数整格撤掉** —— 这俩只从接入那天开始记，
+    #    老用户认识一百多天却显示「3 天」，摆上去是误导（宁可不显示，也不给假数）。
+    #    ⚠ 同理，`a["missing"]`（后台口径：memory/xxx.json、落盘、bot 侧）**绝不显示给用户**。
     missing = ""
-    if not a["has_daily"]:
-        missing = ('<div class="note">互动天数、连续天数还在攒'
-                   ' —— 多跟他聊几天，这儿就满了。</div>')
 
-    # 没数据就显示「—」，别给用户看一串 0（她：登进来全是 0 很打击积极性）
-    days_txt = str(a["days"]) if a["has_daily"] else "—"
-    streak_txt = str(a["streak"]) if a["has_daily"] else "—"
+    # 💰 token 消耗：她明确说「后台有人机感没关系」，这格就直给。
+    #    ⭐ 口径写清楚：这是**累计请求量**，历史每轮都会重复计入，不是「聊了多少字」。
+    def _fmt_tokens(n):
+        n = int(n or 0)
+        if n >= 10000:
+            return "%.1f 万" % (n / 10000.0)
+        if n >= 1000:
+            return "%.1f 千" % (n / 1000.0)
+        return str(n)
+
+    tokens_txt = _fmt_tokens(a["tokens"]) if a.get("has_usage") else "—"
+    tokens_unit = "token"
 
     # ⭐⭐ 「认识第 N 天」—— **她说哪天就是哪天**（2026-09-21 她的原话：
     #   「我给的是一个祁煜的载体，用户真正相遇的那天，由她们自己决定」）。
@@ -281,10 +287,10 @@ async def me(request: Request):
     <div class="grid">
       <div class="card"><p class="muted" style="font-size:12px;margin:0">聊过</p>
         <div class="n">%d</div><p class="hint" style="margin:2px 0 0">轮</p></div>
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">互动</p>
-        <div class="n">%s</div><p class="hint" style="margin:2px 0 0">天</p></div>
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">连续</p>
-        <div class="n">%s</div><p class="hint" style="margin:2px 0 0">天</p></div>
+      <div class="card"><p class="muted" style="font-size:12px;margin:0">他记住的你</p>
+        <div class="n">%d</div><p class="hint" style="margin:2px 0 0">件</p></div>
+      <div class="card"><p class="muted" style="font-size:12px;margin:0">已用额度</p>
+        <div class="n">%s</div><p class="hint" style="margin:2px 0 0">%s</p></div>
     </div>
     <div class="card"><h2>他记住的你</h2>%s</div>
     <div class="card"><h2>最近聊过</h2>%s</div>
@@ -296,7 +302,7 @@ async def me(request: Request):
            missing,
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
            a["tier"], tier_n, tier_size, tier_pct,
-           a["turns"], days_txt, streak_txt,
+           a["turns"], a["profile_items"], tokens_txt, tokens_unit,
            chips, topics, ms)
     return _page(body)
 

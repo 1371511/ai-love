@@ -18,7 +18,7 @@ import os
 import time
 
 from Rafayel_config import (
-    AUTO_GREET_TZ_OFFSET, DAILY_STATS, MEMORY_DIR, SESSION_GAP_HOURS,
+    AUTO_GREET_TZ_OFFSET, DAILY_STATS, MEMORY_DIR, SESSION_GAP_HOURS, USAGE_STATS,
 )
 
 _DAY_CAP = 400          # 最多留这么多天，别让文件无限长大
@@ -119,6 +119,84 @@ def record(user_id, gap_hours=None, media=False):
         return out
     except Exception as e:
         print("⚠️ 每日统计落盘失败（不影响对话）：%s" % e)
+        return None
+
+
+def _usage_path(user_id):
+    return os.path.join(MEMORY_DIR, "%s_usage.json" % user_id)
+
+
+def _split_usage(usage):
+    """
+    把 DeepSeek 回包的 `usage` 拆成我们要的六个字段。
+
+    DeepSeek 的结构（2026-09 实测）：
+        {"prompt_tokens": N, "completion_tokens": M, "total_tokens": T,
+         "prompt_tokens_details": {"cached_tokens": C}}
+    ⭐ `cached_tokens` 就是**缓存命中**的部分 —— 它便宜得多，是省钱的关键指标
+       （前缀缓存，见 2026-09-20 那批）。缓存未命中 = prompt_tokens - cached_tokens。
+    """
+    if not isinstance(usage, dict):
+        return None
+    p = int(usage.get("prompt_tokens") or 0)
+    c = int(usage.get("completion_tokens") or 0)
+    det = usage.get("prompt_tokens_details") or {}
+    hit = int(det.get("cached_tokens") or 0) if isinstance(det, dict) else 0
+    if hit > p:                       # 脏数据兜底，别让命中数超过输入数
+        hit = p
+    return {"prompt": p, "completion": c, "total": int(usage.get("total_tokens") or (p + c)),
+            "cache_hit": hit, "cache_miss": p - hit}
+
+
+def record_usage(user_id, usage):
+    """
+    记一笔 token 消耗 ⇒ `memory/{uid}_usage.json`。返回更新后的 dict。
+
+    ⚠ 跟 `record()` 同一个脾气：异常一律吞掉，**绝不能因为记用量把对话搞挂**。
+    """
+    if not USAGE_STATS:
+        return None
+    part = _split_usage(usage)
+    if not part:
+        return None
+    try:
+        path = _usage_path(user_id)
+        d = _load(path) or {}
+        today = _today()
+
+        def add(a, b):
+            return int(a or 0) + int(b or 0)
+
+        out = {
+            "user_id": user_id,
+            "calls": add(d.get("calls"), 1),
+            "prompt": add(d.get("prompt"), part["prompt"]),
+            "completion": add(d.get("completion"), part["completion"]),
+            "total": add(d.get("total"), part["total"]),
+            "cache_hit": add(d.get("cache_hit"), part["cache_hit"]),
+            "cache_miss": add(d.get("cache_miss"), part["cache_miss"]),
+        }
+
+        # 按天明细：以后要做「每人每天上限」「哪天最费」就靠这个
+        days = d.get("days") if isinstance(d.get("days"), dict) else {}
+        t = days.get(today) or {}
+        days[today] = {
+            "calls": add(t.get("calls"), 1),
+            "prompt": add(t.get("prompt"), part["prompt"]),
+            "completion": add(t.get("completion"), part["completion"]),
+            "total": add(t.get("total"), part["total"]),
+            "cache_hit": add(t.get("cache_hit"), part["cache_hit"]),
+            "cache_miss": add(t.get("cache_miss"), part["cache_miss"]),
+        }
+        if len(days) > _DAY_CAP:
+            for k in sorted(days)[:-_DAY_CAP]:
+                days.pop(k, None)
+        out["days"] = days
+        out["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _save(path, out)
+        return out
+    except Exception as e:
+        print("⚠️ token 用量落盘失败（不影响对话）：%s" % e)
         return None
 
 

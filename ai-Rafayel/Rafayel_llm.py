@@ -30,6 +30,7 @@ from Rafayel import (
     CARD_ALT_GREETINGS, CARD_FIRST_MES, CARD_POST_HISTORY, system_prompt,
 )
 from Rafayel_affinity import tone_for
+from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
     AFFINITY_TONE, API_URL, MAX_TOKENS, MEMORY_DIR, MODEL, QZONE_CMT_ENABLE,
     REPLY_ONE_LINE, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
@@ -381,6 +382,9 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             # 记录真实用量与结束原因：finish_reason == "length" 说明被 max_tokens 截断
             cm.last_finish_reason = choice.get("finish_reason")
             cm.last_usage = result.get("usage")
+            # 💰 落盘累计用量（memory/{uid}_usage.json）—— 所有人共用一个 API key，
+            #    官方账单拆不到人头上，按人看消耗只能靠自己这份。写挂了也不影响对话。
+            usage_record(cm.user_id, cm.last_usage)
 
             # 5.5 表情冷却闸：最近几条他已经发过表情 ⇒ 这一轮不再发（低频靠代码保证，
             #     prompt 只管「发得贴不贴切」）。

@@ -212,6 +212,7 @@ def compute(user_id, memory_dir):
         prof = _read_json(os.path.join(memory_dir, "_bak-20260918-cli",
                                        "%s_profile.json" % user_id)) or {}
     daily = _read_json(os.path.join(memory_dir, "%s_daily.json" % user_id))
+    usage = _read_json(os.path.join(memory_dir, "%s_usage.json" % user_id))
 
     missing = []
 
@@ -242,6 +243,18 @@ def compute(user_id, memory_dir):
         missing.append("主记忆 memory/%s.json（这个人还没跟他聊过）" % user_id)
     if not prof:
         missing.append("画像 memory/%s_profile.json" % user_id)
+
+    # 💰 token 消耗（memory/{uid}_usage.json，bot 侧落盘；老用户从接入那天才开始有）
+    tokens = calls = t_in = t_out = cache_hit = 0
+    cache_rate = 0.0
+    if usage:
+        calls = int(usage.get("calls") or 0)
+        t_in = int(usage.get("prompt") or 0)
+        t_out = int(usage.get("completion") or 0)
+        cache_hit = int(usage.get("cache_hit") or 0)
+        tokens = int(usage.get("total") or (t_in + t_out))
+        # 命中率只看**输入**那半边（输出不进缓存）
+        cache_rate = (cache_hit / t_in) if t_in else 0.0
 
     level, tier, nxt = level_of(score)
     # ⚠ 只回填了「第一次是哪天」（对照表模式）时 days 是空的 ⇒ 仍然算**没有**每日统计，
@@ -283,6 +296,13 @@ def compute(user_id, memory_dir):
         "streak": streak,
         "she_initiated": she_initiated,
         "has_daily": has_daily,          # ⭐ 网页端按这个决定显示数字还是「—」
+        "has_usage": bool(usage),        # 有没有落过 token 用量
+        "calls": calls,                  # 累计请求次数
+        "tokens": tokens,                # 累计 token（输入+输出）
+        "tokens_in": t_in,
+        "tokens_out": t_out,
+        "cache_hit": cache_hit,
+        "cache_rate": cache_rate,        # 输入侧的缓存命中率 0~1
         "last_active": saved_at,
         "first_day": first_day,          # ⭐ 只有外部日志回填过才有；没有就是 ""
         "known_days": known_days,        # 认识第 N 天（0 = 不知道，网页端显示「—」）
@@ -309,6 +329,12 @@ def format_report(uid, memory_dir):
                 a["tier_lo"], a["tier_hi"], MAX_LEVEL, CUM[MAX_LEVEL]))
     L.append("  对话 %d 轮 · 记住的事 %d 条 · 画像 %d 条"
              % (a["turns"], a["facts"], a["profile_items"]))
+    if a["has_usage"]:
+        L.append("  已用 %d token（入 %d / 出 %d）· 缓存命中 %.0f%% · 请求 %d 次"
+                 % (a["tokens"], a["tokens_in"], a["tokens_out"],
+                    a["cache_rate"] * 100, a["calls"]))
+    else:
+        L.append("  ⚠ 还没落过 token 用量（memory/%s_usage.json）" % uid)
     L.append("  互动 %d 天 · 连续 %d 天 · 她主动 %d 次" % (a["days"], a["streak"], a["she_initiated"]))
     if a["missing"]:
         L.append("  ⚠ 缺数据（目前算不出来的）：")
