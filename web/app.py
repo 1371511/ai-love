@@ -211,4 +211,11 @@ async def me(request: Request):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8081)
+    # ⭐ 默认**只听本机**（127.0.0.1）—— 服务器上跑起来也只有本机/SSH 隧道能连，
+    #    安全组一个端口都不用开 ⇒ 公网扫不到。
+    # ⚠ 想让手机直接连，才改 `WEB_HOST`：
+    #     - 组网（Tailscale 这类）⇒ 填服务器在那个网里的 IP（推荐，仍然不暴露公网）
+    #     - 0.0.0.0 ⇒ **所有人都能连**（必须同时开安全组 + 换掉默认密码，别图省事这么干）
+    uvicorn.run(app,
+                host=os.environ.get("WEB_HOST", "127.0.0.1"),
+                port=int(os.environ.get("WEB_PORT", "8081")))
