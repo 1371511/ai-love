@@ -153,7 +153,7 @@ h2{font-size:13px;font-weight:500;margin:0 0 10px}
 .big{font-size:26px;font-weight:500;margin:6px 0 10px}
 .bar{height:6px;background:#EEE;border-radius:3px;overflow:hidden}
 .bar>div{height:100%;background:#D4537E;border-radius:3px}
-.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:12px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px}
 .grid .card{margin:0;padding:1rem;text-align:center}
 .grid .n{font-size:20px;font-weight:500;margin-top:4px}
 .chip{display:inline-block;background:#F3F1EC;border-radius:999px;padding:4px 10px;font-size:12px;margin:0 8px 8px 0}
@@ -329,8 +329,6 @@ async def me(request: Request):
     <div class="grid">
       <div class="card"><p class="muted" style="font-size:12px;margin:0">聊过</p>
         <div class="n">%d</div><p class="hint" style="margin:2px 0 0">轮</p></div>
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">他记住的你</p>
-        <div class="n">%d</div><p class="hint" style="margin:2px 0 0">件</p></div>
       <div class="card"><p class="muted" style="font-size:12px;margin:0">已用额度</p>
         <div class="n">%s</div><p class="hint" style="margin:2px 0 0">%s</p></div>
     </div>
@@ -344,7 +342,7 @@ async def me(request: Request):
            missing,
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
            a["tier"], tier_n, tier_size, tier_pct,
-           a["turns"], a["profile_items"], tokens_txt, tokens_unit,
+           a["turns"], tokens_txt, tokens_unit,
            chips, topics, ms)
     return _page(body)
 
