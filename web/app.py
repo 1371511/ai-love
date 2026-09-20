@@ -246,15 +246,21 @@ async def me(request: Request):
     if not chips:
         chips = '<span class="hint">他还没记住什么 —— 多聊几句就有了</span>'
 
-    topics = "".join('<p style="margin:0 0 6px;font-size:12px" class="muted">%s</p>' % t
-                     for t in a["topics"]) or \
-        '<p style="margin:0;font-size:12px" class="hint">往后这里会出现你们最近聊过的事</p>'
+    # ⭐ **没内容就整张卡不渲染**（她 2026-09-21 定的：这两张先隐藏）。
+    #    ⚠ 不是「显示占位文案」—— 空卡片比没有卡片更打击人。
+    #    ⇒ 好处是以后 `topics` / `milestones` 真有数据了，卡片**自己长出来**，不用再改一次代码。
+    def _card(title, inner):
+        if not inner:
+            return ""
+        return '<div class="card"><h2>%s</h2>%s</div>' % (title, inner)
 
-    if a["milestones"]:
-        ms = "".join('<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m for m in a["milestones"])
-    else:
-        ms = '<p style="margin:0;font-size:12px" class="hint">' \
-             '跨过一级的时候他会说一句话，到时候这里就有</p>'
+    topics_card = _card("最近聊过", "".join(
+        '<p style="margin:0 0 6px;font-size:12px" class="muted">%s</p>' % t
+        for t in a["topics"]))
+
+    ms_card = _card("他说过的那句话", "".join(
+        '<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m
+        for m in a["milestones"]))
 
     # ⭐ 2026-09-21 她定的：**互动天数 / 连续天数整格撤掉** —— 这俩只从接入那天开始记，
     #    老用户认识一百多天却显示「3 天」，摆上去是误导（宁可不显示，也不给假数）。
@@ -333,8 +339,7 @@ async def me(request: Request):
         <div class="n">%s</div><p class="hint" style="margin:2px 0 0">%s</p></div>
     </div>
     <div class="card"><h2>你们之间</h2>%s</div>
-    <div class="card"><h2>最近聊过</h2>%s</div>
-    <div class="card"><h2>他说的那句话</h2>%s</div>
+    %s%s
     <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
            sub,
@@ -343,7 +348,7 @@ async def me(request: Request):
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
            a["tier"], tier_n, tier_size, tier_pct,
            a["turns"], tokens_txt, tokens_unit,
-           chips, topics, ms)
+           chips, topics_card, ms_card)
     return _page(body)
 
 
