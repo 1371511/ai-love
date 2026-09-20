@@ -332,7 +332,7 @@ async def me(request: Request):
       <div class="card"><p class="muted" style="font-size:12px;margin:0">已用额度</p>
         <div class="n">%s</div><p class="hint" style="margin:2px 0 0">%s</p></div>
     </div>
-    <div class="card"><h2>他记住的你</h2>%s</div>
+    <div class="card"><h2>你们之间</h2>%s</div>
     <div class="card"><h2>最近聊过</h2>%s</div>
     <div class="card"><h2>他说的那句话</h2>%s</div>
     <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
