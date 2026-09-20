@@ -206,17 +206,25 @@ async def me(request: Request):
 
     topics = "".join('<p style="margin:0 0 6px;font-size:12px" class="muted">%s</p>' % t
                      for t in a["topics"]) or \
-        '<p style="margin:0;font-size:12px" class="hint">近期话题还没做（批 2）</p>'
+        '<p style="margin:0;font-size:12px" class="hint">往后这里会出现你们最近聊过的事</p>'
 
     if a["milestones"]:
         ms = "".join('<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m for m in a["milestones"])
     else:
-        ms = '<p style="margin:0;font-size:12px" class="hint">跨级那天他会说一句话 —— 还没做（批 2）</p>'
+        ms = '<p style="margin:0;font-size:12px" class="hint">' \
+             '跨过一级的时候他会说一句话，到时候这里就有</p>'
 
+    # ⭐⭐ **绝不把 `a["missing"]` 显示给用户** —— 那是后台口径（memory/xxx.json、落盘、bot 侧），
+    #    一上页面就破「不露机器人那一面」（2026-09-21 她指出的同类问题：不要露出机器人那一面）。
+    #    用户能看的只有这句人话：
     missing = ""
-    if a["missing"]:
-        missing = '<div class="note"><b>还缺的数据</b><ul>' + \
-            "".join("<li>%s</li>" % m for m in a["missing"]) + "</ul></div>"
+    if not a["has_daily"]:
+        missing = ('<div class="note">互动天数、连续天数这些从今天才开始记'
+                   ' —— 多跟他聊几天，这儿就满了。</div>')
+
+    # 没数据就显示「—」，别给用户看一串 0（她：登进来全是 0 很打击积极性）
+    days_txt = str(a["days"]) if a["has_daily"] else "—"
+    streak_txt = str(a["streak"]) if a["has_daily"] else "—"
 
     body = """
     <div class="card" style="display:flex;align-items:center;justify-content:space-between">
@@ -245,9 +253,12 @@ async def me(request: Request):
       </div>
     </div>
     <div class="grid">
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">对话</p><div class="n">%d</div></div>
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">她先开口</p><div class="n">%d</div></div>
-      <div class="card"><p class="muted" style="font-size:12px;margin:0">连续天数</p><div class="n">%d</div></div>
+      <div class="card"><p class="muted" style="font-size:12px;margin:0">聊过</p>
+        <div class="n">%d</div><p class="hint" style="margin:2px 0 0">轮</p></div>
+      <div class="card"><p class="muted" style="font-size:12px;margin:0">互动</p>
+        <div class="n">%s</div><p class="hint" style="margin:2px 0 0">天</p></div>
+      <div class="card"><p class="muted" style="font-size:12px;margin:0">连续</p>
+        <div class="n">%s</div><p class="hint" style="margin:2px 0 0">天</p></div>
     </div>
     <div class="card"><h2>他记住的你</h2>%s</div>
     <div class="card"><h2>最近聊过</h2>%s</div>
@@ -259,7 +270,7 @@ async def me(request: Request):
            missing,
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
            a["tier"], tier_n, tier_size, tier_pct,
-           a["turns"], a["she_initiated"], a["streak"],
+           a["turns"], days_txt, streak_txt,
            chips, topics, ms)
     return _page(body)
 

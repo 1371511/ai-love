@@ -215,6 +215,9 @@ def compute(user_id, memory_dir):
         score += she_initiated * PT_SHE_INITIATED
         score += media * PT_MEDIA
     else:
+        # ⚠ `missing` 是**给后台看的**（日志/CLI），**绝不能直接显示给用户** ——
+        #   「bot 侧落盘 memory/xxx_daily.json」这种话一上页面就破「不露机器人那一面」。
+        #   网页端要显示的是 `has_daily=False` 那套温和文案。
         missing.append("每日统计（哪天聊过 / 连续几天 / 谁先开口 / 发图数）"
                        "—— 需要 bot 侧落盘 memory/%s_daily.json" % user_id)
 
@@ -224,6 +227,7 @@ def compute(user_id, memory_dir):
         missing.append("画像 memory/%s_profile.json" % user_id)
 
     level, tier, nxt = level_of(score)
+    has_daily = bool(daily)
     t_lo = t_hi = 0
     for name, lo, hi, _r in CURVE:
         if name == tier:
@@ -249,6 +253,7 @@ def compute(user_id, memory_dir):
         "days": days,
         "streak": streak,
         "she_initiated": she_initiated,
+        "has_daily": has_daily,          # ⭐ 网页端按这个决定显示数字还是「—」
         "last_active": saved_at,
         "first_day": first_day,
         "likes": prof.get("likes") or [],
