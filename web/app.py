@@ -27,8 +27,50 @@ from Rafayel_affinity import compute, days_since, CUM, MAX_LEVEL  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
-SECRET = b"rafael-affinity-dev"          # ⚠ 上线前换成随机值，别用这个
 SALT = "rafael-affinity"
+
+
+def _load_secret():
+    """
+    🔑 签名 cookie 用的密钥（2026-09-21 换掉开发期的固定值）。
+
+    取值顺序：
+      ① 环境变量 `WEB_SECRET`（部署时想自己指定就用这个）
+      ② `web/.secret` 文件 —— **首次启动自动生成**（32 字节随机，secrets.token_hex）
+      ③ 连文件都写不了 ⇒ 退回进程内随机值（每次重启都会把所有人踢下线，但至少有值）
+
+    ⭐ 为什么要落到文件而不是每次随机生成：
+       密钥一变，**所有已登录的 cookie 立刻作废** ⇒ 每重启一次服务，用户就得重新登录一次。
+    ⚠ `web/.secret` **必须留在 .gitignore 里** —— 这是登录凭据，进仓库等于把钥匙挂门口。
+    """
+    import secrets
+
+    env = (os.environ.get("WEB_SECRET") or "").strip()
+    if env:
+        return env.encode("utf-8")
+
+    path = os.path.join(BASE, "web", ".secret")
+    try:
+        s = open(path, encoding="utf-8").read().strip()
+        if s:
+            return s.encode("utf-8")
+    except Exception:
+        pass
+
+    s = secrets.token_hex(32)
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(s)
+        try:
+            os.chmod(path, 0o600)          # 只有属主能读（Windows 上是空操作，不报错）
+        except Exception:
+            pass
+    except Exception as e:
+        print("⚠️ 写不了 %s（%s）⇒ 本次用进程内随机密钥，重启后会掉登录" % (path, e))
+    return s.encode("utf-8")
+
+
+SECRET = _load_secret()
 
 
 def _hash(pwd):
