@@ -57,6 +57,8 @@ def record(user_id, gap_hours=None, media=False):
 
     字段：
       days           她开过口的日期（YYYY-MM-DD，去重排序）
+      first_day      ⭐ 第一次聊天是哪天（**外部日志回填**才有，见 tools/backfill_daily.py）
+                     ⚠ 一旦写进来就**永远保留**，别用 days[0] 覆盖它（回填的白做了）
       last_day       最近一次是哪天
       streak         连续天数（含今天；断了一天就归 1）
       her_initiated  她隔了一阵主动来找他的次数（gap >= SESSION_GAP_HOURS）
@@ -73,6 +75,13 @@ def record(user_id, gap_hours=None, media=False):
         if today not in days:
             days.append(today)
             days = sorted(days)[-_DAY_CAP:]
+
+        # ⭐ `first_day` 是**外部日志回填**进来的（tools/backfill_daily.py），
+        #    它比 days 里最早的那天还早 —— 一旦被覆盖，回填就白做了。
+        #    ⇒ 有就原样留着；没有才退回「days 里最早那天」，再没有才用今天。
+        first = str(d.get("first_day") or "").strip()
+        if not first:
+            first = days[0] if days else today
 
         # 连续天数：昨天也在 ⇒ +1；否则从今天重新起算。
         # ⚠ 判据是「上一条记录的 last_day」，不是「days 里有没有昨天」——
@@ -98,10 +107,12 @@ def record(user_id, gap_hours=None, media=False):
         out = {
             "user_id": user_id,
             "days": days,
+            "first_day": first,
             "last_day": today,
             "streak": streak,
             "her_initiated": initiated,
             "media": m,
+            "backfilled": bool(d.get("backfilled")),   # 这批天数里含外部日志回填的部分
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
         _save(path, out)

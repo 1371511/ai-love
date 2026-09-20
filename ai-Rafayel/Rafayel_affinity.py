@@ -174,6 +174,23 @@ def tone_for(user_id, memory_dir):
         return ""
 
 
+def _today():
+    """今天（服务器时区；整条链都按服务器本地时间算，别再新开偏移）。"""
+    return time.strftime("%Y-%m-%d", time.localtime())
+
+
+def days_since(day):
+    """`YYYY-MM-DD` 距今几天（含首尾 ⇒ 同一天返回 1）。解析不了返回 0。"""
+    try:
+        y, m, d = (int(x) for x in str(day).split("-")[:3])
+        n = time.localtime()
+        a = (n.tm_year * 12 + n.tm_mon) * 31 + n.tm_mday
+        b = (y * 12 + m) * 31 + d
+        return max(0, a - b) + 1
+    except Exception:
+        return 0
+
+
 def _read_json(path):
     if not os.path.exists(path):
         return None
@@ -227,14 +244,26 @@ def compute(user_id, memory_dir):
         missing.append("画像 memory/%s_profile.json" % user_id)
 
     level, tier, nxt = level_of(score)
-    has_daily = bool(daily)
+    # ⚠ 只回填了「第一次是哪天」（对照表模式）时 days 是空的 ⇒ 仍然算**没有**每日统计，
+    #    网页端该显示「—」而不是 0（她：登进来看到一串 0 很打击积极性）。
+    has_daily = bool(daily) and days > 0
     t_lo = t_hi = 0
     for name, lo, hi, _r in CURVE:
         if name == tier:
             t_lo, t_hi = lo, hi
             break
     saved_at = mem.get("saved_at") or ""
-    first_day = saved_at.split(" ")[0] if saved_at else ""
+    # ⭐ `first_day` **只能来自外部日志回填**（`{uid}_daily.json` 的 `first_day`）：
+    #    bot 自己不记「第一次是哪天」（所有时间戳字段都是「最后一次」，
+    #    且 save_memory 用 tmp+replace ⇒ 连文件创建时间都被刷成最后一次写入）。
+    #    ⚠ 千万别拿 `saved_at` 当首次 —— 那是**最后一次存盘**的日子（2026-09-21 修）。
+    first_day = ""
+    if daily:
+        first_day = str(daily.get("first_day") or "").strip()
+        if not first_day:
+            ds = [x for x in (daily.get("days") or []) if isinstance(x, str)]
+            first_day = min(ds) if ds else ""
+    known_days = days_since(first_day) if first_day else 0
 
     return {
         "user_id": user_id,
@@ -255,7 +284,8 @@ def compute(user_id, memory_dir):
         "she_initiated": she_initiated,
         "has_daily": has_daily,          # ⭐ 网页端按这个决定显示数字还是「—」
         "last_active": saved_at,
-        "first_day": first_day,
+        "first_day": first_day,          # ⭐ 只有外部日志回填过才有；没有就是 ""
+        "known_days": known_days,        # 认识第 N 天（0 = 不知道，网页端显示「—」）
         "likes": prof.get("likes") or [],
         "dislikes": prof.get("dislikes") or [],
         "traits": prof.get("traits") or [],

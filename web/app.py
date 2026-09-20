@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
-from Rafayel_affinity import compute, CUM, MAX_LEVEL  # noqa: E402
+from Rafayel_affinity import compute, days_since, CUM, MAX_LEVEL  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -219,12 +219,38 @@ async def me(request: Request):
     #    用户能看的只有这句人话：
     missing = ""
     if not a["has_daily"]:
-        missing = ('<div class="note">互动天数、连续天数这些从今天才开始记'
+        missing = ('<div class="note">互动天数、连续天数还在攒'
                    ' —— 多跟他聊几天，这儿就满了。</div>')
 
     # 没数据就显示「—」，别给用户看一串 0（她：登进来全是 0 很打击积极性）
     days_txt = str(a["days"]) if a["has_daily"] else "—"
     streak_txt = str(a["streak"]) if a["has_daily"] else "—"
+
+    # ⭐⭐ 「认识第 N 天」—— **她说哪天就是哪天**（2026-09-21 她的原话：
+    #   「我给的是一个祁煜的载体，用户真正相遇的那天，由她们自己决定」）。
+    #   ⇒ 用户在 /settings 自己填 `met_day`；**她填的优先于日志回填的 first_day**
+    #     （bot 自己不记第一次是哪天，所以默认值只能来自她）。
+    #   ⚠ 只写 `web/users.json`，**绝不写回 memory**（那份只读）。
+    met_day = (rec.get("met_day") or "").strip()
+    known = 0
+    if met_day:
+        known = days_since(met_day)
+    elif a.get("known_days"):
+        known = a["known_days"]
+
+    if known:
+        known_txt = "认识第 %d 天 · " % known
+    else:
+        known_txt = ""
+
+    if a["last_active"]:
+        sub = known_txt + "最近一次 %s" % a["last_active"][:10]
+    else:
+        sub = known_txt.rstrip(" · ") or "还没聊过"
+
+    # 没填「相遇那天」⇒ 给一句引导（不然她根本不知道这个能自己定）
+    if not met_day:
+        sub += ('　<a href="/settings" class="hint">你们是哪天相遇的？</a>')
 
     body = """
     <div class="card" style="display:flex;align-items:center;justify-content:space-between">
@@ -265,7 +291,7 @@ async def me(request: Request):
     <div class="card"><h2>他说的那句话</h2>%s</div>
     <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
-           ("最近活跃 %s" % a["last_active"]) if a["last_active"] else "还没聊过",
+           sub,
            (shown_name or "?")[:2],
            missing,
            a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
@@ -273,6 +299,30 @@ async def me(request: Request):
            a["turns"], days_txt, streak_txt,
            chips, topics, ms)
     return _page(body)
+
+
+def _check_met_day(day, uid=""):
+    """
+    校验「你们相遇的那天」。返回错误文案（人话），没问题返回空串。
+
+    ⭐ 只校验**格式与常识**，**不替她决定是哪天** —— 这是她自己说了算的事。
+    ⚠ 错误文案会进 URL ⇒ 别写引号、别写换行；也**不许出现后台词**。
+    """
+    import re
+    import datetime
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", day or "")
+    if not m:
+        return "日期写得不对，照年-月-日那样填"
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return "这个日期不存在，再看看"
+    today = datetime.date.today()
+    if d > today:
+        return "那天还没到呢"
+    if d.year < 2000:
+        return "太早了，换一个近点的日子"
+    return ""
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -288,6 +338,7 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         return RedirectResponse("/")
     rec = (_load_users().get(uid) or {})
     name = (rec.get("display_name") or "").strip()
+    met_day = (rec.get("met_day") or "").strip()
 
     msg = ""
     if err:
@@ -306,6 +357,13 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         <div><input name="display_name" value="%s" placeholder="留空就用他记住的称呼"
                     style="width:100%%;box-sizing:border-box"></div>
 
+        <h2 style="margin-top:18px">你们相遇的那天</h2>
+        <p class="hint" style="margin:0 0 6px">
+          你说哪天，就是哪天 —— 他记不住日子，这件事归你说了算。<br>
+          留空就不显示「认识第几天」。</p>
+        <div><input name="met_day" type="date" value="%s"
+                    style="width:100%%;box-sizing:border-box"></div>
+
         <h2 style="margin-top:18px">改密码</h2>
         <div><input name="old_pwd" type="password" placeholder="现在的密码"
                     style="width:100%%;box-sizing:border-box"></div>
@@ -316,12 +374,13 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         <button type="submit">保存</button>
       </form>
       <p style="margin:12px 0 0;text-align:center"><a href="/me" class="hint">回去</a></p>
-    </div>""" % (_mask_uid(uid), msg, name)
+    </div>""" % (_mask_uid(uid), msg, name, met_day)
     return _page(body, title="设置")
 
 
 @app.post("/settings")
 async def settings_save(request: Request, display_name: str = Form(""),
+                        met_day: str = Form(""),
                         old_pwd: str = Form(""), new_pwd: str = Form(""),
                         new_pwd2: str = Form("")):
     """保存设置。⭐ 只能改**自己**的那条（uid 来自签名 cookie，不信任前端传的）。"""
@@ -337,6 +396,13 @@ async def settings_save(request: Request, display_name: str = Form(""),
     name = (display_name or "").strip()
     new_pwd = (new_pwd or "").strip()
 
+    # ⭐ 「相遇那天」—— 她自己填的，我们只做**格式与常识**校验，不替她决定是哪天。
+    day = (met_day or "").strip()
+    if day:
+        err = _check_met_day(day, uid)
+        if err:
+            return RedirectResponse("/settings?err=" + err, status_code=303)
+
     if new_pwd:
         if not old_pwd or not hmac.compare_digest(rec.get("pwd", ""), _hash(old_pwd)):
             return RedirectResponse("/settings?err=" + "现在的密码不对", status_code=303)
@@ -347,6 +413,7 @@ async def settings_save(request: Request, display_name: str = Form(""),
         rec["pwd"] = _hash(new_pwd)
 
     rec["display_name"] = name
+    rec["met_day"] = day
     users[uid] = rec
     _save_users(users)
     return RedirectResponse("/settings?ok=" + "已保存", status_code=303)
