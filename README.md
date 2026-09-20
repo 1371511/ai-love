@@ -11,6 +11,11 @@
 - **长期记忆**：通过对话摘要机制，自动记住重要事件和用户偏好
 - **实时回复**：通过 WebSocket 与 NapCat 通信，消息延迟低
 - **云端部署**：支持 Docker + tmux 后台运行，7x24 小时在线
+- **牵绊度（好感系统）**：官方四档「心动 / 倾情 / 眷恋 / 情衷」，等级会反过来影响他说话的亲疏
+- **网页端**：`web/`（FastAPI），QQ 号 + 密码登录，只能看自己那份
+- **他会先开口**：冷场够久主动打招呼、发朋友圈；她评论说说他也会回
+- **表情包**：24 张涂鸦叽按场景低频发送；她发来的表情会先「翻译」再给他看
+- **时间感**：每轮注入「现在几点 + 距她上条消息隔了多久」—— 不会睡前在洗虾、睡醒还在洗
 
 ---
 
@@ -27,14 +32,38 @@ ai-love/                    # 项目根 = 数据 + 入口 + 文档
 │   ├── Rafayel_memory.py      # 💾 记忆落盘 + ConversationManager（摘要 / 关键事实）
 │   ├── Rafayel_llm.py         # 🚀 get_reply：拼请求 + 调 DeepSeek（世界书在这里拼进去）
 │   ├── Rafayel.py             # 人设层：读酒馆卡，导出人设常量
+│   ├── Rafayel_greet.py       # 👋 主动打招呼：冷场门槛 + 排期（{uid}_greet.json）
+│   ├── Rafayel_qzone.py       # 📮 发说说（纯函数：挑条 / 渲染 / 取值）
+│   ├── Rafayel_qzone_auto.py  # ⏰ 自动发说说的排期（{uid}_qzone.json）
+│   ├── Rafayel_sticker.py     # 🎭 表情包：标签匹配 + 冷却闸 + 说明注入
+│   ├── Rafayel_affinity.py    # 💞 牵绊度计算（**只读**，等级换算 + 档位语气）
+│   ├── Rafayel_daily.py       # 📅 每日统计 + token 用量落盘（**唯一写盘**的地方）
 │   ├── 世界书/
 │   │   └── Rafayel_worldbook.py   # 世界书关键词注入器
 │   └── _backup/               # 各阶段的 .bak 备份
 ├── card/                  # 酒馆卡产物（Rafayel.character.json、worldbook.json）
 ├── card/_work/            # 唯一真相源 md + 生成器 + 审计脚本
-├── memory/                # 按 user_id 落盘：{uid}.json（对话记忆）、{uid}_profile.json（用户画像）
+├── card/affinity/         # 官方牵绊素材（彩蛋 86 / 短信 45 / 朋友圈 58 / 配图 22）
+├── card/affinity.md       # 💞 牵绊度真相源：等级分档 + 曲线（**改等级改这里**）
+├── web/                   # 🌐 好感系统网页端（FastAPI，端口 8081）
+│   ├── app.py                 # 登录 / /me / /settings；只读 memory
+│   ├── users.json             # 账号（密码 sha256 + 显示名 + 相遇那天）
+│   └── .secret                # 🔑 签名 cookie 密钥（首次启动自动生成，**不进仓库**）
+├── tools/                 # 🧰 一次性工具（如 backfill_daily.py：日志回填每日统计）
+├── memory/                # 按 user_id 落盘，见下表
 └── .env                   # DEEPSEEK_API_KEY
 ```
+
+**`memory/` 里都有什么**（一个用户一套，互不干扰）
+
+| 文件 | 内容 | 谁在写 |
+|---|---|---|
+| `{uid}.json` | 对话记忆：历史 / 长期摘要 / 关键事实 / 轮数 | `Rafayel_memory` |
+| `{uid}_profile.json` | 画像：称呼 / 喜欢 / 讨厌 / 特质 / 生日 | `Rafayel_profile` |
+| `{uid}_greet.json` | 主动打招呼的排期（`next_at`） | `Rafayel_greet` |
+| `{uid}_qzone.json` | 发说说的排期 | `Rafayel_qzone_auto` |
+| `{uid}_daily.json` | 每日统计：哪天聊过 / 连续几天 / 谁先开口 | `Rafayel_daily` |
+| `{uid}_usage.json` | 💰 token 消耗：累计 + 按天明细 | `Rafayel_daily` |
 
 > ⚠ **代码在 `ai-Rafayel/`，数据目录（`card/`、`memory/`、`.env`）仍在项目根。**
 > 各模块靠 `__file__` 上跳一层算出项目根再拼路径 —— 别顺手把 `card/` 或 `memory/`
@@ -67,6 +96,9 @@ source venv/bin/activate
 
 # 安装依赖
 pip install websockets requests python-dotenv
+
+# 网页端（要跑 web/ 才需要）
+pip install fastapi uvicorn python-multipart
 ```
 
 ### 3. 配置环境变量
@@ -81,16 +113,31 @@ python Rafayel_bot.py
 
 # 只想先在终端跟他说说话（不开 QQ）：
 python ai-Rafayel/Rafayel_chat.py
-
-# 建议使用 tmux 后台运行：
-tmux new -s aibot
-cd /home/ubuntu/ai-love
-source venv/bin/activate
-export DEEPSEEK_API_KEY="sk-你的密钥"
-python Rafayel_bot.py
-
-# 按 Ctrl+B，再按 D 脱离会话。
 ```
+
+建议用 tmux 后台运行（**`-d` 直接建在后台**，别 `attach` —— 网页终端里 Ctrl+B D 会被浏览器抢走）：
+
+```bash
+tmux new-session -d -s bot 'cd ~/ai-love && venv/bin/python Rafayel_bot.py'
+
+# 看日志 / 判活（⚠ 别用 capture-pane 判断进程死活，那玩意儿会混进旧内容）
+tmux capture-pane -t bot -p | tail -20
+ss -tlnp | grep 8080          # 有输出 = 在跑
+```
+
+> ⚠ **服务器上通常没有 `python`，只有 `python3`** ⇒ 一律用 `venv/bin/python`（跟上面一致）。
+> 启动成功的标志是日志里**印出人设卡与世界书信息**，随后出现 `[✅] NapCat 已连接`。
+
+### 5.（可选）起网页端
+
+```bash
+tmux new-session -d -s web \
+  'cd ~/ai-love && WEB_HOST=0.0.0.0 venv/bin/python web/app.py'
+curl http://127.0.0.1:8081/      # 出 HTML = 起来了
+```
+
+- 想让手机 / 别人能直接开 ⇒ `WEB_HOST=0.0.0.0` + 云厂商安全组放行 **8081**
+- 只给自己看 ⇒ 用默认 `127.0.0.1`，配 SSH 端口转发，**一个端口都不用开**
 
 ---
 
@@ -185,6 +232,46 @@ card/_work/worldbook/          → 世界书条目（改这里，目录下 11 �
 
 ---
 
+## 💞 牵绊度与网页端（好感系统）
+
+**等级照官方四档来**，真相源在 **`card/affinity.md`**（改分档改这里，代码从它的 `CURVE=` 读）：
+
+| 档位 | 级别 | 每级分 |
+|---|---|---|
+| 心动 | 1~30 | 8 |
+| 倾情 | 31~50 | 15 |
+| 眷恋 | 51~100 | 25 |
+| 情衷 | 101~246+ | 30 |
+
+规则是「**升到 L 级，花 L-1 所在档位的价**」⇒ 满级累计 **6140 分**。
+分数来自：对话轮数、他记住的事、画像条数、互动天数、连续天数、她主动来找他、发图。
+等级会反过来**影响他说话的亲疏**（`AFFINITY_TONE`）—— ⚠ 提示里写死了**不许他把等级 / 分数 / 档位名说出口**。
+
+**网页端 `web/`**：QQ 号 + 密码登录，只能看自己那份（uid 取自签名 cookie，服务端不信任前端传的）。
+
+- `/me`：好感度 + 档位进度、`聊过 N 轮` / `已用额度 X 万 token`、**你们之间**（画像关键词）、设置
+- `/settings`：改密码、显示名、**「你们相遇的那天」**
+  ⭐ 相遇那天**由用户自己填** —— bot 不记第一次聊天（所有时间戳字段都是「最后一次」），
+  那天只有她自己说了算。
+
+### 三条红线（改这块代码前先看）
+
+1. ⭐ **网页端只读 `memory/`**，一个字都不写 —— 那批文件是 bot 的记忆，写坏他人设就崩。
+   用户能改的只有 `web/users.json`。
+2. ⭐ **好感度 / token 这些系统数据绝不进 QQ 对话** —— 一进聊天就破「不露机器人那一面」。
+   后台数字摆在网页端没关系，**他在 QQ 里的口气**才是要守的那条线。
+3. ⭐ **宁缺勿假**：没数据的格子显示「—」，没有内容的卡片**整张不渲染**。
+   （「互动 N 天 / 连续 N 天」就是因此撤掉的 —— 只从接入那天开始记，
+   老用户认识一百多天却显示「3 天」是误导。）
+
+### 💰 token 记账
+
+所有人**共用一个 API key** ⇒ 官方账单只有一笔总额，拆不到人头上。
+所以每次请求后自己记一笔到 `memory/{uid}_usage.json`（累计 + 按天明细，含缓存命中/未命中）。
+开关 `USAGE_STATS`。⚠ 记的是**累计请求量**，历史每轮都会重复计入，**不是「聊了多少字」**。
+
+---
+
 ## 🛠️ 技术栈
 
 - Python 3.10：服务端逻辑
@@ -205,6 +292,11 @@ card/_work/worldbook/          → 世界书条目（改这里，目录下 11 �
 - API Key 请通过环境变量或 .env 文件配置，不要硬编码在代码中
 - 建议使用机器人小号登录，避免主号被封风险
 - NapCat 配置目录建议挂载到宿主机，防止重启后配置丢失
+- 🔑 `web/.secret`（签名 cookie 密钥）**首次启动自动生成，且已在 `.gitignore` 里**
+  ⇒ 别手动传进仓库；想自己指定就用环境变量 `WEB_SECRET`
+  ⚠ 换密钥 = 所有已登录 cookie 作废，用户要重新登录
+- ⚠ 网页端是**公网可访问**的（默认密码 `qiyu2026`）。已知风险是统一密码 + 知道 QQ 号就能看，
+  缓解靠登录限流 + QQ 号脱敏，**正式用之前把默认密码换掉**
 
 ---
 
