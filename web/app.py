@@ -22,7 +22,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
-from Rafayel_affinity import compute, LEVELS  # noqa: E402
+from Rafayel_affinity import compute, CUM, MAX_LEVEL  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -130,12 +130,19 @@ async def me(request: Request):
         return RedirectResponse("/")
     a = compute(uid, MEMORY_DIR)
 
+    # 距离「下一级」的进度（用官方累计分表，不是拍脑袋的分档）
     pct = 0
     if a["next_at"]:
-        lo = [t for t, _ in LEVELS if t <= a["score"]]
-        low = lo[-1] if lo else 0
+        low = CUM[a["level"]]
         span = max(1, a["next_at"] - low)
         pct = min(100, int((a["score"] - low) / span * 100))
+
+    # 本档位内的进度：心动 1~30 / 倾情 31~50 / 眷恋 51~100 / 情衷 101~246
+    tier_n = a["level"] - a["tier_lo"] + 1
+    tier_size = max(1, a["tier_hi"] - a["tier_lo"] + 1)
+    tier_pct = min(100, int(tier_n / tier_size * 100))
+    next_hint = ("距 %d 级还差 %d 分" % (a["level"] + 1, a["to_next"])) \
+        if a["next_at"] else "已经是最高一级了"
 
     chips = "".join('<span class="chip">%s</span>' % x
                     for x in (a["likes"] + a["traits"] + ["不喜欢：" + x for x in a["dislikes"]]))
@@ -169,11 +176,18 @@ async def me(request: Request):
     <div class="card">
       <div style="display:flex;justify-content:space-between">
         <span class="muted" style="font-size:13px">好感度</span>
-        <span class="muted" style="font-size:13px">%s · 第 %d 级</span>
+        <span class="muted" style="font-size:13px">%s · %d 级</span>
       </div>
-      <div class="big">%d</div>
+      <div class="big">%d <span style="font-size:13px" class="muted">/ %d</span></div>
       <div class="bar"><div style="width:%d%%"></div></div>
       <p class="hint" style="margin:8px 0 0">%s</p>
+      <div style="margin-top:12px">
+        <div style="display:flex;justify-content:space-between">
+          <span class="hint">%s</span>
+          <span class="hint">本档第 %d / %d 级</span>
+        </div>
+        <div class="bar" style="margin-top:4px"><div style="width:%d%%"></div></div>
+      </div>
     </div>
     <div class="grid">
       <div class="card"><p class="muted" style="font-size:12px;margin:0">对话</p><div class="n">%d</div></div>
@@ -188,8 +202,8 @@ async def me(request: Request):
            ("最近活跃 %s" % a["last_active"]) if a["last_active"] else "还没聊过",
            (a["name"] or "?")[:2],
            missing,
-           a["level_name"], a["level"], a["score"], pct,
-           ("距下一级还差 %d" % a["to_next"]) if a["next_at"] else "已经是最高一级",
+           a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
+           a["tier"], tier_n, tier_size, tier_pct,
            a["turns"], a["she_initiated"], a["streak"],
            chips, topics, ms)
     return _page(body)

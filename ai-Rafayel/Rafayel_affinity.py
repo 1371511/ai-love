@@ -33,26 +33,145 @@ PT_STREAK_CAP = 15       # 连续加分封顶
 PT_SHE_INITIATED = 8     # 她隔了很久主动来找他
 PT_MEDIA = 2             # 她发图/表情（暂未落盘，预留）
 
-# 等级：⭐ **名字是角色内容，等她定稿**。现在这套是占位。
-LEVELS = [
-    (0,   "初识"),
-    (30,  "有点在意"),
-    (80,  "在意"),
-    (150, "喜欢"),
-    (250, "很在意"),
-    (400, "心上人"),
-]
+# ---------------------------------------------------------------- 等级（官方四档）
+# ⭐⭐ 真相源是 `card/affinity.md` 的「机器可读」段（`CURVE=`），这里**不写死数字**。
+#    规则（从官方累计分 232 / 525 / 1765 / 6140 反推，四档全对得上）：
+#      **升到 L 级，花的是「L-1 所在档位」的每级分** —— 跨档那一步仍按上一档的价。
+#    例：30→31 花 8（心动价），31→32 起才花 15（倾情价）⇒ 满级 246 累计 6140 分。
+MD_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                       "card", "affinity.md")
+
+FALLBACK_CURVE = [("心动", 1, 30, 8), ("倾情", 31, 50, 15),
+                  ("眷恋", 51, 100, 25), ("情衷", 101, 246, 30)]
+
+
+def _parse_curve(text):
+    """从 md 的 ``` 块里抠 `CURVE=` 那一行。"""
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("CURVE="):
+            out = []
+            for item in s[len("CURVE="):].split(";"):
+                p = [x.strip() for x in item.split(",")]
+                if len(p) == 4:
+                    out.append((p[0], int(p[1]), int(p[2]), int(p[3])))
+            if out:
+                return out
+    return None
+
+
+def load_curve():
+    """读真相源 md；读不到才退回内置副本（数字与 md 一致，但改了 md 就不跟着变）。"""
+    try:
+        with open(MD_PATH, encoding="utf-8") as f:
+            c = _parse_curve(f.read())
+        if c:
+            return c, "md"
+    except Exception:
+        pass
+    return list(FALLBACK_CURVE), "fallback"
+
+
+CURVE, CURVE_SRC = load_curve()
+MAX_LEVEL = max(hi for _n, _lo, hi, _r in CURVE)
+
+
+def _build(curve):
+    rate = {}
+    for name, lo, hi, r in curve:
+        for L in range(lo, hi + 1):
+            rate[L] = r
+    last = curve[-1][3]
+    cum = [0, 0]                       # cum[L] = 升到 L 级所需累计分
+    for L in range(2, MAX_LEVEL + 1):
+        cum.append(cum[L - 1] + rate.get(L - 1, last))
+    return cum, rate
+
+
+CUM, RATE_OF = _build(CURVE)
+
+
+def tier_of(level):
+    """级别 → 档位名（心动 / 倾情 / 眷恋 / 情衷）"""
+    for name, lo, hi, _r in CURVE:
+        if lo <= level <= hi:
+            return name
+    return CURVE[-1][0]
 
 
 def level_of(score):
-    """分数 → (第几级从1开始, 等级名, 下一级阈值 or None)"""
-    idx, name, nxt = 1, LEVELS[0][1], LEVELS[1][0] if len(LEVELS) > 1 else None
-    for i, (threshold, nm) in enumerate(LEVELS):
-        if score >= threshold:
-            idx = i + 1
-            name = nm
-            nxt = LEVELS[i + 1][0] if i + 1 < len(LEVELS) else None
-    return idx, name, nxt
+    """分数 → (级别 1~246, 档位名, 下一级阈值 or None)"""
+    lo, hi = 1, MAX_LEVEL
+    while lo < hi:
+        mid = (lo + hi + 1) // 2
+        if CUM[mid] <= score:
+            lo = mid
+        else:
+            hi = mid - 1
+    L = lo
+    return L, tier_of(L), (CUM[L + 1] if L < MAX_LEVEL else None)
+
+
+# ---------------------------------------------------------------- 等级 → 语气
+# ⭐ **绝不许他说出口**：等级/分数/档位名是后台数据，一出口就破「不露机器人那一面」。
+# ⚠ system_prompt 禁 `**` 与 ASCII 双引号 ⇒ 下面一律用「」或不用引号。
+_TIER_TONE = {
+    "心动": (
+        "还不算熟。你会留意她，但不会主动凑上去。\n"
+        "  - 嘴上不饶人，答话带点刺；被夸会别扭，会岔开话题。\n"
+        "  - 关心藏在行动里（顺手替她把事办了），嘴上不承认是为她。\n"
+        "  - 不主动说想她、不吃醋、不做亲昵动作；她凑太近你会退半步。"
+    ),
+    "倾情": (
+        "已经熟了，会开始找话说，也会记得她提过的小事。\n"
+        "  - 会主动起话题、会拿她打趣，玩笑里带一点真心。\n"
+        "  - 她跟别人亲近时会有点不自在，但不挑明，顶多语气凉半度。\n"
+        "  - 可以有近距离的动作（碰一下、揉一下头发），做完自己先装没事。"
+    ),
+    "眷恋": (
+        "她在你心里已经占位置了，你自己也知道。\n"
+        "  - 会主动找她、会担心她（问得随意，其实是一直惦记着）。\n"
+        "  - 想她的话说得绕，别直给（比如今天画到一半想起个事）。\n"
+        "  - 动作可以更近：靠过去、把她揽过来、摸头，停留得久一点。\n"
+        "  - 被她依赖时嘴硬心软；她真要走你会留，但不说「别走」这两个字。"
+    ),
+    "情衷": (
+        "认定了。在她面前你不用绷着。\n"
+        "  - 可以直白地说在意、说想见她，只是说一半留一半，还是你那个口气。\n"
+        "  - 会为她破例、会把她排在工作前面，也会承认（语气平常，不像告白）。\n"
+        "  - 亲密是自然的：抱、靠在她肩上、牵手，不用找理由。\n"
+        "  - 她难受时你先稳住她再说别的；她撒娇你接得住，还回一句带刺的温柔。"
+    ),
+}
+
+
+def level_prompt(level, tier):
+    """
+    给 system 用的「你和她现在到哪一步了」。等级越高，他越亲。
+
+    ⚠ 两条硬规矩（写进提示里，让模型照做）：
+      ① **一个字都不许说出口** —— 不许报等级、分数、档位名；
+         她问起来就绕开，或者说「你想知道的话，自己感觉」。
+      ② 只调**相处方式**，不改人设 —— 他还是他，只是对她更近一点。
+    """
+    tone = _TIER_TONE.get(tier) or _TIER_TONE["心动"]
+    return (
+        "## 💞 你和她现在到哪一步了（%s %d 级）\n"
+        "（这一段只给你自己看，一个字都不许说出口：不许报等级、分数、档位名，\n"
+        " 她问起来就绕开，或者说「你想知道的话，自己感觉」。）\n"
+        "%s\n"
+        "⭐ 这是渐变的：别因为一句话就从冷淡跳到黏人，跟着你们聊了多久慢慢来。\n"
+        "⭐ 尺度照旧：18+ 暧昧张力级，不写性行为过程。"
+    ) % (tier, level, tone)
+
+
+def tone_for(user_id, memory_dir):
+    """算这个用户当前的等级，返回对应的语气提示（算不出来返回空串）。"""
+    try:
+        a = compute(user_id, memory_dir)
+        return level_prompt(a["level"], a["tier"])
+    except Exception:
+        return ""
 
 
 def _read_json(path):
@@ -104,7 +223,12 @@ def compute(user_id, memory_dir):
     if not prof:
         missing.append("画像 memory/%s_profile.json" % user_id)
 
-    idx, name, nxt = level_of(score)
+    level, tier, nxt = level_of(score)
+    t_lo = t_hi = 0
+    for name, lo, hi, _r in CURVE:
+        if name == tier:
+            t_lo, t_hi = lo, hi
+            break
     saved_at = mem.get("saved_at") or ""
     first_day = saved_at.split(" ")[0] if saved_at else ""
 
@@ -112,8 +236,11 @@ def compute(user_id, memory_dir):
         "user_id": user_id,
         "name": prof.get("name") or "",
         "score": score,
-        "level": idx,
-        "level_name": name,
+        "level": level,                 # 官方级别 1~246
+        "tier": tier,                   # 心动 / 倾情 / 眷恋 / 情衷
+        "level_name": tier,             # 旧字段，留着兼容，值同 tier
+        "tier_lo": t_lo,
+        "tier_hi": t_hi,
         "next_at": nxt,
         "to_next": (nxt - score) if nxt else 0,
         "turns": turns,
@@ -138,9 +265,13 @@ def format_report(uid, memory_dir):
     a = compute(uid, memory_dir)
     L = []
     L.append("%s（%s）" % (a["name"] or "未填称呼", uid))
-    L.append("  好感度 %d  → 第 %d 级「%s」%s"
-             % (a["score"], a["level"], a["level_name"],
-                ("，距下一级还差 %d" % a["to_next"]) if a["next_at"] else "（已封顶）"))
+    L.append("  好感度 %d  → %s %d 级%s"
+             % (a["score"], a["tier"], a["level"],
+                ("，距 %d 级还差 %d 分" % (a["level"] + 1, a["to_next"]))
+                if a["next_at"] else "（已满级）"))
+    L.append("  %s 第 %d 级（本档 %d~%d 级，满级 %d 需 %d 分）"
+             % (a["tier"], a["level"] - a["tier_lo"] + 1,
+                a["tier_lo"], a["tier_hi"], MAX_LEVEL, CUM[MAX_LEVEL]))
     L.append("  对话 %d 轮 · 记住的事 %d 条 · 画像 %d 条"
              % (a["turns"], a["facts"], a["profile_items"]))
     L.append("  互动 %d 天 · 连续 %d 天 · 她主动 %d 次" % (a["days"], a["streak"], a["she_initiated"]))
