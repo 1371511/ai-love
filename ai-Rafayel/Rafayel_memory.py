@@ -22,6 +22,7 @@ from Rafayel_config import (
     MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_ONE_LINE, REPLY_ONE_LINE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
+from Rafayel_daily import record as daily_record
 from Rafayel_profile import UserProfile
 
 # ============================================================
@@ -265,11 +266,20 @@ class ConversationManager:
         """更新 messages 中的 system 消息"""
         self.messages[0]["content"] = self.get_full_system_prompt()
 
-    def add_user_message(self, content):
-        """添加用户消息"""
+    def add_user_message(self, content, media=False):
+        """
+        添加用户消息。
+
+        `media` = 她这条是不是图 / 表情（记进每日统计，好感度会用到）。
+        """
         # 🕐 先算「隔了多久」再推进时间戳 —— 顺序反了就永远算成 0。
         self.gap_hours = self._compute_gap_hours()
         self.last_msg_at = time.time()
+
+        # 📅 每日统计（好感度要用：哪天聊过 / 连续几天 / 谁先开口 / 发没发图）。
+        #    ⚠ gap 必须传**刚算出来的快照**：函数里再算一次就已经被上面推进成 0 了。
+        #    ⚠ daily_record 自己吞异常，这里不再包一层（写不进去最多少几个数，别拖累对话）。
+        daily_record(self.user_id, gap_hours=self.gap_hours, media=media)
 
         self.messages.append({"role": "user", "content": content})
         self.turn_count += 1

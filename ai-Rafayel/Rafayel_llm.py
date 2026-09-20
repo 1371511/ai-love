@@ -29,9 +29,10 @@ if _WB_DIR not in sys.path:
 from Rafayel import (
     CARD_ALT_GREETINGS, CARD_FIRST_MES, CARD_POST_HISTORY, system_prompt,
 )
+from Rafayel_affinity import tone_for
 from Rafayel_config import (
-    API_URL, MAX_TOKENS, MODEL, QZONE_CMT_ENABLE, REPLY_ONE_LINE, TEMPERATURE,
-    WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
+    AFFINITY_TONE, API_URL, MAX_TOKENS, MEMORY_DIR, MODEL, QZONE_CMT_ENABLE,
+    REPLY_ONE_LINE, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
@@ -81,6 +82,25 @@ def _build_worldbook(cm, user_message):
         return "", ""
 
 
+def _level_block(cm):
+    """
+    💞 「你和她现在到哪一步了」—— 牵绊度等级 → 说话的亲疏。
+
+    ⭐ 为什么**放进 system 而不是追加到最后**：等级几天才动一次，不是每轮都变，
+      ⇒ 不会像时间感那样把 DeepSeek 的**前缀缓存**拦腰截断。
+    ⚠ 只进 `request_messages` 的 system，**绝不写回 cm.messages**（跟世界书同一个口径）：
+      否则会被 save_memory 落盘，还会被模型当成常驻人设反复读。
+    ⚠ 算不出来就返回空串（降级），绝不让好感度把对话搞挂。
+    """
+    if not AFFINITY_TONE:
+        return ""
+    try:
+        return tone_for(cm.user_id, MEMORY_DIR)
+    except Exception as e:
+        print("⚠️ 牵绊度语气注入失败（不影响对话）：%s" % e)
+        return ""
+
+
 def _system_with_now(cm, tail=""):
     """
     一次性 prompt（`comment_opening` / `comment_reply` 这类）用的 system。
@@ -89,6 +109,9 @@ def _system_with_now(cm, tail=""):
     跟主对话那条路（走 `request_messages` 追加）不一样。别搞混。
     """
     s = cm.get_full_system_prompt()
+    lv = _level_block(cm)
+    if lv:
+        s += "\n\n" + lv
     n = cm.now_hint_text()
     if n:
         s += "\n\n" + n
@@ -257,7 +280,8 @@ def record_proactive(user_id: str, text: str) -> bool:
         return False
 
 
-def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> str:
+def get_reply(user_message: str, user_id: str, api_key_override: str = None,
+              media: bool = False) -> str:
     """
     供外部调用的入口函数
 
@@ -265,6 +289,7 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
         user_message: 用户发送的消息
         user_id: 用户的 QQ 号（用于区分不同用户，保持独立对话）
         api_key_override: 可选，手动传入 API Key（不传则使用环境变量或默认值）
+        media: 她这条是不是图 / 表情（记进每日统计，好感度会用到）
 
     返回：
         AI 的回复文本
@@ -280,8 +305,8 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
 
     cm = _user_managers[user_id]
 
-    # 1. 添加用户消息
-    cm.add_user_message(user_message)
+    # 1. 添加用户消息（media 只用于每日统计，不参与对话内容）
+    cm.add_user_message(user_message, media=media)
 
     # 2. 更新 system 消息（加入最新的记忆）
     cm.update_system_message()
@@ -295,12 +320,16 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None) -> 
     # 4a. 世界书：命中关键词的条目才注入
     #     ⚠ system 那条是**每轮重算**的，不写回 cm.messages ——
     #        否则命中内容会被 save_memory 沉淀进 memory\*.json，越滚越大还会变成常驻人设。
+    # 4a-0. 💞 牵绊度语气（等级几天才动一次，放 system 里不影响前缀缓存）
     wb_before, wb_after = _build_worldbook(cm, user_message)
-    if wb_before:
-        request_messages[0] = {
-            "role": "system",
-            "content": cm.get_full_system_prompt() + "\n\n" + wb_before,
-        }
+    _lv = _level_block(cm)
+    if _lv or wb_before:
+        _sys = cm.get_full_system_prompt()
+        if _lv:
+            _sys += "\n\n" + _lv
+        if wb_before:
+            _sys += "\n\n" + wb_before
+        request_messages[0] = {"role": "system", "content": _sys}
     if wb_after:
         request_messages.append({"role": "system", "content": wb_after})
 

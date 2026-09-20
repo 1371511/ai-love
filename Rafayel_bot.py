@@ -46,10 +46,11 @@ from Rafayel_qzone_auto import (
 )
 
 # ============================================
-def your_ai_lover_response(user_message: str, user_id: str) -> str:
+def your_ai_lover_response(user_message: str, user_id: str, media: bool = False) -> str:
     """调用祁煜的对话引擎（Rafayel_chat）"""
     # 直接调用 get_reply，它会自动管理该用户的对话历史和记忆
-    return get_reply(user_message, user_id)
+    # media = 她这条是不是图 / 表情 ⇒ 只进每日统计（好感度用），不参与对话内容
+    return get_reply(user_message, user_id, media=media)
 
 
 def _img_payload(p):
@@ -421,7 +422,8 @@ async def process_napcat_message(data, websocket):
             await send_text(websocket, message_type, user_id, group_id, opening)
 
         # 调用你的 AI 恋人逻辑（喂的是翻译过的那段话，不是 CQ 码）
-        reply = your_ai_lover_response(parsed["prompt"], user_id)
+        reply = your_ai_lover_response(parsed["prompt"], user_id,
+                                       media=bool(parsed.get("sticker") or parsed.get("photo")))
 
         # 2026-09-20：她只甩了张表情、一个字没说 ⇒ 他也甩一张（对打）。
         #   ⚠ 必须放在 get_reply **之后**：冷却闸在里面跑，这里补的图不会被它剥掉；
