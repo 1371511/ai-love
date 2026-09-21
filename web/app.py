@@ -13,8 +13,10 @@
 
 import hashlib
 import hmac
+import html
 import json
 import os
+import re
 import sys
 import time
 
@@ -23,7 +25,10 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
-from Rafayel_affinity import compute, days_since, cum_at, MAX_LEVEL  # noqa: E402
+from Rafayel_affinity import (  # noqa: E402
+    compute, days_since, cum_at, MAX_LEVEL,
+    load_sms_nodes, sms_full, egg_texts, load_egg_levels,
+)
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -279,9 +284,12 @@ async def me(request: Request):
         '<p style="margin:0 0 6px;font-size:12px" class="muted">%s</p>' % t
         for t in a["topics"]))
 
-    ms_card = _card("他说过的那句话", "".join(
-        '<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m
-        for m in a["milestones"]))
+    _ms = "".join('<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m
+                  for m in a["milestones"])
+    if _ms:
+        # ⭐ 2026-09-21：短信从 QQ 撤下来之后，这一卡只当引子 ⇒ 给个门进「牵绊提升彩蛋」
+        _ms += '<p style="margin:10px 0 0"><a href="/messages" class="hint">看全部 →</a></p>'
+    ms_card = _card("他说过的那句话", _ms)
 
     # ⭐ 2026-09-21 她定的：**互动天数 / 连续天数整格撤掉** —— 这俩只从接入那天开始记，
     #    老用户认识一百多天却显示「3 天」，摆上去是误导（宁可不显示，也不给假数）。
@@ -355,7 +363,7 @@ async def me(request: Request):
     </div>
     <div class="card"><h2>你们之间</h2>%s</div>
     %s%s
-    <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
+    <p style="text-align:center"><a href="/messages" class="hint">牵绊提升彩蛋</a> · <a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
            sub,
            (shown_name or "?")[:2],
@@ -365,6 +373,116 @@ async def me(request: Request):
            a["turns"], tokens_txt, tokens_unit,
            chips, topics_card, ms_card)
     return _page(body)
+
+
+# ============================================================
+# 🎁 牵绊提升彩蛋（2026-09-21 她定：牵绊短信不进 QQ ⇒ 单开一页放网页端）
+# ------------------------------------------------------------
+# ⭐ 为什么单开一页：45 条短信带 A/B/C 三段分支，塞进 /me 会把主页撑到没法看。
+# ⚠⚠ **没解锁的内容一个字都不许进 HTML**（不是用 CSS 藏起来）——
+#    否则右键「查看源代码」就能把 200 级以后的剧情全读了。这条有断言守着。
+# ⚠ 只读 memory：等级从 compute() 来，页面一个字都不写。
+# ============================================================
+
+def _esc(t):
+    """素材 / 标题进页面前一律先转义 —— 是我们自己的文件，但别赌它永远没有尖括号。"""
+    return html.escape(str(t or ""), quote=False)
+
+
+_STICKER_TXT = re.compile(r"\[表情:([^\]]+)\]")
+
+
+def _rich(t):
+    """转义 + 把 `[表情:标签]` 画成小圆片（网页端没有图床，不硬塞真图）。"""
+    return _STICKER_TXT.sub(
+        r'<span class="chip" style="margin:0;padding:2px 8px">表情 · \1</span>', _esc(t))
+
+
+def _lock_row(level, right=""):
+    """未解锁的占位行：只说「第几级解锁」，**不带一点内容**。"""
+    return ('<p class="hint" style="opacity:.5;margin:0 0 8px">🔒 第 %d 级解锁%s</p>'
+            % (level, ("　" + _esc(right)) if right else ""))
+
+
+@app.get("/messages", response_class=HTMLResponse)
+async def messages_page(request: Request):
+    """「牵绊提升彩蛋」—— 跨级解锁的官方素材（45 条短信 + 86 条彩蛋短句）。"""
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+
+    a = compute(uid, MEMORY_DIR)
+    lv = int(a["level"] or 1)
+
+    nodes = load_sms_nodes()
+    eggs = egg_texts()
+    egg_lv = load_egg_levels()
+
+    sms_un = [n for n in nodes if n[0] <= lv]
+    sms_lk = [n for n in nodes if n[0] > lv]
+    eg_un = [(egg_lv[i], eggs[i]) for i in range(len(eggs))
+             if i < len(egg_lv) and egg_lv[i] <= lv]
+    eg_lk = [egg_lv[i] for i in range(len(eggs))
+             if i < len(egg_lv) and egg_lv[i] > lv]
+
+    parts = ['<div class="card"><h1>牵绊提升彩蛋</h1>'
+             '<p class="muted" style="font-size:12px;margin:0">'
+             '每跨过一个等级，他就多一点想让你听见的。</p>'
+             '<p class="hint" style="margin:8px 0 0">已经解锁 %d / %d 条短信 · %d / %d 条彩蛋</p>'
+             '</div>' % (len(sms_un), len(nodes), len(eg_un), len(eggs))]
+
+    # ---------------- 短信：已解锁的带 A/B/C 选项 ----------------
+    parts.append('<h2 style="margin:18px 0 10px">短信</h2>')
+    if not sms_un:
+        parts.append('<p class="hint" style="margin:0 0 10px">还一条都没解锁 —— 到第 %d 级就有第一条了。</p>'
+                     % (sms_lk[0][0] if sms_lk else 1))
+    for lvl, tier, title, fn in reversed(sms_un):
+        full = sms_full(fn)
+        blocks = []
+        for b in full["blocks"]:
+            if b["kind"] != "branch":
+                blocks.append('<p style="margin:8px 0;font-size:13px">%s：%s</p>'
+                              % (_esc(b["who"]), _rich(b["text"])))
+                continue
+            blocks.append('<p class="hint" style="margin:12px 0 4px">第 %d 段</p>' % b["n"])
+            for op in b["options"]:
+                inner = "".join(
+                    '<p class="hint" style="margin:6px 0 0 14px">你：%s</p>' % _rich(x)
+                    for x in op["her"])
+                inner += "".join(
+                    '<p style="margin:2px 0 0 14px;font-size:13px">他：%s</p>' % _rich(x)
+                    for x in op["him"])
+                blocks.append('<details style="margin:0 0 6px">'
+                              '<summary style="cursor:pointer;font-size:13px">%s｜%s</summary>'
+                              '%s</details>' % (_esc(op["key"]), _esc(op["title"]), inner))
+        more = ('<details style="margin-top:10px"><summary class="hint" style="cursor:pointer">'
+                '看完整对话</summary>%s</details>' % "".join(blocks)) if blocks else ""
+        parts.append('<div class="card">'
+                     '<div style="display:flex;justify-content:space-between">'
+                     '<h2 style="margin:0">%s</h2>'
+                     '<span class="hint">第 %d 级 · %s</span></div>'
+                     '<p style="margin:8px 0 0;font-size:13px">「%s」</p>%s</div>'
+                     % (_esc(title), lvl, _esc(tier), _rich(full["opening"]), more))
+    if sms_lk:
+        parts.append('<p class="hint" style="margin:16px 0 8px">—— 还没解锁 ——</p>')
+        parts.extend(_lock_row(lvl, title) for lvl, _t, title, _fn in sms_lk)
+
+    # ---------------- 彩蛋：一行一句，不占卡片 ----------------
+    parts.append('<h2 style="margin:22px 0 10px">彩蛋</h2>')
+    rows = "".join(
+        '<p style="margin:0 0 8px;font-size:13px">「%s」'
+        '<span class="hint">　第 %d 级</span></p>' % (_rich(t), lvl)
+        for lvl, t in reversed(eg_un))
+    if not rows:
+        rows = '<p class="hint" style="margin:0">还没解锁 —— 到第 %d 级有第一条。</p>' \
+            % (eg_lk[0] if eg_lk else 1)
+    if eg_lk:
+        rows += '<p class="hint" style="margin:14px 0 8px">—— 还没解锁 ——</p>'
+        rows += "".join(_lock_row(x) for x in eg_lk)
+    parts.append('<div class="card">%s</div>' % rows)
+
+    parts.append('<p style="text-align:center"><a href="/me" class="hint">回去</a></p>')
+    return _page("".join(parts), title="牵绊提升彩蛋")
 
 
 def _check_met_day(day, uid=""):

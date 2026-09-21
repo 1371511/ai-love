@@ -209,6 +209,7 @@ def load_egg_levels():
 
 _EGG_CACHE = None
 _SMS_CACHE = {}
+_SMS_FULL_CACHE = {}
 _TAG_CACHE = None
 
 
@@ -282,6 +283,83 @@ def sms_opening(filename):
         print("⚠️ 牵绊短信读取失败（这条不发）：%s" % e)
     _SMS_CACHE[filename] = text
     return text
+
+
+def _fix_markup(t):
+    """把素材里的全角表情标记归一成 `[表情:标签]`（网页端再画成小圆片）。"""
+    m = _STICKER_RE.match(t)
+    if m:
+        return "[表情:%s]" % m.group(2).strip()
+    return t
+
+
+def sms_full(filename):
+    """
+    一条牵绊短信的**完整结构**（网页端「牵绊提升彩蛋」用；QQ 端用不到）。
+
+    返回 {"opening": str, "blocks": [block, …]} —— **按素材里的先后顺序**排好的块
+      block = {"kind": "branch", "n": 1, "options": [opt, …]}        一段分支
+            | {"kind": "line", "who": "他"/"她", "text": str}        分支外的散句
+      opt   = {"key": "A", "title": str, "her": [str, …], "him": [str, …]}
+
+    ⭐ 为什么是「有序的块」而不是「opening + branches」：33 / 45 条的**分支外还夹着散句**
+      （一段分支结束后他又补一句之类），按原顺序排才不会把对话接错位。
+
+    ⚠ 素材格式（45 条里 42 条一致）：第一行 `祁煜：…` 是开场句；之后每个 `◇分支N` 块里是
+      `  A｜选项名` / `   用户：…` / `   祁煜：…`。
+      ⭐ **但结构并不统一，必须容错**（2026-09-21 全量核过）：
+        · `11雨棍（53 级）` **一段分支都没有**，就两句话（只有 opening + extra）；
+        · `12颜料雨伞（56 级）` 有 **4 段**分支；`21微缩景观（下）86 级` 只有 **2 段**。
+      ⇒ 所以**一个「几段分支」的假设都不能有**；一行格式歪了只是少一段，
+        **绝不抛异常** —— 不能让一条脏数据把整页搞成 500。
+    """
+    if filename in _SMS_FULL_CACHE:
+        return _SMS_FULL_CACHE[filename]
+    out = {"opening": "", "blocks": []}
+    try:
+        with open(os.path.join(SMS_DIR, filename), encoding="utf-8") as f:
+            raw = f.read()
+    except Exception as e:
+        print("⚠️ 牵绊短信读取失败（这条不上网页）：%s" % e)
+        _SMS_FULL_CACHE[filename] = out
+        return out
+
+    cur_br = None
+    cur_op = None
+    for line in raw.splitlines():
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith("◇分支"):
+            n = sum(1 for b in out["blocks"] if b["kind"] == "branch") + 1
+            cur_br = {"kind": "branch", "n": n, "options": []}
+            out["blocks"].append(cur_br)
+            cur_op = None
+            continue
+        m = re.match(r"^([A-Za-z])\s*[｜|]\s*(.*)$", s)
+        if m and cur_br is not None:
+            cur_op = {"key": m.group(1).upper(), "title": m.group(2).strip(),
+                      "her": [], "him": []}
+            cur_br["options"].append(cur_op)
+            continue
+        if s.startswith("用户："):
+            txt = _fix_markup(s[3:].strip())
+            if cur_op is not None:
+                cur_op["her"].append(txt)
+            else:
+                out["blocks"].append({"kind": "line", "who": "她", "text": txt})
+            continue
+        if s.startswith("祁煜："):
+            txt = _fix_markup(s[3:].strip())
+            if cur_op is not None:
+                cur_op["him"].append(txt)
+            elif not out["opening"]:
+                out["opening"] = txt
+            else:
+                out["blocks"].append({"kind": "line", "who": "他", "text": txt})
+            continue
+    _SMS_FULL_CACHE[filename] = out
+    return out
 
 
 def _her_name(user_id, memory_dir):
