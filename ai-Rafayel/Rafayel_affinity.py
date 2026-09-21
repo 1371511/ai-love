@@ -148,7 +148,7 @@ def level_of(score):
 # ⚠ 本模块**只读**：这里只负责「读素材 + 算该发哪一条」，写盘一律交给 `Rafayel_daily`。
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # E:\ai-love
 _DEFAULT_NAME = "保镖小姐"          # 画像里没记称呼时的兜底（跟主动打招呼同一个口径）
-MILESTONE_MAX = 8                   # 网页端「他说过的那句话」最多显示几条
+MILESTONE_MAX = 5                   # 网页端「他说过的那句话」最多显示几条（她 2026-09-21 定成 5）
 
 # 素材里的表情标记是全角 + 二级名：`[表情：涂鸦叽：生气]`
 _STICKER_RE = re.compile(r"^\[表情[：:]([^\]：:]+)[：:]([^\]：:]+)\]$")
@@ -612,32 +612,33 @@ def compute(user_id, memory_dir):
             first_day = min(ds) if ds else ""
     known_days = days_since(first_day) if first_day else 0
 
-    # 🎁 已解锁的官方素材（跨级触发解锁的那些）⇒ 网页端「他说过的那句话」卡片。
+    # 🎁 他在 QQ 里**真的说过**的彩蛋 ⇒ 网页端「他说过的那句话」卡片。
     #    ⭐ 卡片是「有内容才渲染」，给空列表它就自动隐藏 —— **页面代码不用改**。
-    #    ⚠ 纯表情那几条（`[表情:生气]`）不上卡片：显示成「[表情:生气]」很难看。
+    #    ⭐⭐ 2026-09-21 她定死（原话：「『他说过的那句话』保留，而且主页显示的话，就显示最新的 5 条，
+    #       不要全部显示。内容是 …\彩蛋里的 01牵绊度提升 的语句。只显示他在QQ聊天时提到过的语句」）：
+    #      ① **内容 = 彩蛋** —— 就是素材 `彩蛋\01牵绊度提升.txt` 那 86 句
+    #         （项目内副本 `card/affinity/牵绊彩蛋.txt`，已核 MD5 与桌面源一致）。
+    #      ② **只放「真说出口过」的** —— 这一点**不需要额外记录**，`unlocked["eggs"]` 的语义本来就是
+    #         「**真发出去才记**」（见 `pending_unlock()` 里的 `sent_eggs`；没发出去的下次升级补），
+    #         不是「到级就标」。
+    #         ⚠ 反例正是 `unlocked["sms"]`：45 条短信**只标「已解锁」、QQ 端一句都没说过**
+    #         ⇒ 按这条口径本就不该进这张卡（它们有自己的页面 `/messages`，见 §19.3）。
+    #      ③ **只显示最新 MILESTONE_MAX 条**（按绑定等级倒序取前 5），不是全铺开。
+    #    ⚠ 纯表情那几条不上卡片：显示成「[表情:生气]」很难看
+    #      （当前 86 条彩蛋里没有纯表情行，这条只是保险）。
     milestones = []
     u = daily.get("unlocked") if daily else None
     if isinstance(u, dict):
-        items, eggs, egg_lv = [], egg_texts(), load_egg_levels()
-        for x in (u.get("eggs") or []):
+        eggs, egg_lv = egg_texts(), load_egg_levels()
+        items = []
+        for x in (u.get("eggs") or []):          # ⭐ 这个列表 = 「他真发过的」，不是「解锁的」
             try:
                 i = int(x)
             except (TypeError, ValueError):
                 continue
             if 0 <= i < len(eggs) and i < len(egg_lv):
                 items.append((egg_lv[i], eggs[i]))
-        nodes = {n[0]: n for n in load_sms_nodes()}
-        for x in (u.get("sms") or []):
-            try:
-                lvl = int(x)
-            except (TypeError, ValueError):
-                continue
-            n = nodes.get(lvl)
-            if n:
-                t = sms_opening(n[3])
-                if t:
-                    items.append((lvl, t))
-        items.sort(key=lambda p: p[0], reverse=True)
+        items.sort(key=lambda p: p[0], reverse=True)       # 等级大的 = 最近说的
         milestones = [t for _lv, t in items
                       if t and not t.startswith("[表情:")][:MILESTONE_MAX]
 
