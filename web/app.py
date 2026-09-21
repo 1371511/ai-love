@@ -48,6 +48,7 @@ AVATAR_MAX = 2 * 1024 * 1024        # 2 MB
 ASSET_DIR = os.path.join(BASE, "web", "assets")
 ASSET_FILES = {"qiyu": "qiyu.jpg"}
 SALT = "rafael-affinity"
+DEFAULT_PWD = "qiyu2026"        # ⭐ 统一默认密码：所有人第一次都用这个进来（在 /settings 里自己改）
 
 
 def _load_secret():
@@ -110,6 +111,25 @@ def _save_users(users):
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
     os.replace(tmp, USERS_PATH)
+
+
+def _known_uids():
+    """
+    ⭐ memory 里出现过的人 = **真的跟他说过话的人**（`memory/{QQ}.json` 等）。
+
+    ⚠ 只取**纯数字**：`*_daily` / `*_usage` / `*_profile` 这些尾巴会带出同一个 QQ，
+      用 `_` 切一刀再判 `isdigit()` 就都归一了（顺带把 `cli` 这种测试号排除掉）。
+    """
+    out = set()
+    if not os.path.isdir(MEMORY_DIR):
+        return out
+    for name in os.listdir(MEMORY_DIR):
+        if not name.endswith(".json"):
+            continue
+        uid = name[:-5].split("_")[0]
+        if uid.isdigit():
+            out.add(uid)
+    return out
 
 
 def _mask_uid(uid):
@@ -342,6 +362,15 @@ async def login(request: Request, uid: str = Form(""), pwd: str = Form("")):
     uid = (uid or "").strip()
     users = _load_users()
     rec = users.get(uid)
+    # ⭐ 2026-09-21 她定的：**跟他聊过的人就能进来** —— `users.json` 里没这个人，
+    #    但 memory 里有他的文件（= 真聊过）且密码是统一默认密码 ⇒ **当场开号**。
+    #    ⚠ 别再靠「手工往白名单里加」：漏一个，那个人就永远登不上、
+    #      也看不到自己的数据（当天正是这么踩的 —— 全站只有她自己那个号能进）。
+    if rec is None and uid in _known_uids() \
+            and hmac.compare_digest(_hash(pwd or ""), _hash(DEFAULT_PWD)):
+        users[uid] = {"pwd": _hash(DEFAULT_PWD), "note": "自动开通（memory 里有他）"}
+        _save_users(users)
+        rec = users[uid]
     if not rec or not hmac.compare_digest(rec.get("pwd", ""), _hash(pwd or "")):
         _login_note_fail(ip)
         return RedirectResponse("/?err=" + "账号或密码不对", status_code=303)
