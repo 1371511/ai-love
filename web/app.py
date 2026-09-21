@@ -27,7 +27,7 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
 from Rafayel_affinity import (  # noqa: E402
     compute, days_since, cum_at, MAX_LEVEL,
-    load_sms_nodes, sms_full, egg_texts, load_egg_levels,
+    load_sms_nodes, sms_full,
 )
 
 MEMORY_DIR = os.path.join(BASE, "memory")
@@ -444,7 +444,13 @@ def _lock_row(level, right=""):
 
 @app.get("/messages", response_class=HTMLResponse)
 async def messages_page(request: Request):
-    """「牵绊提升」—— 跨级解锁的官方素材（45 条短信 + 86 条彩蛋短句）。"""
+    """
+    「牵绊提升」—— 跨级解锁的官方素材（45 条短信）。
+
+    ⚠⚠ 2026-09-21 她定的口径：**彩蛋不上网页端**。
+       那 86 句是「**QQ 端聊天时可用的语料**」—— 等级到了，他在对话里偶尔提一句；
+       而不是摆成一页给人从头翻到尾。所以这一页**只剩短信**，一个字彩蛋都不渲染。
+    """
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
@@ -453,21 +459,14 @@ async def messages_page(request: Request):
     lv = int(a["level"] or 1)
 
     nodes = load_sms_nodes()
-    eggs = egg_texts()
-    egg_lv = load_egg_levels()
-
     sms_un = [n for n in nodes if n[0] <= lv]
     sms_lk = [n for n in nodes if n[0] > lv]
-    eg_un = [(egg_lv[i], eggs[i]) for i in range(len(eggs))
-             if i < len(egg_lv) and egg_lv[i] <= lv]
-    eg_lk = [egg_lv[i] for i in range(len(eggs))
-             if i < len(egg_lv) and egg_lv[i] > lv]
 
     parts = ['<div class="card"><h1>牵绊提升</h1>'
              '<p class="muted" style="font-size:12px;margin:0">'
              '每跨过一个等级，他就多一点想让你听见的。</p>'
-             '<p class="hint" style="margin:8px 0 0">已经解锁 %d / %d 条短信 · %d / %d 条彩蛋</p>'
-             '</div>' % (len(sms_un), len(nodes), len(eg_un), len(eggs))]
+             '<p class="hint" style="margin:8px 0 0">已经解锁 %d / %d 条短信</p>'
+             '</div>' % (len(sms_un), len(nodes))]
 
     # ---------------- 短信：一条一个框，点进去才是详细对话 ----------------
     # ⭐ 2026-09-21 她定的版式（就是她截的那张图）：
@@ -492,19 +491,9 @@ async def messages_page(request: Request):
         parts.append('<p class="hint" style="margin:16px 0 8px">—— 还没解锁 ——</p>')
         parts.extend(_lock_row(lvl, title) for lvl, _t, title, _fn in sms_lk)
 
-    # ---------------- 彩蛋：一行一句，不占卡片 ----------------
-    parts.append('<h2 style="margin:22px 0 10px">彩蛋</h2>')
-    rows = "".join(
-        '<p style="margin:0 0 8px;font-size:13px">「%s」'
-        '<span class="hint">　第 %d 级</span></p>' % (_rich(t), lvl)
-        for lvl, t in reversed(eg_un))
-    if not rows:
-        rows = '<p class="hint" style="margin:0">还没解锁 —— 到第 %d 级有第一条。</p>' \
-            % (eg_lk[0] if eg_lk else 1)
-    if eg_lk:
-        rows += '<p class="hint" style="margin:14px 0 8px">—— 还没解锁 ——</p>'
-        rows += "".join(_lock_row(x) for x in eg_lk)
-    parts.append('<div class="card">%s</div>' % rows)
+    # ⚠⚠ 2026-09-21 她拆掉的「彩蛋」段落（86 句、一行一句）**不要加回来** ——
+    #     她定：彩蛋是**QQ 端聊天时偶尔提到的语料**（等级到了才解锁），
+    #     不是摆成一页给人从头翻的展示内容。彩蛋只走 QQ，网页端只有短信。
 
     parts.append('<p style="text-align:center"><a href="/me" class="hint">回去</a></p>')
     return _page("".join(parts), title="牵绊提升")
