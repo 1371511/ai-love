@@ -169,12 +169,37 @@ button{cursor:pointer;background:#222;color:#fff;border-color:#222;width:100%;ma
 .err{color:#B03030;font-size:12px}
 """
 
+# 短信详情页专用（模拟手机聊天）—— 只给那一页，别塞进全站 CSS 让每页都背一遍。
+CHAT_CSS = """
+.phone{border:0.5px solid rgba(0,0,0,.14);border-radius:16px;overflow:hidden;margin-bottom:14px;background:#EDEDED}
+.ph-top{background:#F7F7F7;border-bottom:0.5px solid rgba(0,0,0,.1);padding:10px 14px;
+        display:flex;align-items:center;justify-content:space-between}
+.ph-top b{font-size:14px;font-weight:500}
+.chat{padding:14px 12px 6px}
+.row{display:flex;align-items:flex-start;margin-bottom:12px}
+.row.me{flex-direction:row-reverse}
+.av{flex:0 0 30px;width:30px;height:30px;border-radius:50%;background:#DCE7F5;color:#33506E;
+    display:flex;align-items:center;justify-content:center;font-size:12px;margin:0 8px}
+.row.me .av{background:#F6DDE7;color:#8E3556}
+.bub{max-width:76%;background:#fff;border-radius:12px;padding:8px 11px;font-size:13.5px;
+     box-shadow:0 0 0 .5px rgba(0,0,0,.06);word-break:break-word}
+.row.me .bub{background:#D4537E;color:#fff}
+.bub.tip{background:transparent;border:1px dashed rgba(0,0,0,.22);color:#999;box-shadow:none}
+.sys{text-align:center;font-size:11.5px;color:#999;margin:6px 0 12px}
+.pick{display:block;text-decoration:none;color:#222;background:#fff;
+      border:0.5px solid rgba(0,0,0,.14);border-radius:10px;padding:9px 12px;margin-bottom:8px;font-size:13px}
+.pick b{font-weight:500;color:#8E3556;margin-right:8px}
+.pick .go{float:right;color:#999;font-size:12px}
+.end{text-align:center;font-size:11.5px;color:#999;padding:4px 0 12px}
+a.plain{color:inherit;text-decoration:none;display:block}
+"""
 
-def _page(body, title="他眼里的你"):
+
+def _page(body, title="他眼里的你", css=""):
     return HTMLResponse("""<html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%s</title><style>%s</style></head><body><div class="wrap">%s</div></body></html>""" %
-                        (title, CSS, body))
+                        (title, CSS + css, body))
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -284,12 +309,24 @@ async def me(request: Request):
         '<p style="margin:0 0 6px;font-size:12px" class="muted">%s</p>' % t
         for t in a["topics"]))
 
-    _ms = "".join('<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m
-                  for m in a["milestones"])
-    if _ms:
-        # ⭐ 2026-09-21：短信从 QQ 撤下来之后，这一卡只当引子 ⇒ 给个门进「牵绊提升彩蛋」
-        _ms += '<p style="margin:10px 0 0"><a href="/messages" class="hint">看全部 →</a></p>'
-    ms_card = _card("他说过的那句话", _ms)
+    ms_card = _card("他说过的那句话", "".join(
+        '<p style="margin:0 0 6px;font-size:13px">「%s」</p>' % m
+        for m in a["milestones"]))
+
+    # 🎁 2026-09-21 她定的：入口**单独一张卡，紧跟「他说过的那句话」**——
+    #    · 不塞进上面那张卡里（那是两回事）
+    #    · 也不放底部导航（底部只留「设置 / 退出」）
+    #    ⚠ 这一张**不跟着 milestones 空不空**：它自己是入口，不是那张卡的尾巴。
+    _nodes = load_sms_nodes()
+    _un = sum(1 for n in _nodes if n[0] <= a["level"])
+    egg_card = ('<div class="card">'
+                '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+                '<h2 style="margin:0">牵绊提升彩蛋</h2>'
+                '<span class="hint">已解锁 %d / %d</span></div>'
+                '<p class="muted" style="font-size:12px;margin:6px 0 0">'
+                '每跨过一个等级，他就多一点想让你听见的。</p>'
+                '<p style="margin:10px 0 0"><a href="/messages" class="hint">进去看看 →</a></p>'
+                '</div>') % (_un, len(_nodes))
 
     # ⭐ 2026-09-21 她定的：**互动天数 / 连续天数整格撤掉** —— 这俩只从接入那天开始记，
     #    老用户认识一百多天却显示「3 天」，摆上去是误导（宁可不显示，也不给假数）。
@@ -362,8 +399,8 @@ async def me(request: Request):
         <div class="n">%s</div><p class="hint" style="margin:2px 0 0">%s</p></div>
     </div>
     <div class="card"><h2>你们之间</h2>%s</div>
-    %s%s
-    <p style="text-align:center"><a href="/messages" class="hint">牵绊提升彩蛋</a> · <a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
+    %s%s%s
+    <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
            sub,
            (shown_name or "?")[:2],
@@ -371,7 +408,7 @@ async def me(request: Request):
            a["tier"], a["level"], a["score"], pct, next_hint,
            tier_block,
            a["turns"], tokens_txt, tokens_unit,
-           chips, topics_card, ms_card)
+           chips, topics_card, ms_card, egg_card)
     return _page(body)
 
 
@@ -431,38 +468,25 @@ async def messages_page(request: Request):
              '<p class="hint" style="margin:8px 0 0">已经解锁 %d / %d 条短信 · %d / %d 条彩蛋</p>'
              '</div>' % (len(sms_un), len(nodes), len(eg_un), len(eggs))]
 
-    # ---------------- 短信：已解锁的带 A/B/C 选项 ----------------
+    # ---------------- 短信：一条一个框，点进去才是详细对话 ----------------
+    # ⭐ 2026-09-21 她定的版式（就是她截的那张图）：
+    #    标题 + 右上「第 N 级 · 档位」+ 开头句一句 + 一行灰字。
+    # ⭐ 灰字**从「就地展开」改成「跳转」** ⇒ 列表页轻了，完整对话单开一页（还能一句句聊）。
     parts.append('<h2 style="margin:18px 0 10px">短信</h2>')
     if not sms_un:
         parts.append('<p class="hint" style="margin:0 0 10px">还一条都没解锁 —— 到第 %d 级就有第一条了。</p>'
                      % (sms_lk[0][0] if sms_lk else 1))
     for lvl, tier, title, fn in reversed(sms_un):
-        full = sms_full(fn)
-        blocks = []
-        for b in full["blocks"]:
-            if b["kind"] != "branch":
-                blocks.append('<p style="margin:8px 0;font-size:13px">%s：%s</p>'
-                              % (_esc(b["who"]), _rich(b["text"])))
-                continue
-            blocks.append('<p class="hint" style="margin:12px 0 4px">第 %d 段</p>' % b["n"])
-            for op in b["options"]:
-                inner = "".join(
-                    '<p class="hint" style="margin:6px 0 0 14px">你：%s</p>' % _rich(x)
-                    for x in op["her"])
-                inner += "".join(
-                    '<p style="margin:2px 0 0 14px;font-size:13px">他：%s</p>' % _rich(x)
-                    for x in op["him"])
-                blocks.append('<details style="margin:0 0 6px">'
-                              '<summary style="cursor:pointer;font-size:13px">%s｜%s</summary>'
-                              '%s</details>' % (_esc(op["key"]), _esc(op["title"]), inner))
-        more = ('<details style="margin-top:10px"><summary class="hint" style="cursor:pointer">'
-                '看完整对话</summary>%s</details>' % "".join(blocks)) if blocks else ""
-        parts.append('<div class="card">'
-                     '<div style="display:flex;justify-content:space-between">'
+        opening = sms_full(fn)["opening"]
+        intro = ('<p style="margin:8px 0 0;font-size:13px">「%s」</p>' % _rich(opening)) if opening else ""
+        parts.append('<a href="/messages/%d" class="plain"><div class="card">'
+                     '<div style="display:flex;justify-content:space-between;align-items:baseline">'
                      '<h2 style="margin:0">%s</h2>'
-                     '<span class="hint">第 %d 级 · %s</span></div>'
-                     '<p style="margin:8px 0 0;font-size:13px">「%s」</p>%s</div>'
-                     % (_esc(title), lvl, _esc(tier), _rich(full["opening"]), more))
+                     '<span class="hint">%d 级 · %s</span></div>'
+                     '%s'
+                     '<p class="hint" style="margin:8px 0 0">展开看完整对话 →</p>'
+                     '</div></a>'
+                     % (lvl, _esc(title), lvl, _esc(tier), intro))
     if sms_lk:
         parts.append('<p class="hint" style="margin:16px 0 8px">—— 还没解锁 ——</p>')
         parts.extend(_lock_row(lvl, title) for lvl, _t, title, _fn in sms_lk)
@@ -483,6 +507,103 @@ async def messages_page(request: Request):
 
     parts.append('<p style="text-align:center"><a href="/me" class="hint">回去</a></p>')
     return _page("".join(parts), title="牵绊提升彩蛋")
+
+
+@app.get("/messages/{level}", response_class=HTMLResponse)
+async def message_detail(request: Request, level: int, p: str = ""):
+    """
+    📱 一条牵绊短信的**详细对话页** —— 模拟手机互发消息，一句一句往下走。
+
+    ⭐ 2026-09-21 她定的交互（原文：「系统：用户回复后再进行接下来的对话」）：
+       进来先只看见**他开口的第一句** + 那一段的选项；**她选了之后**，
+       她的话和他的回应才出现，再摆下一段的选项 …… 直到对话结束。
+       ⚠ 素材本来就是 A/B/C 分支树（42 条 3 段、还有 4 段 / 2 段 / 0 段的），
+         不是线性剧本 ⇒ **必须「选一个才往下走」**，一次性铺开就等于剧透自己。
+
+    ⚠ 进度走 URL（`?p=0,1` = 第 1 段选 A、第 2 段选 B），三个好处：
+       ① **一个字都不写盘**（web 端对 memory 只读这条铁律不破）
+       ② **不需要 JS**（跟全站一致：服务端渲染 + 链接跳转）
+       ③ 她能把这个链接存下来 / 发给别人看，进度跟着走
+    ⚠⚠ 等级没到 ⇒ 直接弹回列表：**详情页也不许泄漏没解锁的内容**。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+
+    a = compute(uid, MEMORY_DIR)
+    lv = int(a["level"] or 1)
+
+    node = None
+    for n in load_sms_nodes():
+        if n[0] == level:
+            node = n
+            break
+    if node is None or level > lv:
+        return RedirectResponse("/messages")
+
+    _lv, tier, title, fn = node
+    full = sms_full(fn)
+    rec = (_load_users().get(uid) or {})
+    shown = (rec.get("display_name") or "").strip() or a["name"] or "你"
+
+    # 选了哪几个（URL 里的脏值一律当「没选」，宁可让她重聊，也别把页面搞成 500）
+    picked = []
+    for x in (p or "").split(","):
+        x = x.strip()
+        if x.isdigit():
+            picked.append(int(x))
+        elif x:
+            picked.append(-1)
+
+    him_av, her_av = "祁", (shown or "你")[0]
+    rows = ['<div class="sys">%s</div>' % _esc(title)]
+
+    def _bub(who, text):
+        rows.append('<div class="%s"><div class="av">%s</div><div class="bub">%s</div></div>'
+                    % ("row me" if who == "她" else "row",
+                       _esc(her_av if who == "她" else him_av), _rich(text)))
+
+    if full["opening"]:
+        _bub("他", full["opening"])
+
+    bi = 0
+    done = True
+    for b in full["blocks"]:
+        if b["kind"] != "branch":
+            _bub(b["who"], b["text"])
+            continue
+        idx = picked[bi] if bi < len(picked) else None
+        if idx is None or not 0 <= idx < len(b["options"]):
+            # 这一段还没选 ⇒ 摆出选项，**后面的内容一个字都不渲染**（break 掉了）
+            done = False
+            rows.append('<div class="sys">（她回复之后，对话才会继续）</div>')
+            rows.append('<div class="row me"><div class="av">%s</div>'
+                        '<div class="bub tip">（在下面 %d 个选项里选一个回复）</div></div>'
+                        % (_esc(her_av), len(b["options"])))
+            for i, op in enumerate(b["options"]):
+                nxt = ",".join(str(x) for x in picked[:bi] + [i])
+                rows.append('<a class="pick" href="/messages/%d?p=%s">'
+                            '<b>%s</b>%s<span class="go">›</span></a>'
+                            % (level, nxt, _esc(op["key"]), _esc(op["title"])))
+            break
+        op = b["options"][idx]
+        for x in op["her"]:
+            _bub("她", x)
+        for x in op["him"]:
+            _bub("他", x)
+        bi += 1
+
+    if done:
+        rows.append('<div class="end">—— 说到这儿就停了 ——</div>')
+
+    head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
+            '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
+    body = ('<div class="phone">%s<div class="chat">%s</div></div>'
+            '<p style="text-align:center">'
+            '<a href="/messages/%d" class="hint">↺ 从头再聊一遍</a> · '
+            '<a href="/messages" class="hint">回列表</a></p>'
+            % (head, "".join(rows), level))
+    return _page(body, title="祁煜 · %s" % title, css=CHAT_CSS)
 
 
 def _check_met_day(day, uid=""):
