@@ -321,7 +321,7 @@ async def me(request: Request):
     _un = sum(1 for n in _nodes if n[0] <= a["level"])
     egg_card = ('<div class="card">'
                 '<div style="display:flex;justify-content:space-between;align-items:baseline">'
-                '<h2 style="margin:0">牵绊提升彩蛋</h2>'
+                '<h2 style="margin:0">彩蛋</h2>'
                 '<span class="hint">已解锁 %d / %d</span></div>'
                 '<p class="muted" style="font-size:12px;margin:6px 0 0">'
                 '每跨过一个等级，他就多一点想让你听见的。</p>'
@@ -413,7 +413,8 @@ async def me(request: Request):
 
 
 # ============================================================
-# 🎁 牵绊提升彩蛋（2026-09-21 她定：牵绊短信不进 QQ ⇒ 单开一页放网页端）
+# 🎁 牵绊提升（2026-09-21 她定：牵绊短信不进 QQ ⇒ 单开一页放网页端；
+#    页面名后来从「牵绊提升彩蛋」收成「牵绊提升」，「我的页」上那张卡只剩两个字「彩蛋」）
 # ------------------------------------------------------------
 # ⭐ 为什么单开一页：45 条短信带 A/B/C 三段分支，塞进 /me 会把主页撑到没法看。
 # ⚠⚠ **没解锁的内容一个字都不许进 HTML**（不是用 CSS 藏起来）——
@@ -443,7 +444,7 @@ def _lock_row(level, right=""):
 
 @app.get("/messages", response_class=HTMLResponse)
 async def messages_page(request: Request):
-    """「牵绊提升彩蛋」—— 跨级解锁的官方素材（45 条短信 + 86 条彩蛋短句）。"""
+    """「牵绊提升」—— 跨级解锁的官方素材（45 条短信 + 86 条彩蛋短句）。"""
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
@@ -462,7 +463,7 @@ async def messages_page(request: Request):
     eg_lk = [egg_lv[i] for i in range(len(eggs))
              if i < len(egg_lv) and egg_lv[i] > lv]
 
-    parts = ['<div class="card"><h1>牵绊提升彩蛋</h1>'
+    parts = ['<div class="card"><h1>牵绊提升</h1>'
              '<p class="muted" style="font-size:12px;margin:0">'
              '每跨过一个等级，他就多一点想让你听见的。</p>'
              '<p class="hint" style="margin:8px 0 0">已经解锁 %d / %d 条短信 · %d / %d 条彩蛋</p>'
@@ -506,7 +507,7 @@ async def messages_page(request: Request):
     parts.append('<div class="card">%s</div>' % rows)
 
     parts.append('<p style="text-align:center"><a href="/me" class="hint">回去</a></p>')
-    return _page("".join(parts), title="牵绊提升彩蛋")
+    return _page("".join(parts), title="牵绊提升")
 
 
 @app.get("/messages/{level}", response_class=HTMLResponse)
