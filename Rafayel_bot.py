@@ -511,6 +511,10 @@ async def process_notice(data, websocket):
     if data.get("notice_type") == "notify" and data.get("sub_type") == "poke":
         await handle_poke(data, websocket)
         return
+    # 「对方正在输入」—— 她每打几个字就来一条，纯噪音 ⇒ 静默忽略（2026-09-22）。
+    #   ⚠ 放在探针**前面**：不然 grep 日志全被它刷屏，真要看的东西反而被淹掉。
+    if data.get("sub_type") == "input_status":
+        return
     # 其余 notice（撤回 / 群提示 …）不处理，但留一行探针 ——
     # 真机核字段就靠它（NapCat 版本不同，戳一戳的字段名可能不一样）。
     print("[🔎] notice %s/%s：%s"
