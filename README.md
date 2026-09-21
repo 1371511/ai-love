@@ -216,7 +216,7 @@ card/_work/worldbook/          → 世界书条目（改这里，目录下 11 �
 
 - 真相源：`card\_work\祁煜人设.md` 的【回复格式】与 `post_history_instructions`
   （改完跑 `md2card.py --only card` 重新生成卡，**绝不手改 JSON**）。
-- 代码保底 `Rafayel_llm._shape_reply()`：删空行 ⇒ **纯动作段并回相邻段** ⇒ 段数截到 `REPLY_MAX_LINES`。
+- 代码保底 `Rafayel_llm._shape_reply()`：模型不分行时先按句末标点拆成 2~3 段 ⇒ 删空行 ⇒ **纯动作段并回相邻段** ⇒ 段数截到 `REPLY_MAX_LINES`。
   ⭐ 中间那步是关键：没有它，模型一写「（把笔搁下）\n睡了没。」就会被当成两段发出去 ——
   正是她当年不要的 A 风格。
 - ⚠ 一条回复仍然最多一张表情图（`Rafayel_sticker.MAX_PER_REPLY = 1`，代码硬闸，拆段也管得住）。

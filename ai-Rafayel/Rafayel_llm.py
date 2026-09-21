@@ -34,7 +34,8 @@ from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
     AFFINITY_TONE, API_URL, MAX_TOKENS, MEMORY_DIR, MODEL, QZONE_CMT_ENABLE,
-    REPLY_MAX_LINES, REPLY_SHAPE, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
+    REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK, REPLY_SPLIT_MAX_LINES,
+    REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
     api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
@@ -50,6 +51,48 @@ _user_managers = {}
 _BARE_ACTION_RE = re.compile(r"^(?:\s*（[^）]*）\s*)+$")
 
 
+def _force_segments(text):
+    """
+    ⭐ 保底：模型写了一整块**没有换行**的话 ⇒ 按句末标点拆成 2~3 段（她 2026-09-22 深夜要的）。
+
+    为什么需要它：`_shape_reply` 只在文本里已经有 \\n 时才整形；模型有时候就是不分行，
+    那时候它什么都做不了，她收到的就是一大坨字 —— 「还是要我把所有的话挤在一块吗」。
+
+    三种情况原样不动（宁可不拆，也别拆错）：
+      ① 不够长（`REPLY_SPLIT_MIN_CHARS` 以下）——「嗯」「好」这种没必要折腾
+      ② 只有一句（拆不出 ≥2 段）——硬拆反而像被切成两截
+      ⚠ 括号里的句号不作数：（括号里写的是神态，不是一句话说完了）。
+    """
+    n_enough = len(text or "") >= REPLY_SPLIT_MIN_CHARS
+    if not n_enough:
+        return text
+
+    parts, buf, depth = [], "", 0
+    pairs_open = "（「『【"
+    pairs_close = "）」』】"
+    for ch in text:
+        if ch in pairs_open:
+            depth += 1
+        elif ch in pairs_close:
+            depth = max(0, depth - 1)
+        buf += ch
+        # ⚠ 只在**括号外面**的句末标点处断句
+        if depth == 0 and ch in "。！？!?…":
+            parts.append(buf)
+            buf = ""
+    if buf.strip():
+        parts.append(buf)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) < 2:
+        return text
+
+    # 句子比上限多 ⇒ 前面的句子各占一段，多出来的并进最后一段
+    k = min(REPLY_SPLIT_MAX_LINES, len(parts))
+    lines = parts[:k - 1]
+    lines.append("".join(parts[k - 1:]))
+    return "\n".join(lines)
+
+
 def _shape_reply(text):
     """
     回复形状保底：**段内不拆行，段数封顶**（她 2026-09-22 定的放宽 + 弹性段数）。
@@ -62,13 +105,19 @@ def _shape_reply(text):
        （把笔搁下）\\n睡了没。  ⇒ 并成（把笔搁下）睡了没。
        否则放宽段数之后，这种会被当成两段发出去 —— 正是她当年不要的 A 风格。
 
+    ⭐⭐ 2026-09-22 深夜补的第三条：模型**压根不换行**时（她反馈「还是一大块」），
+      先由 `_force_segments` 按句末标点拆成 2~3 段，再走下面这套；模型自己分了段就不拆。
+
     ⚠ 这是**保底**：prompt 里已经明说了写法（REPLY_SHAPE_HINT），
       但模型不一定每轮都听 —— 听话最好，不听话也**发不出超过 REPLY_MAX_LINES 段**。
-    ⚠ 内容一字不动（只删空行、并纯动作段、截段数）。说说正文（render_text）不走这里。
+    ⚠ 内容一字不动（按句拆段 / 删空行 / 并纯动作段 / 截段数）。说说正文（render_text）不走这里。
     """
-    if not REPLY_SHAPE or "\n" not in (text or ""):
+    t = str(text or "")
+    if REPLY_SHAPE and REPLY_SPLIT_FALLBACK and "\n" not in t:
+        t = _force_segments(t)
+    if not REPLY_SHAPE or "\n" not in t:
         return text
-    raw = [l.strip() for l in str(text).replace("\r\n", "\n").split("\n")]
+    raw = [l.strip() for l in t.replace("\r\n", "\n").split("\n")]
     lines = [l for l in raw if l]
     if not lines:
         return text

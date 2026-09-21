@@ -131,12 +131,17 @@ async def send_text(websocket, message_type, user_id, group_id, text):
     else:
         return
     await websocket.send(json.dumps(response))
+    # ⭐ 2026-09-22：日志里直接带「几段」—— 她反馈「还是一大块」时，
+    #   一眼就能分清是**模型没分行**还是**代码没整形**，不用去翻记忆文件。
+    _m = message if isinstance(message, str) else "".join(
+        (seg.get("data", {}).get("text") or "") for seg in message)
+    _n = _m.count("\n") + 1
     if isinstance(message, list):
         kinds = "+".join(seg["type"] for seg in message)
         preview = " ".join((seg["data"].get("text") or "[图]") for seg in message)
-        print(f"[💬] 已回复({kinds}): {preview[:50]}...")
+        print(f"[💬] 已回复({kinds} {_n}段): {preview[:50]}...")
     else:
-        print(f"[💬] 已回复: {message[:50]}...")
+        print(f"[💬] 已回复({_n}段): {message[:50]}...")
 
 
 # ============================================
