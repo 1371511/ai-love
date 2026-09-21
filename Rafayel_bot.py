@@ -28,8 +28,8 @@ from Rafayel_config import (
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
     POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
     POKE_TYPING_MAX, POKE_TYPING_MIN,
-    REPLY_TYPING_MAX, REPLY_TYPING_MIN, REPLY_TYPING_PER_CHAR,
-    REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
+    REPLY_BUBBLE_GAP, REPLY_TYPING_MAX, REPLY_TYPING_MIN,
+    REPLY_TYPING_PER_CHAR, REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
     QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
     QZONE_CMT_EVENT_WS, QZONE_CMT_HOUR_END, QZONE_CMT_HOUR_START,
@@ -621,7 +621,15 @@ async def _flush_reply(user_id, why=""):
         print("[⏱] %s：%d 句并一批 ⇒ 打字 %.1fs 再发"
               % (why or "发车", len(st["lines"]), d))
         await asyncio.sleep(d)
-        await send_text(ws, st["message_type"], user_id, st["group_id"], reply)
+        # 💬 2026-09-22 深夜她拍板的：所谓「分段」就是**一条气泡一段**——
+        #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
+        #   一段一条消息发；段与段之间隔一小会儿（0.8~1.6s 随机），像在连续打字。
+        lines = [l.strip() for l in str(reply).replace("\r\n", "\n").split("\n")
+                 if l.strip()] or [reply]
+        for i, line in enumerate(lines):
+            if i:
+                await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
+            await send_text(ws, st["message_type"], user_id, st["group_id"], line)
 
     # 🎁 牵绊度跨级 ⇒ 再补一条官方素材（短信开头句 / 彩蛋）。
     #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
