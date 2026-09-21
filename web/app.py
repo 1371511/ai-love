@@ -215,12 +215,16 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
 /* ⭐ 2026-09-21 她定：**底部那一条钉在屏幕底部**（原话「让它一直保持在界面里」）——
    原本是每页各自一行居中的灰字链接，页面一长就跟着滚走。
    ⚠ 内容**一个字都没加**（还是各页原来那几个链接）—— 她之前定的「底部只留设置 / 退出」没动。
-   ⚠⚠ `body` 那个 `padding-bottom` 是给这条**留位**的：`position:fixed` 会脱离文档流，不留位的话最后一屏内容会被压在下面。
-   ⇒ 改 `.footnav` 的高度（字号 / 内边距）**必须同步改它**。*/
-.footnav{position:fixed;left:0;right:0;bottom:0;z-index:10;
+   ⚠⭐ 2026-09-22 改成 **`position:sticky`**（她截图：`fixed` 那条底下还漏出一截页面内容 ——
+   iOS Safari 的 `fixed;bottom:0` 跟真实可视区对不齐，页面能从它底下再滚一截）。
+   sticky 在**文档流里**、跟着内容走 ⇒ 内容**不可能**跑到它下面，也不需要再给 body 留位。
+   ⇒ 负 margin 是三件事：左右 `-1rem` 抵消 body 的左右留白（**通栏**）、
+     底下 `-2rem` 抵消 body 的 `padding:2rem`（滚到底时那条贴着屏幕最底下，不再悬空 2rem）。
+   ⇒ 改 body 的左右/底部 padding，**必须同步改这三个 margin**。*/
+.footnav{position:sticky;bottom:0;z-index:10;
          background:#FAFAF8;border-top:0.5px solid rgba(0,0,0,.1);
-         padding:10px 1rem;text-align:center;font-size:12px}
-body{padding-bottom:56px}
+         padding:10px 1rem;text-align:center;font-size:12px;
+         margin:0 -1rem -2rem}
 """
 
 # 短信详情页专用（模拟手机聊天）—— 只给那一页，别塞进全站 CSS 让每页都背一遍。
@@ -845,6 +849,9 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
     #        下面是一个 `"""..."""` 模板字符串，注释照原样发到浏览器（右键看源码就能读到），
     #        等于把删掉的文案又送回去了（2026-09-21 真踩：验证脚本当场抓到 5 条 FAIL）。
     #    ⚠ 字段本身**没动**：`placeholder="留空就用他记住的称呼"` 和日期控件照旧。
+    # ⚠ `.footnav` 那行在模板里位于 `</div>` **之后**（.wrap 的直接子元素）：
+    #    sticky 只在自己的父块范围内贴底，关进 .card 里的话滚到卡片头之前就不贴了。
+    #    ⚠⭐ 说明写在这儿（Python 注释），别写进下面的模板 —— `"""` 里的 HTML 注释会原样发到浏览器。
     body = """
     <div class="card">
       <h1>设置</h1>
@@ -882,9 +889,8 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         <button type="submit">上传</button>
       </form>
       %s
-
-      <p class="footnav"><a href="/me" class="hint">回去</a></p>
-    </div>""" % (_mask_uid(uid), msg, name, met_day, av_preview, av_state, av_remove)
+    </div>
+    <p class="footnav"><a href="/me" class="hint">回去</a></p>""" % (_mask_uid(uid), msg, name, met_day, av_preview, av_state, av_remove)
     return _page(body, title="设置")
 
 
