@@ -315,15 +315,18 @@ def pending_unlock(user_id, memory_dir):
     """
     跨级了没有？该发哪一条？**只读**，返回 dict 或 None。
 
-    dict = {kind, level, title, text, level_now, key}
-      kind      "sms"（短信开头句） / "egg"（彩蛋）
-      level_now 现在的等级 ⇒ 调用方拿它推进 `unlocked.level`
-      key       去重用的键：短信 = 节点等级；彩蛋 = 彩蛋下标
+    dict = {level_now, mark_sms, send}
+      level_now  现在的等级 ⇒ 调用方拿它推进 `unlocked.level`
+      mark_sms   这一跳新到达的**短信节点等级**列表 ⇒ **只记「已解锁」，不发**
+      send       要发的那一条 `{"kind","level","text","key"}`；没有就是 None
 
-    ⭐ 一级最多发一条：**短信优先于彩蛋**（短信是官方剧情节点，更重）。
-    ⚠ 没升级就返回 None —— **绝不补发历史**。
-    ⚠ 没发出去的那条**不丢**：`sms`/`eggs` 只在真发出去后才记，
-      所以被短信挤掉的那条彩蛋会在下一次升级时补上。
+    ⭐⭐ **牵绊短信不进 QQ**（2026-09-21 她定：「既然写进了网页端，就不放在 QQ 对话端里了」）
+       ⇒ 短信节点照样**标记解锁**（网页端读 `unlocked.sms` 去显示），但 **QQ 端一条都不发**；
+         QQ 端从此**只发彩蛋**。
+       ⇒ 连带变化：以前「短信优先、把撞车的彩蛋挤到下次」那套**没了** ——
+         彩蛋不再被挤，按 `EGG_AT` 该发就发（7/13/33/53… 那 18 个撞车等级不再顺延）。
+    ⚠ 一级最多发一条；没升级就返回 None（**绝不补发历史**）。
+    ⚠ 没发出去的彩蛋**不丢**：`eggs` 只在真发出去后才记 ⇒ 下次升级接着补。
     """
     lv_now = current_level(user_id, memory_dir)
     if not lv_now:
@@ -346,23 +349,23 @@ def pending_unlock(user_id, memory_dir):
 
     name = _her_name(user_id, memory_dir)
 
+    # ① 短信：这一跳新到达的节点**只标解锁**，不回 QQ
+    #    （开头句由网页端取；真要发也轮不到 QQ —— 那是「他愿意主动说的」，属于恋爱线的活儿）
     sent_sms = _ints(u.get("sms"))
-    for lv, _tier, title, fn in load_sms_nodes():
-        if lv <= lv_now and lv not in sent_sms:
-            text = sms_opening(fn)
-            if text:
-                return {"kind": "sms", "level": lv, "title": title,
-                        "text": re.sub(r"@?用户", name, text),
-                        "level_now": lv_now, "key": lv}
+    mark_sms = sorted(lv for lv, _t, _ti, _fn in load_sms_nodes()
+                      if lv <= lv_now and lv not in sent_sms)
 
+    # ② 彩蛋：现在**唯一**会真的发到 QQ 的东西（一级最多一条，剩下的下次补）
     sent_eggs = _ints(u.get("eggs"))
     eggs = egg_texts()
+    send = None
     for i, lv in enumerate(load_egg_levels()):
         if lv <= lv_now and i not in sent_eggs and i < len(eggs):
-            return {"kind": "egg", "level": lv, "title": "",
-                    "text": re.sub(r"@?用户", name, eggs[i]),
-                    "level_now": lv_now, "key": i}
-    return None
+            send = {"kind": "egg", "level": lv, "key": i,
+                    "text": re.sub(r"@?用户", name, eggs[i])}
+            break
+
+    return {"level_now": lv_now, "mark_sms": mark_sms, "send": send}
 
 
 # ---------------------------------------------------------------- 等级 → 语气

@@ -148,12 +148,17 @@ async def maybe_send_unlock(websocket, message_type, user_id, group_id):
     跨级了就补一条官方素材。决策在 `Rafayel_affinity.pending_unlock`（**只读**），
     本函数只负责「发出去 + 记账」。
 
+    ⭐⭐ **牵绊短信不进 QQ**（2026-09-21 她定：那批已经进网页端了）——
+      ⇒ QQ 端**只发彩蛋**；短信节点一到级就**只标「已解锁」、一个字都不发**，
+        留给网页端展示。所以这里 `mark_sms` 是记账、`send` 才是要说话的。
+
     ⚠ 四条铁律：
       ① 发出去的那句话**必须进对话记忆**（`record_proactive`）—— 不然她回话时模型
          不知道上一句是他说的，会出现完全接不住的回复（老规矩，跟打招呼/说说同一口径）。
-      ② 记「已解锁」放在**发送成功之后** —— 发送抛异常就不留下"他说过"的假记录。
+      ② 记「已发送」放在**发送成功之后** —— 发送抛异常就不留下"他说过"的假记录。
+         （短信那列是「已解锁」不是「已发送」，且根本不发，所以一进来就能记。）
       ③ **不等回执**。主流程里等回执必然超时，真根因见 `_watch_receipt` 那段注释。
-      ④ 只在**私聊**里发：群里冒出一条官方短信很奇怪。
+      ④ 只在**私聊**里发：群里冒出一条官方素材很奇怪。
     """
     if not AFFINITY_UNLOCK:
         return
@@ -172,20 +177,29 @@ async def maybe_send_unlock(websocket, message_type, user_id, group_id):
         if not item:
             return
 
-        await send_text(websocket, message_type, user_id, group_id, item["text"])
-        record_proactive(user_id, item["text"])
+        # ① 短信：只记「已解锁」（网页端读它），**绝不发到 QQ**
+        got_sms = [int(x) for x in (rec.get("sms") or [])]
+        for lv in (item.get("mark_sms") or []):
+            if lv not in got_sms:
+                got_sms.append(int(lv))
+        rec["sms"] = sorted(got_sms)
 
-        col = "sms" if item["kind"] == "sms" else "eggs"
-        got = list(rec.get(col) or [])
-        if item["key"] not in got:
-            got.append(item["key"])
-        rec[col] = got
+        # ② 彩蛋才是唯一真的发出去的东西
+        send = item.get("send")
+        if send:
+            await send_text(websocket, message_type, user_id, group_id, send["text"])
+            record_proactive(user_id, send["text"])
+            got = list(rec.get("eggs") or [])
+            if send["key"] not in got:
+                got.append(send["key"])
+            rec["eggs"] = got
+            print("[💗] 牵绊度 %d 级 ⇒ 发彩蛋：%r" % (send["level"], send["text"][:30]))
+        else:
+            print("[💗] 牵绊度 %d 级 ⇒ 这级没有彩蛋（只解锁，短信不进 QQ）"
+                  % item["level_now"])
+
         rec["level"] = max(int(rec.get("level") or 0), int(item["level_now"] or 0))
         save_unlocked(user_id, rec)
-
-        print("[💗] 牵绊度 %d 级 ⇒ 发官方素材（%s%s）：%r"
-              % (item["level"], item["kind"],
-                 ("/" + item["title"]) if item["title"] else "", item["text"][:30]))
     except Exception as e:
         print("[💗] 跨级素材发送失败（不影响对话）：%s" % e)
 
