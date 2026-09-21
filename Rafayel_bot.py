@@ -19,12 +19,15 @@ from Rafayel_chat import (comment_opening, comment_reply, get_reply,
                          recent_context, record_proactive, take_opening)
 from Rafayel_config import (
     AFFINITY_UNLOCK,
+    POKE_COOLDOWN, POKE_ECHO_BACK, POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
+    POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
+    POKE_TYPING_MAX, POKE_TYPING_MIN,
     REPLY_TYPING_MAX, REPLY_TYPING_MIN, REPLY_TYPING_PER_CHAR,
     REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
@@ -412,6 +415,105 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
 
 
 # ============================================
+# 👆 戳一戳（2026-09-22 加；她选 C：回戳 + 说一句）
+# ============================================
+# ⭐ 为什么值得做：戳一戳是 QQ 里最像「真人小动作」的交互 —— 没有文字、没有话题，
+#   纯粹是碰一下。他要有反应（回戳 + 说一句），才会像个活人在手机那头。
+#
+# ⚠ 三条硬规矩：
+#   ① **她戳的是别人就不管**：`target_id != self_id` ⇒ 直接 return（群里很常见）。
+#   ② **有冷却**：她连着戳也不会刷屏。
+#   ③ **回戳失败无所谓**：`send_poke` 是 NapCat 扩展，发不出去就发不出去，
+#      下面那句话照说 —— 她戳了一定有反应，这才是关键。
+_poke_last = {}      # uid -> 上次回应的时间戳
+_poke_busy = set()   # 正在处理的 uid（防她连点导致两条回复并发）
+
+
+async def send_poke(websocket, message_type, user_id, group_id):
+    """
+    戳回去。`send_poke` 是 **NapCat 扩展**（不是 OneBot v11 标准）。
+
+    ⚠ **不等回执**：跟 `send_text` 同一个口径（⚠⚠ 绝不在处理消息的协程里等 NapCat 回执）。
+    ⚠ 失败只是日志里一行，不影响后面那句话 —— 她戳了**一定有反应**。
+    """
+    params = {"user_id": int(user_id)}
+    if message_type == "group" and group_id:
+        params["group_id"] = group_id
+    try:
+        await websocket.send(json.dumps({"action": "send_poke", "params": params}))
+        print("[👆] 已回戳 %s（%s）" % (user_id, message_type))
+    except Exception as e:
+        print("[👆] 回戳失败（不影响说话）：%r" % e)
+
+
+async def handle_poke(data, websocket):
+    """她戳了他 ⇒ 回戳一下 + 说一句话。"""
+    if not POKE_ENABLE:
+        return
+
+    user_id = str(data.get("user_id") or "")
+    if not user_id.isdigit():
+        return
+    target = str(data.get("target_id") or "")
+    self_id = str(data.get("self_id") or globals().get("SELF_UIN") or "")
+
+    # ① 她戳的是别人 ⇒ 不关他的事（群里最常见）
+    if self_id and target and target != self_id:
+        print("[👆] %s 戳了 %s（不是他）⇒ 不管" % (user_id, target))
+        return
+
+    # ② 冷却 / 正在处理
+    now = time.time()
+    if now - _poke_last.get(user_id, 0) < POKE_COOLDOWN_SECONDS:
+        print("[👆] %s 又戳了一下（冷却 %.0fs 内）⇒ 装作没看见"
+              % (user_id, POKE_COOLDOWN_SECONDS))
+        return
+    if user_id in _poke_busy:
+        return
+    _poke_last[user_id] = now
+    _poke_busy.add(user_id)
+
+    group_id = data.get("group_id")
+    message_type = "group" if group_id else "private"
+    print("[👆] %s 戳了他 ⇒ 回戳 + 说一句" % user_id)
+
+    try:
+        # ③ 先回戳（NapCat 扩展，失败无所谓）
+        if POKE_REPLY_BACK:
+            await send_poke(websocket, message_type, user_id, group_id)
+
+        # ④ 再说一句（走 get_reply ⇒ 自动进对话记忆）
+        reply = await asyncio.to_thread(your_ai_lover_response, POKE_PROMPT, user_id)
+        if not (reply or "").strip():
+            tag = random_reply_tag()
+            if tag:
+                reply = "[表情:%s]" % tag
+        if reply:
+            d = _typing_delay(reply, POKE_TYPING_MIN, POKE_TYPING_MAX)
+            await asyncio.sleep(d)
+            await send_text(websocket, message_type, user_id, group_id, reply)
+    finally:
+        _poke_busy.discard(user_id)
+
+
+async def process_notice(data, websocket):
+    """
+    处理 notice 事件（戳一戳 / 其它）。
+
+    ⚠ 戳一戳是 **notice 不是 message** ⇒ 以前 `post_type == "message"` 那一支根本收不到，
+      她在 QQ 里戳他，他一点反应都没有。
+    """
+    if data.get("notice_type") == "notify" and data.get("sub_type") == "poke":
+        await handle_poke(data, websocket)
+        return
+    # 其余 notice（撤回 / 群提示 …）不处理，但留一行探针 ——
+    # 真机核字段就靠它（NapCat 版本不同，戳一戳的字段名可能不一样）。
+    print("[🔎] notice %s/%s：%s"
+          % (data.get("notice_type"), data.get("sub_type"),
+             json.dumps(data, ensure_ascii=False)[:160]))
+
+
+# ============================================
 # ⏱ 回复节奏：等她说完 + 假装打字（2026-09-22 她定的）
 # ============================================
 # ⭐ 为什么要有这一层：她的原话是「发完一句它就立刻回了，根本没机会说四句」。
@@ -429,11 +531,17 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
 _pending_replies = {}
 
 
-def _typing_delay(text):
-    """发出去之前等几秒（假装打字）。字多就多等一点，但压在 [MIN, MAX] 里。"""
-    base = REPLY_TYPING_MIN + len(text or "") * REPLY_TYPING_PER_CHAR
-    hi = min(REPLY_TYPING_MAX, max(REPLY_TYPING_MIN, base))
-    return random.uniform(REPLY_TYPING_MIN, hi)
+def _typing_delay(text, lo=None, hi=None):
+    """
+    发出去之前等几秒（假装打字）。字多就多等一点，但压在 [lo, hi] 里。
+
+    lo / hi 不传就用平时的 `REPLY_TYPING_*`；戳一戳那种短回复传 `POKE_TYPING_*`（快一点）。
+    """
+    lo = REPLY_TYPING_MIN if lo is None else lo
+    hi = REPLY_TYPING_MAX if hi is None else hi
+    base = lo + len(text or "") * REPLY_TYPING_PER_CHAR
+    top = min(hi, max(lo, base))
+    return random.uniform(lo, top)
 
 
 def _enqueue_reply(websocket, message_type, user_id, group_id, parsed):
@@ -512,6 +620,87 @@ async def _flush_reply(user_id, why=""):
 
 
 # ============================================
+# 👉 戳一戳（2026-09-22 她要的）
+# ============================================
+# 她戳他 ⇒ ① 回戳一下 ② 打字说一句。
+#
+# ⚠ 三条硬规矩：
+#   ① **只认戳他的**（`target_id == self_id`）—— 群聊里她戳别人不该有反应。
+#   ② **回戳是锦上添花**：`send_poke` 是 NapCat 扩展、真机没验过 ⇒
+#      失败就静默跳过、**话照说**，绝不能变成「戳了完全没反应」。
+#   ③ **冷却期内整个忽略**：她连着戳只回应第一次，防刷屏。
+_poke_last = {}
+
+
+async def send_poke(websocket, user_id, group_id=None):
+    """
+    回戳她一下（QQ 的「戳一戳」）。成功返回 True，失败 False。
+
+    ⚠ `send_poke` 不是 OneBot v11 标准动作，是 NapCat / go-cqhttp 的扩展
+      ⇒ 这里**只管发、不等回执**；成败交给调用方降级处理。
+    """
+    params = {"user_id": int(user_id)}
+    if group_id:
+        params["group_id"] = group_id
+    try:
+        await websocket.send(json.dumps({"action": "send_poke", "params": params},
+                                        ensure_ascii=False))
+        return True
+    except Exception as e:
+        print("[👉] 回戳发送失败（不影响说话）：%r" % e)
+        return False
+
+
+def _poke_at_me(data):
+    """这是不是「她戳了他」这件事本身（她戳别人 ⇒ 不算）。"""
+    if data.get("post_type") != "notice":
+        return False
+    if data.get("notice_type") != "notify" or data.get("sub_type") != "poke":
+        return False
+    target = str(data.get("target_id") or "")
+    me = str(data.get("self_id") or globals().get("SELF_UIN") or "")
+    # ⚠ 群聊里她也可能戳别人 ⇒ 两个 id 都对得上才算「戳他」
+    return bool(me) and bool(target) and target == me
+
+
+async def maybe_handle_poke(data, websocket):
+    """命中并处理了返回 True（交回给调用方 return，不再往下走）。"""
+    if not POKE_ENABLE or not _poke_at_me(data):
+        return False
+    uid = str(data.get("user_id") or "")
+    if not uid.isdigit():
+        return False
+
+    now = time.time()
+    if now - _poke_last.get(uid, 0) < POKE_COOLDOWN:
+        print("[👉] %s 又戳了一下（冷却 %.0fs 内）⇒ 不理" % (uid, POKE_COOLDOWN))
+        return True
+    _poke_last[uid] = now
+
+    gid = data.get("group_id")
+    mt = "group" if gid else "private"
+    print("[👉] %s 戳了他 ⇒ 回戳 + 说一句" % uid)
+
+    if POKE_ECHO_BACK:
+        await send_poke(websocket, uid, gid)
+
+    # 说话走正常对话引擎（「她戳了戳你」是合成提示，跟她发张图同一个口径）
+    reply = await asyncio.to_thread(your_ai_lover_response, POKE_PROMPT, uid,
+                                    media=False)
+    if not (reply or "").strip():
+        tag = random_reply_tag()
+        if tag:
+            reply = "[表情:%s]" % tag
+    if reply:
+        await asyncio.sleep(_typing_delay(reply))
+        await send_text(websocket, mt, uid, gid, reply)
+
+    # 🎁 牵绊度跨级 ⇒ 补一条官方素材（跟文字消息同一口径）
+    await maybe_send_unlock(websocket, mt, uid, gid)
+    return True
+
+
+# ============================================
 # WebSocket 服务端（连接 NapCat）
 # ============================================
 
@@ -552,6 +741,23 @@ async def process_napcat_message(data, websocket):
         else:
             print("[🔎] 无 post_type 的帧（echo=%r）：%s"
                   % (echo, json.dumps(data, ensure_ascii=False)[:300]))
+        return
+
+    # 👆 2026-09-22：notice 事件（戳一戳）—— ⚠ 它不是 message，
+    #    以前这一整类被下面的判断漏掉，她戳他完全没反应。
+    if data.get("post_type") == "notice":
+        await process_notice(data, websocket)
+        return
+
+    # 👉 2026-09-22：戳一戳（notice + sub_type=poke）—— 她戳他 ⇒ 回戳 + 说一句。
+    if await maybe_handle_poke(data, websocket):
+        return
+
+    # ⚠ 探针：**没认出来的 notice 原样打出来**。NapCat 各版本字段不一样
+    #   （戳一戳也可能挂在别的 notice_type 下），真机戳一下看这行就能核字段。
+    if data.get("post_type") == "notice":
+        print("[🔎] 未处理的 notice：%s"
+              % json.dumps(data, ensure_ascii=False)[:300])
         return
 
     # 只处理消息事件（私聊和群聊）
