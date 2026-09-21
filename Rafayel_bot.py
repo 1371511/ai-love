@@ -19,7 +19,7 @@ from Rafayel_chat import (comment_opening, comment_reply, get_reply,
                          recent_context, record_proactive, take_opening)
 from Rafayel_config import (
     AFFINITY_UNLOCK,
-    POKE_COOLDOWN, POKE_ECHO_BACK, POKE_ENABLE, POKE_PROMPT,
+    POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
@@ -620,99 +620,6 @@ async def _flush_reply(user_id, why=""):
 
 
 # ============================================
-# 👉 戳一戳（2026-09-22 她要的）
-# ============================================
-# 她戳他 ⇒ ① 回戳一下 ② 打字说一句。
-#
-# ⚠ 三条硬规矩：
-#   ① **只认戳他的** —— target 是他。⚠⭐ NapCat 有个已知 bug：她戳的是机器人时
-#      `target_id` 上报成 **0**（有时干脆缺失），不是他自己的 QQ 号
-#      ⇒ 真机 2026-09-22 就栽在这（她戳了完全没反应）。
-#      判据 = target 是他 ⇒ 算；target 是 0 / 缺失 ⇒ 也算（能被戳的只有他）；
-#      target 是别人 ⇒ 不算。
-#   ② **回戳是锦上添花**：`send_poke` 是 NapCat 扩展、真机没验过 ⇒
-#      失败就静默跳过、**话照说**，绝不能变成「戳了完全没反应」。
-#   ③ **冷却期内整个忽略**：她连着戳只回应第一次，防刷屏。
-_poke_last = {}
-
-
-async def send_poke(websocket, user_id, group_id=None):
-    """
-    回戳她一下（QQ 的「戳一戳」）。成功返回 True，失败 False。
-
-    ⚠ `send_poke` 不是 OneBot v11 标准动作，是 NapCat / go-cqhttp 的扩展
-      ⇒ 这里**只管发、不等回执**；成败交给调用方降级处理。
-    """
-    params = {"user_id": int(user_id)}
-    if group_id:
-        params["group_id"] = group_id
-    try:
-        await websocket.send(json.dumps({"action": "send_poke", "params": params},
-                                        ensure_ascii=False))
-        return True
-    except Exception as e:
-        print("[👉] 回戳发送失败（不影响说话）：%r" % e)
-        return False
-
-
-def _poke_at_me(data):
-    """这是不是「她戳了他」这件事本身（她戳别人 ⇒ 不算）。
-
-    ⚠⭐ 不能只认 `target_id == self_id`：NapCat 的已知 bug 是戳机器人时
-      `target_id` 上报 **0**（2026-09-22 真机就栽在这，她戳了完全没反应）。
-      所以 target 为 0 / 缺失也算——能被她戳到的只有他；
-      只有 target 明明白白是**别人的 QQ 号**才不认（群聊里她戳别人）。
-    """
-    if data.get("post_type") != "notice":
-        return False
-    if data.get("notice_type") != "notify" or data.get("sub_type") != "poke":
-        return False
-    me = str(data.get("self_id") or globals().get("SELF_UIN") or "")
-    uid = str(data.get("user_id") or "")
-    if not me or uid == me:            # 事件缺 self_id / 是他自己戳的 ⇒ 不认
-        return False
-    target = str(data.get("target_id") or "").strip()
-    return target in ("", "0") or target == me
-
-
-async def maybe_handle_poke(data, websocket):
-    """命中并处理了返回 True（交回给调用方 return，不再往下走）。"""
-    if not POKE_ENABLE or not _poke_at_me(data):
-        return False
-    uid = str(data.get("user_id") or "")
-    if not uid.isdigit():
-        return False
-
-    now = time.time()
-    if now - _poke_last.get(uid, 0) < POKE_COOLDOWN:
-        print("[👉] %s 又戳了一下（冷却 %.0fs 内）⇒ 不理" % (uid, POKE_COOLDOWN))
-        return True
-    _poke_last[uid] = now
-
-    gid = data.get("group_id")
-    mt = "group" if gid else "private"
-    print("[👉] %s 戳了他 ⇒ 回戳 + 说一句" % uid)
-
-    if POKE_ECHO_BACK:
-        await send_poke(websocket, uid, gid)
-
-    # 说话走正常对话引擎（「她戳了戳你」是合成提示，跟她发张图同一个口径）
-    reply = await asyncio.to_thread(your_ai_lover_response, POKE_PROMPT, uid,
-                                    media=False)
-    if not (reply or "").strip():
-        tag = random_reply_tag()
-        if tag:
-            reply = "[表情:%s]" % tag
-    if reply:
-        await asyncio.sleep(_typing_delay(reply))
-        await send_text(websocket, mt, uid, gid, reply)
-
-    # 🎁 牵绊度跨级 ⇒ 补一条官方素材（跟文字消息同一口径）
-    await maybe_send_unlock(websocket, mt, uid, gid)
-    return True
-
-
-# ============================================
 # WebSocket 服务端（连接 NapCat）
 # ============================================
 
@@ -759,17 +666,6 @@ async def process_napcat_message(data, websocket):
     #    以前这一整类被下面的判断漏掉，她戳他完全没反应。
     if data.get("post_type") == "notice":
         await process_notice(data, websocket)
-        return
-
-    # 👉 2026-09-22：戳一戳（notice + sub_type=poke）—— 她戳他 ⇒ 回戳 + 说一句。
-    if await maybe_handle_poke(data, websocket):
-        return
-
-    # ⚠ 探针：**没认出来的 notice 原样打出来**。NapCat 各版本字段不一样
-    #   （戳一戳也可能挂在别的 notice_type 下），真机戳一下看这行就能核字段。
-    if data.get("post_type") == "notice":
-        print("[🔎] 未处理的 notice：%s"
-              % json.dumps(data, ensure_ascii=False)[:300])
         return
 
     # 只处理消息事件（私聊和群聊）
