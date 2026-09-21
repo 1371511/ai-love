@@ -20,8 +20,8 @@ import re
 import sys
 import time
 
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
@@ -32,6 +32,14 @@ from Rafayel_affinity import (  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
+
+# 🖼 头像（2026-09-21 她提的「头像上传」）
+#    ⚠ 存 `web/avatars/{uid}.{ext}` —— 这是**用户数据**，在 .gitignore 里，不进仓库。
+#       它也**不是** bot 的 memory（那份只读，一个字都不许写）。
+#    ⚠ 扩展名**由内容嗅探决定**，不采信客户端交上来的文件名 ⇒ 路径穿越那条路天然堵死。
+AVATAR_DIR = os.path.join(BASE, "web", "avatars")
+AVATAR_EXTS = ("png", "jpg", "webp", "gif")
+AVATAR_MAX = 2 * 1024 * 1024        # 2 MB
 SALT = "rafael-affinity"
 
 
@@ -167,6 +175,8 @@ h2{font-size:13px;font-weight:500;margin:0 0 10px}
 input,button{font:inherit;padding:8px 10px;border-radius:8px;border:0.5px solid rgba(0,0,0,.2);background:#fff}
 button{cursor:pointer;background:#222;color:#fff;border-color:#222;width:100%;margin-top:10px}
 .err{color:#B03030;font-size:12px}
+button.ghost{background:#fff;color:#777;border-color:rgba(0,0,0,.2)}
+img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:block;background:#EEF4FB}
 """
 
 # 短信详情页专用（模拟手机聊天）—— 只给那一页，别塞进全站 CSS 让每页都背一遍。
@@ -200,6 +210,83 @@ def _page(body, title="他眼里的你", css=""):
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%s</title><style>%s</style></head><body><div class="wrap">%s</div></body></html>""" %
                         (title, CSS + css, body))
+
+
+# ============================================================
+# 🖼 头像（2026-09-21 她提的）
+# ------------------------------------------------------------
+# ⭐ 全站**零 JS** 的老规矩不变：上传就是一个普通的 `<form enctype="multipart/form-data">`，
+#    浏览器自己就会发 multipart，不需要一行脚本。
+# ⚠ 只认**自己登录的那个人的**头像：uid 一律来自签名 cookie，绝不从表单里取。
+# ============================================================
+
+def _safe_uid(uid):
+    """uid 进文件名前先洗一遍（本来就该是纯 QQ 号，但别赌）。"""
+    return re.sub(r"[^0-9A-Za-z_-]", "", uid or "")
+
+
+def _sniff_image(raw):
+    """
+    按**文件头**认图，返回 `png` / `jpg` / `webp` / `gif`；认不出来返回 `""`。
+
+    ⚠ 为什么不信 `content_type` 和文件名：那两个都是**客户端说了算的字符串**。
+      我们只信字节 —— 顺手把「传个脚本改名叫 .png」那条也堵掉。
+    """
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def _avatar_file(uid):
+    """这个用户头像的**真实路径**（没传过 / uid 不合法 ⇒ 返回 ""）。"""
+    safe = _safe_uid(uid)
+    if not safe:
+        return ""
+    for ext in AVATAR_EXTS:
+        p = os.path.join(AVATAR_DIR, "%s.%s" % (safe, ext))
+        if os.path.isfile(p):
+            return p
+    return ""
+
+
+def _avatar_url(uid):
+    """
+    头像的访问地址（没传过返回 ""）。
+
+    ⭐ 尾巴挂个 `?v=改动时间` —— 换了头像链接跟着变，浏览器不会攥着旧图不撒手
+      （比让用户自己「强刷一下」体面多了）。
+    """
+    p = _avatar_file(uid)
+    if not p:
+        return ""
+    try:
+        v = int(os.path.getmtime(p))
+    except OSError:
+        v = 0
+    return "/avatar?v=%d" % v
+
+
+def _drop_avatar(uid):
+    """删掉这个用户已有的头像（换扩展名时别留垃圾）。返回删掉了几个。"""
+    safe = _safe_uid(uid)
+    if not safe:
+        return 0
+    n = 0
+    for ext in AVATAR_EXTS:
+        p = os.path.join(AVATAR_DIR, "%s.%s" % (safe, ext))
+        if os.path.isfile(p):
+            try:
+                os.remove(p)
+                n += 1
+            except OSError:
+                pass
+    return n
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -372,14 +459,23 @@ async def me(request: Request):
     if not met_day:
         sub += ('　<a href="/settings" class="hint">你们是哪天相遇的？</a>')
 
+    # 🖼 头像：传了图就显示图；没传就退回「名字首字」那个小圆片（老样子）。
+    #    ⚠ 尺寸保持 36px 没动 —— 换图的收益是「那是张真脸」，不是顺手把版式改一遍。
+    _av = _avatar_url(uid)
+    if _av:
+        _av_html = '<img src="%s" alt="" class="avatar">' % _av
+    else:
+        _av_html = ('<div style="width:36px;height:36px;border-radius:50%%;background:#EEF4FB;'
+                    'color:#33506E;display:flex;align-items:center;justify-content:center;'
+                    'font-size:13px">%s</div>' % _esc((shown_name or "?")[:2]))
+
     body = """
     <div class="card" style="display:flex;align-items:center;justify-content:space-between">
       <div>
         <h1>%s</h1>
         <p class="muted" style="font-size:12px;margin:0">%s</p>
       </div>
-      <div style="width:36px;height:36px;border-radius:50%%;background:#EEF4FB;color:#33506E;
-                  display:flex;align-items:center;justify-content:center;font-size:13px">%s</div>
+      <div style="width:36px;height:36px">%s</div>
     </div>
     %s
     <div class="card">
@@ -387,7 +483,7 @@ async def me(request: Request):
         <span class="muted" style="font-size:13px">好感度</span>
         <span class="muted" style="font-size:13px">%s · %d 级</span>
       </div>
-      <div class="big">%d <span style="font-size:13px" class="muted">分</span></div>
+      <div class="big">%d</div>
       <div class="bar"><div style="width:%d%%"></div></div>
       <p class="hint" style="margin:8px 0 0">%s</p>
       %s
@@ -403,7 +499,7 @@ async def me(request: Request):
     <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
            sub,
-           (shown_name or "?")[:2],
+           _av_html,
            missing,
            a["tier"], a["level"], a["score"], pct, next_hint,
            tier_block,
@@ -635,11 +731,30 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
     name = (rec.get("display_name") or "").strip()
     met_day = (rec.get("met_day") or "").strip()
 
+    # ⚠ `ok` / `err` 都是从 **URL** 来的 ⇒ 一律**转义**再进 HTML。
+    #    不然 `?err=<script>…` 这种链接发给别人点，就是一个反射型 XSS。
+    #    （头像那两条用**短码**传，省得中文进 URL。）
+    _OK = {"avatar": "头像已更新", "avatar_off": "头像已移除"}
     msg = ""
     if err:
-        msg = '<p class="err">%s</p>' % err
+        msg = '<p class="err">%s</p>' % _esc(err)
     elif ok:
-        msg = '<p class="hint" style="color:#2B7A4B">%s</p>' % ok
+        msg = '<p class="hint" style="color:#2B7A4B">%s</p>' % _esc(_OK.get(ok, ok))
+
+    # 🖼 头像那一段要用的三块
+    _av = _avatar_url(uid)
+    if _av:
+        av_preview = ('<img src="%s" alt="" style="width:56px;height:56px;border-radius:50%%;'
+                      'object-fit:cover;display:block;background:#EEF4FB">' % _av)
+        av_state = "现在用的就是这张"
+        av_remove = ('<form method="post" action="/settings/avatar/remove">'
+                     '<button type="submit" class="ghost">移除头像</button></form>')
+    else:
+        av_preview = ('<div style="width:56px;height:56px;border-radius:50%%;background:#EEF4FB;'
+                      'color:#33506E;display:flex;align-items:center;justify-content:center;'
+                      'font-size:13px">%s</div>' % _esc((name or "?")[:2]))
+        av_state = "还没有头像"
+        av_remove = ""
 
     body = """
     <div class="card">
@@ -668,8 +783,23 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
                     placeholder="再输一次新密码" style="width:100%%;box-sizing:border-box"></div>
         <button type="submit">保存</button>
       </form>
+
+      <!-- 🖼 头像：**必须单开一个 form**（要 enctype=multipart，而且 HTML 不许 form 套 form） -->
+      <h2 style="margin-top:22px">头像</h2>
+      <p class="hint" style="margin:0 0 8px">传一张图当你的头像（png / jpg / webp / gif，不超过 2 MB）。</p>
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px">
+        %s
+        <span class="hint">%s</span>
+      </div>
+      <form method="post" action="/settings/avatar" enctype="multipart/form-data">
+        <input type="file" name="pic" accept="image/png,image/jpeg,image/webp,image/gif"
+               style="width:100%%;box-sizing:border-box">
+        <button type="submit">上传</button>
+      </form>
+      %s
+
       <p style="margin:12px 0 0;text-align:center"><a href="/me" class="hint">回去</a></p>
-    </div>""" % (_mask_uid(uid), msg, name, met_day)
+    </div>""" % (_mask_uid(uid), msg, name, met_day, av_preview, av_state, av_remove)
     return _page(body, title="设置")
 
 
@@ -712,6 +842,80 @@ async def settings_save(request: Request, display_name: str = Form(""),
     users[uid] = rec
     _save_users(users)
     return RedirectResponse("/settings?ok=" + "已保存", status_code=303)
+
+
+# ============================================================
+# 🖼 头像：上传 / 移除 / 取图（2026-09-21 她提的）
+# ------------------------------------------------------------
+# ⚠ 只动 `web/avatars/`（**在 .gitignore 里**）—— bot 的 memory 仍然只读，一个字不写。
+# ============================================================
+
+@app.post("/settings/avatar")
+async def avatar_upload(request: Request, pic: UploadFile = File(None)):
+    """
+    上传头像。**零 JS**：就是一个普通 multipart 表单，提交完 303 回设置页。
+
+    ⚠ 校验一律看**字节**，不信客户端报的 `content_type` / 文件名：
+      ① 只读 `AVATAR_MAX + 1` 字节 ⇒ 超大文件不会先把内存吃掉；
+      ② `_sniff_image()` 认**文件头** ⇒ 不是真图就拒（改名的假图也拦得住）；
+      ③ 落盘名 = `{洗过的 uid}.{嗅探出来的扩展名}` ⇒ 文件名完全由我们定，路径穿越无从谈起。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    if not _safe_uid(uid):
+        return RedirectResponse("/settings?err=" + "账号信息不对，重新登录一下", status_code=303)
+
+    raw = b""
+    if pic is not None:
+        try:
+            raw = await pic.read(AVATAR_MAX + 1)
+        except Exception:
+            raw = b""
+
+    if not raw:
+        return RedirectResponse("/settings?err=" + "没选到图片，再试一次", status_code=303)
+    if len(raw) > AVATAR_MAX:
+        return RedirectResponse("/settings?err=" + "图太大了，换一张 2 MB 以内的", status_code=303)
+
+    ext = _sniff_image(raw)
+    if not ext:
+        return RedirectResponse("/settings?err=" + "只认 png / jpg / webp / gif 这几种图",
+                                status_code=303)
+
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    _drop_avatar(uid)                      # 换了格式时别把旧的那张留成垃圾
+    dst = os.path.join(AVATAR_DIR, "%s.%s" % (_safe_uid(uid), ext))
+    with open(dst, "wb") as f:
+        f.write(raw)
+    return RedirectResponse("/settings?ok=avatar", status_code=303)
+
+
+@app.post("/settings/avatar/remove")
+async def avatar_remove(request: Request):
+    """删掉自己的头像（还是普通表单 POST，没有一行 JS）。"""
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    _drop_avatar(uid)
+    return RedirectResponse("/settings?ok=avatar_off", status_code=303)
+
+
+@app.get("/avatar")
+async def avatar_get(request: Request):
+    """
+    看**自己**的头像。
+
+    ⚠ 只按签名 cookie 里的 uid 取，**不收任何路径参数** —— 别人的头像根本没有入口能拿到。
+    ⭐ `no-store`：刚换完图刷新就得是新图（链接上那个 `?v=` 是第二道保险）。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    p = _avatar_file(uid)
+    if not p:
+        return RedirectResponse("/")
+    return FileResponse(p, headers={"Cache-Control": "no-store"})
 
 
 if __name__ == "__main__":
