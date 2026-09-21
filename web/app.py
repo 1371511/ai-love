@@ -23,7 +23,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
-from Rafayel_affinity import compute, days_since, CUM, MAX_LEVEL  # noqa: E402
+from Rafayel_affinity import compute, days_since, cum_at, MAX_LEVEL  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -228,18 +228,39 @@ async def me(request: Request):
     shown_name = (rec.get("display_name") or "").strip() or a["name"]
 
     # 距离「下一级」的进度（用官方累计分表，不是拍脑袋的分档）
+    # ⚠ 用 `cum_at()` 而非 `CUM[...]`：**等级没有上限**，过了官方表的 246 级
+    #   `CUM` 就没下标了（会 IndexError）。
     pct = 0
     if a["next_at"]:
-        low = CUM[a["level"]]
+        low = cum_at(a["level"])
         span = max(1, a["next_at"] - low)
         pct = min(100, int((a["score"] - low) / span * 100))
 
-    # 本档位内的进度：心动 1~30 / 倾情 31~50 / 眷恋 51~100 / 情衷 101~246
+    # 本档位内的进度：心动 1~30 / 倾情 31~50 / 眷恋 51~100 / 情衷 101 起
+    # ⭐⭐ 最后一档（情衷）是**开放式**的 ⇒ 没有分母可用，
+    #    所以这一条**整条不显示**，只留「本档第 N 级」。
+    #    （2026-09-21 她指出：246 后面那个「+」就是没封顶，
+    #     **别把 6140 / 246 当上限摆出来** —— 那是「官方表到哪」，不是天花板。）
     tier_n = a["level"] - a["tier_lo"] + 1
+    open_tier = a["tier_hi"] >= MAX_LEVEL
     tier_size = max(1, a["tier_hi"] - a["tier_lo"] + 1)
     tier_pct = min(100, int(tier_n / tier_size * 100))
     next_hint = ("距 %d 级还差 %d 分" % (a["level"] + 1, a["to_next"])) \
-        if a["next_at"] else "已经是最高一级了"
+        if a["next_at"] else ""
+
+    if open_tier:
+        tier_block = ('<div style="margin-top:12px">'
+                      '<span class="hint">%s · 本档第 %d 级</span>'
+                      '</div>') % (a["tier"], tier_n)
+    else:
+        tier_block = ('<div style="margin-top:12px">'
+                      '<div style="display:flex;justify-content:space-between">'
+                      '<span class="hint">%s</span>'
+                      '<span class="hint">本档第 %d / %d 级</span>'
+                      '</div>'
+                      '<div class="bar" style="margin-top:4px">'
+                      '<div style="width:%d%%"></div></div>'
+                      '</div>') % (a["tier"], tier_n, tier_size, tier_pct)
 
     chips = "".join('<span class="chip">%s</span>' % x
                     for x in (a["likes"] + a["traits"] + ["不喜欢：" + x for x in a["dislikes"]]))
@@ -321,16 +342,10 @@ async def me(request: Request):
         <span class="muted" style="font-size:13px">好感度</span>
         <span class="muted" style="font-size:13px">%s · %d 级</span>
       </div>
-      <div class="big">%d <span style="font-size:13px" class="muted">/ %d</span></div>
+      <div class="big">%d <span style="font-size:13px" class="muted">分</span></div>
       <div class="bar"><div style="width:%d%%"></div></div>
       <p class="hint" style="margin:8px 0 0">%s</p>
-      <div style="margin-top:12px">
-        <div style="display:flex;justify-content:space-between">
-          <span class="hint">%s</span>
-          <span class="hint">本档第 %d / %d 级</span>
-        </div>
-        <div class="bar" style="margin-top:4px"><div style="width:%d%%"></div></div>
-      </div>
+      %s
     </div>
     <div class="grid">
       <div class="card"><p class="muted" style="font-size:12px;margin:0">聊过</p>
@@ -345,8 +360,8 @@ async def me(request: Request):
            sub,
            (shown_name or "?")[:2],
            missing,
-           a["tier"], a["level"], a["score"], CUM[MAX_LEVEL], pct, next_hint,
-           a["tier"], tier_n, tier_size, tier_pct,
+           a["tier"], a["level"], a["score"], pct, next_hint,
+           tier_block,
            a["turns"], tokens_txt, tokens_unit,
            chips, topics_card, ms_card)
     return _page(body)

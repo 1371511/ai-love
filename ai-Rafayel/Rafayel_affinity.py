@@ -38,7 +38,8 @@ PT_MEDIA = 2             # 她发图/表情（暂未落盘，预留）
 # ⭐⭐ 真相源是 `card/affinity.md` 的「机器可读」段（`CURVE=`），这里**不写死数字**。
 #    规则（从官方累计分 232 / 525 / 1765 / 6140 反推，四档全对得上）：
 #      **升到 L 级，花的是「L-1 所在档位」的每级分** —— 跨档那一步仍按上一档的价。
-#    例：30→31 花 8（心动价），31→32 起才花 15（倾情价）⇒ 满级 246 累计 6140 分。
+#    例：30→31 花 8（心动价），31→32 起才花 15（倾情价）⇒ 到 246 级累计 6140 分
+#      （⚠ 246 只是**表里最后一行**，之后每级还是 30 分，**不封顶**）。
 MD_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                        "card", "affinity.md")
 
@@ -74,6 +75,11 @@ def load_curve():
 
 
 CURVE, CURVE_SRC = load_curve()
+# ⚠⚠ `MAX_LEVEL` 是「**官方表里最后一个有定义的等级**（246）」，**不是上限**！
+#    ⭐ 246 之后照样升级，每级仍按最后一档的价（`LAST_RATE` = 30 分）——
+#      md 里写的 `101~246+` 那个「+」就是这个意思（2026-09-21 她指出：
+#      「其实是没有限制的，不止是 6140」）。
+#    ⇒ 凡是拿它当**上限/满分**用的（网页端分母、`CUM[MAX_LEVEL]` 下标）都是错的。
 MAX_LEVEL = max(hi for _n, _lo, hi, _r in CURVE)
 
 
@@ -90,6 +96,19 @@ def _build(curve):
 
 
 CUM, RATE_OF = _build(CURVE)
+LAST_RATE = CURVE[-1][3]            # 最后一档每级多少分（246 级之后一直用它）
+
+
+def cum_at(level):
+    """
+    升到**任意** level 级要多少累计分 —— **level 允许超过 `MAX_LEVEL`**。
+
+    ⭐ 表外按最后一档的价线性外推：`CUM[246] + (L-246) * 30`。
+    ⚠ 网页端算进度一律用这个，**别直接 `CUM[a["level"]]`** —— 过了 246 级就 IndexError。
+    """
+    if level <= MAX_LEVEL:
+        return CUM[level]
+    return CUM[MAX_LEVEL] + (level - MAX_LEVEL) * LAST_RATE
 
 
 def tier_of(level):
@@ -101,7 +120,14 @@ def tier_of(level):
 
 
 def level_of(score):
-    """分数 → (级别 1~246, 档位名, 下一级阈值 or None)"""
+    """
+    分数 → (级别, 档位名, 升到下一级要多少累计分)。
+
+    ⭐⭐ **没有等级上限**：官方表只列到 `MAX_LEVEL`（246 级 = 6140 分），
+       246 之后继续升、每级仍花 `LAST_RATE` ⇒ `next_at` **永远算得出来**，
+       不存在「已满级」（md 里 `101~246+` 的「+」就是这个意思）。
+    ⚠ 别把 `MAX_LEVEL` 当上限用来截断（2026-09-21 修：原来到 246 就停、`next_at=None`）。
+    """
     lo, hi = 1, MAX_LEVEL
     while lo < hi:
         mid = (lo + hi + 1) // 2
@@ -110,7 +136,10 @@ def level_of(score):
         else:
             hi = mid - 1
     L = lo
-    return L, tier_of(L), (CUM[L + 1] if L < MAX_LEVEL else None)
+    extra = score - CUM[MAX_LEVEL]
+    if extra >= 0:                      # 表外：每 LAST_RATE 分再升一级（整除，不四舍五入）
+        L = MAX_LEVEL + extra // LAST_RATE
+    return L, tier_of(L), cum_at(L + 1)
 
 
 # ---------------------------------------------------------------- 官方素材（跨级触发）
@@ -535,7 +564,7 @@ def compute(user_id, memory_dir):
         "user_id": user_id,
         "name": prof.get("name") or "",
         "score": score,
-        "level": level,                 # 官方级别 1~246
+        "level": level,                 # 官方级别（1 起，246 之后继续涨，**无上限**）
         "tier": tier,                   # 心动 / 倾情 / 眷恋 / 情衷
         "level_name": tier,             # 旧字段，留着兼容，值同 tier
         "tier_lo": t_lo,
@@ -576,10 +605,13 @@ def format_report(uid, memory_dir):
     L.append("  好感度 %d  → %s %d 级%s"
              % (a["score"], a["tier"], a["level"],
                 ("，距 %d 级还差 %d 分" % (a["level"] + 1, a["to_next"]))
-                if a["next_at"] else "（已满级）"))
-    L.append("  %s 第 %d 级（本档 %d~%d 级，满级 %d 需 %d 分）"
-             % (a["tier"], a["level"] - a["tier_lo"] + 1,
-                a["tier_lo"], a["tier_hi"], MAX_LEVEL, CUM[MAX_LEVEL]))
+                if a["next_at"] else ""))
+    # ⚠ 别说「满级」—— 等级没有上限，只有「官方表到哪」。
+    t_span = ("%d~%d 级" % (a["tier_lo"], a["tier_hi"])) if a["level"] <= a["tier_hi"] \
+        else ("%d 级起" % a["tier_lo"])
+    L.append("  %s 第 %d 级（本档 %s；官方表到 %d 级 = %d 分，之后每级 %d 分、不封顶）"
+             % (a["tier"], a["level"] - a["tier_lo"] + 1, t_span,
+                MAX_LEVEL, CUM[MAX_LEVEL], LAST_RATE))
     L.append("  对话 %d 轮 · 记住的事 %d 条 · 画像 %d 条"
              % (a["turns"], a["facts"], a["profile_items"]))
     if a["has_usage"]:
