@@ -362,7 +362,8 @@ async def me(request: Request):
     open_tier = a["tier_hi"] >= MAX_LEVEL
     tier_size = max(1, a["tier_hi"] - a["tier_lo"] + 1)
     tier_pct = min(100, int(tier_n / tier_size * 100))
-    next_hint = ("距 %d 级还差 %d 分" % (a["level"] + 1, a["to_next"])) \
+    # ⭐ 2026-09-21 她定的第二处：连这句里的「分」也去掉 —— 页面上**凡是数字都不挂单位**。
+    next_hint = ("距 %d 级还差 %d" % (a["level"] + 1, a["to_next"])) \
         if a["next_at"] else ""
 
     if open_tier:
