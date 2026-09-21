@@ -200,9 +200,6 @@ CHAT_CSS = """
 .ph-top{background:#F7F7F7;border-bottom:0.5px solid rgba(0,0,0,.1);padding:10px 14px;
         display:flex;align-items:center;justify-content:space-between}
 .ph-top b{font-size:14px;font-weight:500}
-/* 标题栏里「头像 + 名字」那一小撮（2026-09-21 她说标题栏也配上，更像真手机） */
-.ph-name{display:flex;align-items:center;gap:6px}
-.ph-top img{width:22px;height:22px;border-radius:50%;object-fit:cover;display:block}
 .chat{padding:14px 12px 6px}
 .row{display:flex;align-items:flex-start;margin-bottom:12px}
 .row.me{flex-direction:row-reverse}
@@ -709,11 +706,9 @@ async def message_detail(request: Request, level: int, p: str = ""):
     if done:
         rows.append('<div class="end">—— 说到这儿就停了 ——</div>')
 
-    # 🖼 标题栏也带上他的头像（`alt=""` 是**故意**的：名字就贴在图旁边，图是装饰）。
-    #    ⚠ 尺寸走 `.ph-top img`（22px），跟气泡里那个 30px 的**不是**同一套样式。
+    # ⚠ 2026-09-21 她定：标题栏**不加**头像（只有气泡里那个换真图）。别再往这儿塞 `<img>`。
     head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
-            '<span class="ph-name"><img src="/asset/qiyu" alt=""><b>祁煜</b></span>'
-            '<span class="hint">第 %d 级</span></div>' % level)
+            '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
     body = ('<div class="phone">%s<div class="chat">%s</div></div>'
             '<p style="text-align:center">'
             '<a href="/messages/%d" class="hint">↺ 从头再聊一遍</a> · '
