@@ -19,7 +19,7 @@ import requests
 
 from Rafayel_config import (
     API_URL, AUTO_GREET_TZ_OFFSET, MAX_FACTS, MAX_HISTORY_TURNS, MEMORY_DIR,
-    MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_ONE_LINE, REPLY_ONE_LINE_HINT,
+    MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
 from Rafayel_daily import record as daily_record
@@ -226,10 +226,10 @@ class ConversationManager:
         # 🕐 「现在几点 + 隔了多久」**不在这里**了 —— 见下面 `now_hint_text()` 的注释。
         #    2026-09-20 挪走：这段每轮都变，留在 system 里会把 DeepSeek 的**前缀缓存**拦腰截断。
 
-        # 💬 回复格式（2026-09-19 她挑的：一律一行，像 QQ 打字）。
-        #    ⚠ 代码层还有一道保底（Rafayel_llm 发出前压平换行）—— 这里只是让模型少犯错。
-        if REPLY_ONE_LINE and REPLY_ONE_LINE_HINT:
-            full_prompt += "\n\n" + REPLY_ONE_LINE_HINT
+        # 💬 回复形状（2026-09-19 她挑的段内不拆行 + 2026-09-22 放宽成一到四段）。
+        #    ⚠ 代码层还有一道保底（Rafayel_llm 发出前整形）—— 这里只是让模型少犯错。
+        if REPLY_SHAPE and REPLY_SHAPE_HINT:
+            full_prompt += "\n\n" + REPLY_SHAPE_HINT
 
         return full_prompt
 

@@ -15,6 +15,7 @@
 
 import os
 import random
+import re
 import sys
 
 import requests
@@ -33,7 +34,8 @@ from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
     AFFINITY_TONE, API_URL, MAX_TOKENS, MEMORY_DIR, MODEL, QZONE_CMT_ENABLE,
-    REPLY_ONE_LINE, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES, api_key,
+    REPLY_MAX_LINES, REPLY_SHAPE, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
+    api_key,
 )
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
@@ -44,21 +46,56 @@ from Rafayel_worldbook import get_worldbook
 _user_managers = {}
 
 
-def _to_one_line(text):
-    """
-    把回复**压成一行**（她 2026-09-19 挑的口径：像 QQ 随手打字，不分行）。
+# 只有动作/神态、一句话都没有的段：把笔搁下）⇒ 这种不算「一段话」，要并回相邻段。
+_BARE_ACTION_RE = re.compile(r"^(?:\s*（[^）]*）\s*)+$")
 
-        （没躲，任你蹭过来，手落在你发顶）\n贴够了没。\n（嘴上这么说，另一只手却没拿开）
-        ⇒ （没躲，任你蹭过来，手落在你发顶）贴够了没。（嘴上这么说，另一只手却没拿开）
 
-    ⚠ 这是**保底**：prompt 里已经明说了「不要换行」（REPLY_ONE_LINE_HINT），
-      但模型不一定每轮都听 —— 听话最好，不听话也**发不出多行**。
-    ⚠ 只把换行拼掉，内容一字不动；空行直接丢。说说正文（render_text）不走这里。
+def _shape_reply(text):
     """
-    if not REPLY_ONE_LINE or "\n" not in (text or ""):
+    回复形状保底：**段内不拆行，段数封顶**（她 2026-09-22 定的放宽 + 弹性段数）。
+
+    两条规矩，缺一条都不行：
+      ① 段内不拆行 —— 她 2026-09-19 挑的 B 风格（动作神态放括号里，话跟在后面）。
+      ② 段数弹性 1~4 —— 多数一两句，情绪上来了才三四段；段与段之间换行是允许的。
+
+    ⭐ 关键兜底：**纯动作段并回相邻段**。模型要是还按老习惯写成
+       （把笔搁下）\\n睡了没。  ⇒ 并成（把笔搁下）睡了没。
+       否则放宽段数之后，这种会被当成两段发出去 —— 正是她当年不要的 A 风格。
+
+    ⚠ 这是**保底**：prompt 里已经明说了写法（REPLY_SHAPE_HINT），
+      但模型不一定每轮都听 —— 听话最好，不听话也**发不出超过 REPLY_MAX_LINES 段**。
+    ⚠ 内容一字不动（只删空行、并纯动作段、截段数）。说说正文（render_text）不走这里。
+    """
+    if not REPLY_SHAPE or "\n" not in (text or ""):
         return text
-    lines = [l.strip() for l in text.replace("\r\n", "\n").split("\n")]
-    return "".join(l for l in lines if l)
+    raw = [l.strip() for l in str(text).replace("\r\n", "\n").split("\n")]
+    lines = [l for l in raw if l]
+    if not lines:
+        return text
+
+    kept, pending = [], ""
+    for l in lines:
+        if _BARE_ACTION_RE.match(l):
+            # 纯动作段：有上一段就并上去；还没有就先攒着，等第一句真话来接它
+            if kept:
+                kept[-1] = kept[-1] + l
+            else:
+                pending += l
+            continue
+        if pending:
+            l = pending + l
+            pending = ""
+        kept.append(l)
+    if pending:
+        # 整段全是动作（没一句真话）⇒ 要么挂在第一句前面，要么就它自己
+        if kept:
+            kept[0] = pending + kept[0]
+        else:
+            kept = [pending]
+
+    if len(kept) > REPLY_MAX_LINES:
+        kept = kept[:REPLY_MAX_LINES]
+    return "\n".join(kept)
 
 
 def _build_worldbook(cm, user_message):
@@ -166,7 +203,7 @@ def comment_opening(user_id: str, post_text: str) -> str:
         if "choices" not in result:
             return ""
         text = (result["choices"][0]["message"]["content"] or "").strip()
-        return _to_one_line(text)
+        return _shape_reply(text)
     except Exception:
         return ""
 
@@ -217,7 +254,7 @@ def comment_reply(user_id: str, post_text: str, her_comment: str) -> str:
         if "choices" not in result:
             return ""
         text = (result["choices"][0]["message"]["content"] or "").strip()
-        return _to_one_line(text)
+        return _shape_reply(text)
     except Exception:
         return ""
 
@@ -396,8 +433,8 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             if _cooled:
                 print("[🖼️] 表情冷却：他最近几条已经发过表情 ⇒ 本条不再发")
 
-            # 5.6 回复格式保底：压成一行（她挑的口径；prompt 里也说了，这里是兜底）
-            reply = _to_one_line(reply)
+            # 5.6 回复形状保底：段内不拆行 + 段数封顶（她挑的口径；prompt 里也说了，这里是兜底）
+            reply = _shape_reply(reply)
 
             # 6. 添加助手消息到对话管理器
             cm.add_assistant_message(reply)
