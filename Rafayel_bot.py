@@ -625,7 +625,11 @@ async def _flush_reply(user_id, why=""):
 # 她戳他 ⇒ ① 回戳一下 ② 打字说一句。
 #
 # ⚠ 三条硬规矩：
-#   ① **只认戳他的**（`target_id == self_id`）—— 群聊里她戳别人不该有反应。
+#   ① **只认戳他的** —— target 是他。⚠⭐ NapCat 有个已知 bug：她戳的是机器人时
+#      `target_id` 上报成 **0**（有时干脆缺失），不是他自己的 QQ 号
+#      ⇒ 真机 2026-09-22 就栽在这（她戳了完全没反应）。
+#      判据 = target 是他 ⇒ 算；target 是 0 / 缺失 ⇒ 也算（能被戳的只有他）；
+#      target 是别人 ⇒ 不算。
 #   ② **回戳是锦上添花**：`send_poke` 是 NapCat 扩展、真机没验过 ⇒
 #      失败就静默跳过、**话照说**，绝不能变成「戳了完全没反应」。
 #   ③ **冷却期内整个忽略**：她连着戳只回应第一次，防刷屏。
@@ -652,15 +656,23 @@ async def send_poke(websocket, user_id, group_id=None):
 
 
 def _poke_at_me(data):
-    """这是不是「她戳了他」这件事本身（她戳别人 ⇒ 不算）。"""
+    """这是不是「她戳了他」这件事本身（她戳别人 ⇒ 不算）。
+
+    ⚠⭐ 不能只认 `target_id == self_id`：NapCat 的已知 bug 是戳机器人时
+      `target_id` 上报 **0**（2026-09-22 真机就栽在这，她戳了完全没反应）。
+      所以 target 为 0 / 缺失也算——能被她戳到的只有他；
+      只有 target 明明白白是**别人的 QQ 号**才不认（群聊里她戳别人）。
+    """
     if data.get("post_type") != "notice":
         return False
     if data.get("notice_type") != "notify" or data.get("sub_type") != "poke":
         return False
-    target = str(data.get("target_id") or "")
     me = str(data.get("self_id") or globals().get("SELF_UIN") or "")
-    # ⚠ 群聊里她也可能戳别人 ⇒ 两个 id 都对得上才算「戳他」
-    return bool(me) and bool(target) and target == me
+    uid = str(data.get("user_id") or "")
+    if not me or uid == me:            # 事件缺 self_id / 是他自己戳的 ⇒ 不认
+        return False
+    target = str(data.get("target_id") or "").strip()
+    return target in ("", "0") or target == me
 
 
 async def maybe_handle_poke(data, websocket):
