@@ -182,6 +182,14 @@ h2{font-size:13px;font-weight:500;margin:0 0 10px}
 input,button{font:inherit;padding:8px 10px;border-radius:8px;border:0.5px solid rgba(0,0,0,.2);background:#fff}
 button{cursor:pointer;background:#222;color:#fff;border-color:#222;width:100%;margin-top:10px}
 .err{color:#B03030;font-size:12px}
+/* ⚠⭐ 2026-09-21 修过一次：这条原来只写在 CHAT_CSS（**详情页专用**）里，
+   可**列表页 `/messages` 也在用** `class="plain"` ⇒ 那一页拿不到它，
+   整块卡片就掉回浏览器默认的**蓝色下划线链接**（她一眼看出来的那个）。
+   ⇒ 教训：**共用样式就该放这份共用 CSS**，别塞进某一页的专用串里。 */
+a.plain{color:inherit;text-decoration:none;display:block}
+/* 卡片里**唯一**那个入口「展开查看 →」（她 2026-09-21 定的：
+   别再拿 `<a>` 把整张卡包起来 —— 卡里除它以外都该是普通的字） */
+a.cta{color:#8E3556;text-decoration:none;font-size:12px}
 button.ghost{background:#fff;color:#777;border-color:rgba(0,0,0,.2)}
 img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:block;background:#EEF4FB}
 """
@@ -192,6 +200,9 @@ CHAT_CSS = """
 .ph-top{background:#F7F7F7;border-bottom:0.5px solid rgba(0,0,0,.1);padding:10px 14px;
         display:flex;align-items:center;justify-content:space-between}
 .ph-top b{font-size:14px;font-weight:500}
+/* 标题栏里「头像 + 名字」那一小撮（2026-09-21 她说标题栏也配上，更像真手机） */
+.ph-name{display:flex;align-items:center;gap:6px}
+.ph-top img{width:22px;height:22px;border-radius:50%;object-fit:cover;display:block}
 .chat{padding:14px 12px 6px}
 .row{display:flex;align-items:flex-start;margin-bottom:12px}
 .row.me{flex-direction:row-reverse}
@@ -210,7 +221,6 @@ CHAT_CSS = """
 .pick b{font-weight:500;color:#8E3556;margin-right:8px}
 .pick .go{float:right;color:#999;font-size:12px}
 .end{text-align:center;font-size:11.5px;color:#999;padding:4px 0 12px}
-a.plain{color:inherit;text-decoration:none;display:block}
 """
 
 
@@ -585,14 +595,17 @@ async def messages_page(request: Request):
     for lvl, tier, title, fn in reversed(sms_un):
         opening = sms_full(fn)["opening"]
         intro = ('<p style="margin:8px 0 0;font-size:13px">「%s」</p>' % _rich(opening)) if opening else ""
-        parts.append('<a href="/messages/%d" class="plain"><div class="card">'
+        # ⭐ 2026-09-21 她定的：**别再拿 `<a>` 把整张卡包起来** ——
+        #    卡里除了那行「展开查看 →」，其余全当普通的字（标题、档位、开头句都不该是链接色）。
+        parts.append('<div class="card">'
                      '<div style="display:flex;justify-content:space-between;align-items:baseline">'
                      '<h2 style="margin:0">%s</h2>'
                      '<span class="hint">%d 级 · %s</span></div>'
                      '%s'
-                     '<p class="hint" style="margin:8px 0 0">展开看完整对话 →</p>'
-                     '</div></a>'
-                     % (lvl, _esc(title), lvl, _esc(tier), intro))
+                     '<p style="margin:8px 0 0">'
+                     '<a href="/messages/%d" class="cta">展开查看 →</a></p>'
+                     '</div>'
+                     % (_esc(title), lvl, _esc(tier), intro, lvl))
     if sms_lk:
         parts.append('<p class="hint" style="margin:16px 0 8px">—— 还没解锁 ——</p>')
         parts.extend(_lock_row(lvl, title) for lvl, _t, title, _fn in sms_lk)
@@ -696,8 +709,11 @@ async def message_detail(request: Request, level: int, p: str = ""):
     if done:
         rows.append('<div class="end">—— 说到这儿就停了 ——</div>')
 
+    # 🖼 标题栏也带上他的头像（`alt=""` 是**故意**的：名字就贴在图旁边，图是装饰）。
+    #    ⚠ 尺寸走 `.ph-top img`（22px），跟气泡里那个 30px 的**不是**同一套样式。
     head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
-            '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
+            '<span class="ph-name"><img src="/asset/qiyu" alt=""><b>祁煜</b></span>'
+            '<span class="hint">第 %d 级</span></div>' % level)
     body = ('<div class="phone">%s<div class="chat">%s</div></div>'
             '<p style="text-align:center">'
             '<a href="/messages/%d" class="hint">↺ 从头再聊一遍</a> · '
