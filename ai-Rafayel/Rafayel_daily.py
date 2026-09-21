@@ -115,10 +115,40 @@ def record(user_id, gap_hours=None, media=False):
             "backfilled": bool(d.get("backfilled")),   # 这批天数里含外部日志回填的部分
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         }
+        # ⭐ 跨级解锁记录（牵绊度官方素材，见 Rafayel_affinity.init_unlocked）必须**原样带过去** ——
+        #    这个 dict 每次都是重建的，漏了它 ⇒ 下一句对话就把解锁进度抹掉、素材会重复发。
+        if isinstance(d.get("unlocked"), dict):
+            out["unlocked"] = d["unlocked"]
         _save(path, out)
         return out
     except Exception as e:
         print("⚠️ 每日统计落盘失败（不影响对话）：%s" % e)
+        return None
+
+
+def load_unlocked(user_id):
+    """读跨级解锁记录（`{uid}_daily.json` 的 `unlocked`）。没记过返回 None。"""
+    d = _load(_path(user_id)) or {}
+    u = d.get("unlocked")
+    return u if isinstance(u, dict) else None
+
+
+def save_unlocked(user_id, data):
+    """
+    写跨级解锁记录（**本文件的职责**：整条链上只有这里写 `{uid}_daily.json`）。
+
+    ⚠ 跟 `record()` 一个脾气：异常一律吞掉，**绝不能因为记解锁把对话搞挂**。
+    """
+    try:
+        path = _path(user_id)
+        d = _load(path) or {}
+        d["unlocked"] = data
+        d.setdefault("user_id", user_id)
+        d["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        _save(path, d)
+        return data
+    except Exception as e:
+        print("⚠️ 跨级解锁记录落盘失败（不影响对话）：%s" % e)
         return None
 
 

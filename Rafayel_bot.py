@@ -18,6 +18,7 @@ if _CODE_DIR not in sys.path:
 from Rafayel_chat import (comment_opening, comment_reply, get_reply,
                          recent_context, record_proactive, take_opening)
 from Rafayel_config import (
+    AFFINITY_UNLOCK,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
@@ -30,6 +31,9 @@ from Rafayel_config import (
     QZONE_CMT_MAX_PER_DAY, QZONE_CMT_POLL_SECONDS, QZONE_CMT_REPLY_ENABLE,
     QZONE_SELF_UIN,
 )
+from Rafayel_affinity import (current_level, init_unlocked, load_egg_levels,
+                              load_sms_nodes, pending_unlock)
+from Rafayel_daily import load_unlocked, save_unlocked
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
@@ -128,6 +132,62 @@ async def send_text(websocket, message_type, user_id, group_id, text):
         print(f"[💬] 已回复({kinds}): {preview[:50]}...")
     else:
         print(f"[💬] 已回复: {message[:50]}...")
+
+
+# ============================================
+# 🎁 牵绊度跨级 ⇒ 补一条**官方原文**（2026-09-21 新）
+# ============================================
+# 跨过一个等级时，让他发一条官方素材：
+#   该等级是 45 个短信节点之一 ⇒ 发那条短信的**开头句**（`card\affinity\牵绊短信\`）；
+#   否则取 86 条彩蛋里绑在该等级上的那条（等级映射在 `card\affinity.md` 的 `EGG_AT=`）。
+# ⭐ 一级最多一条、**短信优先于彩蛋**；每用户每条只发一次；**不补发历史**。
+# ⚠ 素材原文直发、不改一个字（只有 `用户` 这种占位符换成她的称呼），**不进 LLM ⇒ 零 token**。
+
+async def maybe_send_unlock(websocket, message_type, user_id, group_id):
+    """
+    跨级了就补一条官方素材。决策在 `Rafayel_affinity.pending_unlock`（**只读**），
+    本函数只负责「发出去 + 记账」。
+
+    ⚠ 四条铁律：
+      ① 发出去的那句话**必须进对话记忆**（`record_proactive`）—— 不然她回话时模型
+         不知道上一句是他说的，会出现完全接不住的回复（老规矩，跟打招呼/说说同一口径）。
+      ② 记「已解锁」放在**发送成功之后** —— 发送抛异常就不留下"他说过"的假记录。
+      ③ **不等回执**。主流程里等回执必然超时，真根因见 `_watch_receipt` 那段注释。
+      ④ 只在**私聊**里发：群里冒出一条官方短信很奇怪。
+    """
+    if not AFFINITY_UNLOCK:
+        return
+    try:
+        if message_type != "private":
+            return
+
+        rec = load_unlocked(user_id)
+        if rec is None:
+            # 第一次接入：只记「现在几级」，**不补发历史**（老用户可能一上来就 100 级，
+            # 否则会一口气把二十多条历史素材全灌给她）。
+            save_unlocked(user_id, init_unlocked(current_level(user_id, MEMORY_DIR)))
+            return
+
+        item = pending_unlock(user_id, MEMORY_DIR)
+        if not item:
+            return
+
+        await send_text(websocket, message_type, user_id, group_id, item["text"])
+        record_proactive(user_id, item["text"])
+
+        col = "sms" if item["kind"] == "sms" else "eggs"
+        got = list(rec.get(col) or [])
+        if item["key"] not in got:
+            got.append(item["key"])
+        rec[col] = got
+        rec["level"] = max(int(rec.get("level") or 0), int(item["level_now"] or 0))
+        save_unlocked(user_id, rec)
+
+        print("[💗] 牵绊度 %d 级 ⇒ 发官方素材（%s%s）：%r"
+              % (item["level"], item["kind"],
+                 ("/" + item["title"]) if item["title"] else "", item["text"][:30]))
+    except Exception as e:
+        print("[💗] 跨级素材发送失败（不影响对话）：%s" % e)
 
 
 # ============================================
@@ -443,6 +503,11 @@ async def process_napcat_message(data, websocket):
         # 构造回复消息（符合 OneBot v11 协议）
         if reply:
             await send_text(websocket, message_type, user_id, group_id, reply)
+
+        # 🎁 牵绊度跨级 ⇒ 再补一条官方素材（短信开头句 / 彩蛋）。
+        #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然；
+        #      也保证不会插在他这一轮的回复前面。
+        await maybe_send_unlock(websocket, message_type, user_id, group_id)
 
 # ============================================
 # 主动打招呼（他忍不住先开口）
@@ -784,6 +849,9 @@ async def main():
         if AUTO_GREET:
             asyncio.create_task(auto_greet_loop())
             print("📣 主动打招呼已开启（冷场 %s 小时后他会先开口）" % AUTO_GREET_IDLE_HOURS)
+        if AFFINITY_UNLOCK:
+            print("🎁 牵绊度跨级素材已开启（%d 个短信节点 + %d 条彩蛋；一级最多一条，短信优先）"
+                  % (len(load_sms_nodes()), len(load_egg_levels())))
         if QZONE_AUTO:
             # ⚠ 与 auto_greet_loop 是**两个独立 task**、各自排期 —— 别把这两个合成一个循环。
             asyncio.create_task(auto_qzone_loop())

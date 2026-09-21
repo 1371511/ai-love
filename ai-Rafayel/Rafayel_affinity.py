@@ -20,6 +20,7 @@
 
 import json
 import os
+import re
 import time
 
 # ---------------------------------------------------------------- 评分参数
@@ -110,6 +111,229 @@ def level_of(score):
             hi = mid - 1
     L = lo
     return L, tier_of(L), (CUM[L + 1] if L < MAX_LEVEL else None)
+
+
+# ---------------------------------------------------------------- 官方素材（跨级触发）
+# ⭐ 清单在 `card/affinity.md`（`EGG_FILE=` / `EGG_AT=` / `SMS_DIR=` / `SMS=` 四行），
+#    正文在 `card/affinity/`。**要改一律改 md**，代码不写死任何等级。
+# ⚠ 本模块**只读**：这里只负责「读素材 + 算该发哪一条」，写盘一律交给 `Rafayel_daily`。
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # E:\ai-love
+_DEFAULT_NAME = "保镖小姐"          # 画像里没记称呼时的兜底（跟主动打招呼同一个口径）
+MILESTONE_MAX = 8                   # 网页端「他说过的那句话」最多显示几条
+
+# 素材里的表情标记是全角 + 二级名：`[表情：涂鸦叽：生气]`
+_STICKER_RE = re.compile(r"^\[表情[：:]([^\]：:]+)[：:]([^\]：:]+)\]$")
+_LINK_RE = re.compile(r"^\[链接[：:]")
+
+
+def _md_text():
+    try:
+        with open(MD_PATH, encoding="utf-8") as f:
+            return f.read()
+    except Exception:
+        return ""
+
+
+def _md_lines(prefix):
+    """取 md 里所有以 prefix 开头的行的**后半段**（已 strip）。"""
+    out = []
+    for line in _md_text().splitlines():
+        s = line.strip()
+        if s.startswith(prefix):
+            out.append(s[len(prefix):].strip())
+    return out
+
+
+def _path_from_md(prefix, rel_default):
+    for s in _md_lines(prefix):
+        if s:
+            return os.path.join(_ROOT, s.replace("/", os.sep))
+    return os.path.join(_ROOT, rel_default)
+
+
+EGG_FILE = _path_from_md("EGG_FILE=", os.path.join("card", "affinity", "牵绊彩蛋.txt"))
+SMS_DIR = _path_from_md("SMS_DIR=", os.path.join("card", "affinity", "牵绊短信"))
+
+
+def load_sms_nodes():
+    """45 个短信节点 ⇒ [(等级, 档位, 标题, 文件名), …]（按等级升序）。"""
+    out = []
+    for s in _md_lines("SMS="):
+        p = [x.strip() for x in s.split("|")]
+        if len(p) == 4:
+            try:
+                out.append((int(p[0]), p[1], p[2], p[3]))
+            except ValueError:
+                pass
+    out.sort()
+    return out
+
+
+def load_egg_levels():
+    """86 条彩蛋各自绑的等级（**顺序 = 彩蛋行号**，取自 md 的 `EGG_AT=`）。"""
+    for s in _md_lines("EGG_AT="):
+        vals = [int(x.strip()) for x in s.split(",") if x.strip().isdigit()]
+        if vals:
+            return vals
+    return []
+
+
+_EGG_CACHE = None
+_SMS_CACHE = {}
+_TAG_CACHE = None
+
+
+def _sticker_tags():
+    """真实标签名（`card/stickers.md`）。拿不到就返回空集合 ⇒ 表情标记一律剥掉。"""
+    global _TAG_CACHE
+    if _TAG_CACHE is None:
+        tags = set()
+        try:
+            with open(os.path.join(_ROOT, "card", "stickers.md"), encoding="utf-8") as f:
+                for line in f:
+                    m = re.match(r"^\|\s*\d+\s*\|\s*`[^`]+\.gif`\s*\|\s*([^|]+?)\s*\|", line)
+                    if m:
+                        tags.add(m.group(1).strip())
+        except Exception:
+            pass
+        _TAG_CACHE = tags
+    return _TAG_CACHE
+
+
+def egg_texts():
+    """86 条彩蛋正文（剥 `祁煜：`）。读不到返回 [] ⇒ 调用方按「没素材」处理。"""
+    global _EGG_CACHE
+    if _EGG_CACHE is None:
+        out = []
+        try:
+            with open(EGG_FILE, encoding="utf-8") as f:
+                for raw in f:
+                    t = raw.strip()
+                    if t.startswith("祁煜："):
+                        out.append(t[3:].strip())
+        except Exception as e:
+            print("⚠️ 牵绊彩蛋读取失败（跨级彩蛋关闭）：%s" % e)
+        _EGG_CACHE = out
+    return _EGG_CACHE
+
+
+def sms_opening(filename):
+    """
+    一条牵绊短信的**开头句** = 他开口的第一句。读不到返回 ""。
+
+    ⚠ 三条取值规矩（2026-09-21 对着 45 条全量核过）：
+      ① 纯表情行 `[表情：涂鸦叽：生气]` ⇒ 归一成 `[表情:生气]`
+         （素材是全角冒号 + 二级名，跟 `card/stickers.md` 的标签对不上）；
+         标签不在标签表里就往后找下一句 —— **绝不把标记原样发出去**。
+      ② `[链接：…]` 行是链接占位，跳过取下一句（166 级就是这么办的）。
+      ③ 短信是**带 A/B/C 分支的多轮对话**，整条发到 QQ 会散架 ⇒ **只发第一句**；
+         她回什么，交给模型接。
+    """
+    if filename in _SMS_CACHE:
+        return _SMS_CACHE[filename]
+    text = ""
+    try:
+        with open(os.path.join(SMS_DIR, filename), encoding="utf-8") as f:
+            lines = [raw.strip()[3:].strip() for raw in f
+                     if raw.strip().startswith("祁煜：")]
+        tags = _sticker_tags()
+        for one in lines:
+            m = _STICKER_RE.match(one)
+            if m:
+                tag = m.group(2).strip()
+                if tag in tags:
+                    text = "[表情:%s]" % tag
+                    break
+                continue
+            if _LINK_RE.match(one):
+                continue
+            text = one
+            break
+    except Exception as e:
+        print("⚠️ 牵绊短信读取失败（这条不发）：%s" % e)
+    _SMS_CACHE[filename] = text
+    return text
+
+
+def _her_name(user_id, memory_dir):
+    prof = _read_json(os.path.join(memory_dir, "%s_profile.json" % user_id)) or {}
+    return (prof.get("name") or "").strip() or _DEFAULT_NAME
+
+
+def init_unlocked(level):
+    """
+    第一次接入时造一份初始记录：**当前等级以下的素材全标成「已解锁」，但不补发**。
+
+    ⭐ 为什么必须这样：老用户一上来可能就 100 级，否则会一口气把二十多条历史素材灌给她。
+    ⚠ `sms` / `eggs` 两列的语义是「**已解锁**」而不是「已发送」——
+      网页端那张「他说过的那句话」就是按它显示的（跟游戏里「牵绊度解锁」同一个意思）。
+    """
+    lv = int(level or 1)
+    return {"level": lv,
+            "sms": [n[0] for n in load_sms_nodes() if n[0] <= lv],
+            "eggs": [i for i, x in enumerate(load_egg_levels()) if x <= lv]}
+
+
+def current_level(user_id, memory_dir):
+    """这个用户现在几级（算不出来返回 0）。"""
+    try:
+        return compute(user_id, memory_dir)["level"]
+    except Exception:
+        return 0
+
+
+def pending_unlock(user_id, memory_dir):
+    """
+    跨级了没有？该发哪一条？**只读**，返回 dict 或 None。
+
+    dict = {kind, level, title, text, level_now, key}
+      kind      "sms"（短信开头句） / "egg"（彩蛋）
+      level_now 现在的等级 ⇒ 调用方拿它推进 `unlocked.level`
+      key       去重用的键：短信 = 节点等级；彩蛋 = 彩蛋下标
+
+    ⭐ 一级最多发一条：**短信优先于彩蛋**（短信是官方剧情节点，更重）。
+    ⚠ 没升级就返回 None —— **绝不补发历史**。
+    ⚠ 没发出去的那条**不丢**：`sms`/`eggs` 只在真发出去后才记，
+      所以被短信挤掉的那条彩蛋会在下一次升级时补上。
+    """
+    lv_now = current_level(user_id, memory_dir)
+    if not lv_now:
+        return None
+    daily = _read_json(os.path.join(memory_dir, "%s_daily.json" % user_id)) or {}
+    u = daily.get("unlocked")
+    if not isinstance(u, dict):
+        return None                      # 还没初始化 ⇒ 调用方先 init_unlocked
+    if lv_now <= int(u.get("level") or 0):
+        return None                      # 没升级
+
+    def _ints(seq):
+        out = set()
+        for x in (seq or []):
+            try:
+                out.add(int(x))
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    name = _her_name(user_id, memory_dir)
+
+    sent_sms = _ints(u.get("sms"))
+    for lv, _tier, title, fn in load_sms_nodes():
+        if lv <= lv_now and lv not in sent_sms:
+            text = sms_opening(fn)
+            if text:
+                return {"kind": "sms", "level": lv, "title": title,
+                        "text": re.sub(r"@?用户", name, text),
+                        "level_now": lv_now, "key": lv}
+
+    sent_eggs = _ints(u.get("eggs"))
+    eggs = egg_texts()
+    for i, lv in enumerate(load_egg_levels()):
+        if lv <= lv_now and i not in sent_eggs and i < len(eggs):
+            return {"kind": "egg", "level": lv, "title": "",
+                    "text": re.sub(r"@?用户", name, eggs[i]),
+                    "level_now": lv_now, "key": i}
+    return None
 
 
 # ---------------------------------------------------------------- 等级 → 语气
@@ -278,6 +502,35 @@ def compute(user_id, memory_dir):
             first_day = min(ds) if ds else ""
     known_days = days_since(first_day) if first_day else 0
 
+    # 🎁 已解锁的官方素材（跨级触发解锁的那些）⇒ 网页端「他说过的那句话」卡片。
+    #    ⭐ 卡片是「有内容才渲染」，给空列表它就自动隐藏 —— **页面代码不用改**。
+    #    ⚠ 纯表情那几条（`[表情:生气]`）不上卡片：显示成「[表情:生气]」很难看。
+    milestones = []
+    u = daily.get("unlocked") if daily else None
+    if isinstance(u, dict):
+        items, eggs, egg_lv = [], egg_texts(), load_egg_levels()
+        for x in (u.get("eggs") or []):
+            try:
+                i = int(x)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= i < len(eggs) and i < len(egg_lv):
+                items.append((egg_lv[i], eggs[i]))
+        nodes = {n[0]: n for n in load_sms_nodes()}
+        for x in (u.get("sms") or []):
+            try:
+                lvl = int(x)
+            except (TypeError, ValueError):
+                continue
+            n = nodes.get(lvl)
+            if n:
+                t = sms_opening(n[3])
+                if t:
+                    items.append((lvl, t))
+        items.sort(key=lambda p: p[0], reverse=True)
+        milestones = [t for _lv, t in items
+                      if t and not t.startswith("[表情:")][:MILESTONE_MAX]
+
     return {
         "user_id": user_id,
         "name": prof.get("name") or "",
@@ -309,7 +562,7 @@ def compute(user_id, memory_dir):
         "likes": prof.get("likes") or [],
         "dislikes": prof.get("dislikes") or [],
         "traits": prof.get("traits") or [],
-        "milestones": [],          # 批 2 再填（跨级时 LLM 写一句）
+        "milestones": milestones,  # ⭐ 官方素材：跨级解锁的那些（网页端「他说过的那句话」）
         "topics": [],              # 批 2 再填（近期话题，不存原文）
         "missing": missing,
     }
