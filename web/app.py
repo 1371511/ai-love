@@ -787,21 +787,23 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         av_state = "还没有头像"
         av_remove = ""
 
+    # ⚠⭐ 2026-09-21 她定：`/settings` 上的**小提示只留「头像」那一条**。
+    #    这一屏（显示名 / 相遇那天）的两段 hint 文字**已删**，账号那行的尾巴也清了 ⇒ 别再补回来。
+    #    ⚠⚠ 说明必须写在**这里**（Python 注释），**绝不能写成 `<body>` 里的 HTML 注释** ——
+    #        下面是一个 `"""..."""` 模板字符串，注释照原样发到浏览器（右键看源码就能读到），
+    #        等于把删掉的文案又送回去了（2026-09-21 真踩：验证脚本当场抓到 5 条 FAIL）。
+    #    ⚠ 字段本身**没动**：`placeholder="留空就用他记住的称呼"` 和日期控件照旧。
     body = """
     <div class="card">
       <h1>设置</h1>
-      <p class="muted" style="font-size:12px;margin:0">账号 %s　（QQ 号做了脱敏）</p>
+      <p class="muted" style="font-size:12px;margin:0">账号 %s</p>
       %s
       <form method="post" action="/settings" style="margin-top:16px">
         <h2>显示名</h2>
-        <p class="hint" style="margin:0 0 6px">只改网页上怎么显示；他怎么叫你，得在 QQ 里跟他说。</p>
         <div><input name="display_name" value="%s" placeholder="留空就用他记住的称呼"
                     style="width:100%%;box-sizing:border-box"></div>
 
         <h2 style="margin-top:18px">你们相遇的那天</h2>
-        <p class="hint" style="margin:0 0 6px">
-          你说哪天，就是哪天 —— 他记不住日子，这件事归你说了算。<br>
-          留空就不显示「认识第几天」。</p>
         <div><input name="met_day" type="date" value="%s"
                     style="width:100%%;box-sizing:border-box"></div>
 
