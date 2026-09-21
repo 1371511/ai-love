@@ -40,6 +40,13 @@ USERS_PATH = os.path.join(BASE, "web", "users.json")
 AVATAR_DIR = os.path.join(BASE, "web", "avatars")
 AVATAR_EXTS = ("png", "jpg", "webp", "gif")
 AVATAR_MAX = 2 * 1024 * 1024        # 2 MB
+
+# 🖼 祁煜**自己的**头像（2026-09-21 她给的那张蓝海油画 —— 用在短信详情页的聊天气泡上）
+#    ⚠ 跟上面的 `web/avatars/` **正相反**：这是**项目素材**、**要进仓库**
+#      （所以别往 `.gitignore` 里加 `web/assets/`）。
+#    ⚠ 走**白名单**：URL 里只出现 key（`/asset/qiyu`），真文件名与目录在代码里写死 ⇒ 无路径穿越。
+ASSET_DIR = os.path.join(BASE, "web", "assets")
+ASSET_FILES = {"qiyu": "qiyu.jpg"}
 SALT = "rafael-affinity"
 
 
@@ -189,7 +196,9 @@ CHAT_CSS = """
 .row{display:flex;align-items:flex-start;margin-bottom:12px}
 .row.me{flex-direction:row-reverse}
 .av{flex:0 0 30px;width:30px;height:30px;border-radius:50%;background:#DCE7F5;color:#33506E;
-    display:flex;align-items:center;justify-content:center;font-size:12px;margin:0 8px}
+    display:flex;align-items:center;justify-content:center;font-size:12px;margin:0 8px;
+    overflow:hidden}
+.av img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
 .row.me .av{background:#F6DDE7;color:#8E3556}
 .bub{max-width:76%;background:#fff;border-radius:12px;padding:8px 11px;font-size:13.5px;
      box-shadow:0 0 0 .5px rgba(0,0,0,.06);word-break:break-word}
@@ -642,13 +651,17 @@ async def message_detail(request: Request, level: int, p: str = ""):
         elif x:
             picked.append(-1)
 
-    him_av, her_av = "祁", (shown or "你")[0]
+    # 🖼 他的头像 = 那张蓝海油画（2026-09-21 她给的图），走白名单路由、别把路径写进 HTML。
+    #    她的还是「名字首字」那个小圆片。
+    him_av = '<img src="/asset/qiyu" alt="祁煜">'
+    her_av = (shown or "你")[0]
     rows = ['<div class="sys">%s</div>' % _esc(title)]
 
     def _bub(who, text):
+        # ⚠ 他的头像是 **HTML**（`<img>`）⇒ 这条**不能再 `_esc`**；她的仍是纯文本，照旧转义。
+        av = _esc(her_av) if who == "她" else him_av
         rows.append('<div class="%s"><div class="av">%s</div><div class="bub">%s</div></div>'
-                    % ("row me" if who == "她" else "row",
-                       _esc(her_av if who == "她" else him_av), _rich(text)))
+                    % ("row me" if who == "她" else "row", av, _rich(text)))
 
     if full["opening"]:
         _bub("他", full["opening"])
@@ -917,6 +930,27 @@ async def avatar_get(request: Request):
     if not p:
         return RedirectResponse("/")
     return FileResponse(p, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/asset/{name}")
+async def asset_get(request: Request, name: str):
+    """
+    项目自带的静态素材（现在就一张：**祁煜的头像**）。
+
+    ⚠ 走**白名单** —— `name` 只用来查表，**不拼进路径** ⇒ 路径穿越进不来。
+    ⚠ 只放**项目素材**；用户自己传的头像走 `/avatar`，两者**别混**
+      （那个是用户数据、不进仓库；这个是仓库里的图）。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    fn = ASSET_FILES.get(name)
+    if not fn:
+        return RedirectResponse("/")
+    p = os.path.join(ASSET_DIR, fn)
+    if not os.path.isfile(p):
+        return RedirectResponse("/")
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=86400"})
 
 
 if __name__ == "__main__":
