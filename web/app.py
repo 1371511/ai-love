@@ -251,10 +251,56 @@ CHAT_CSS = """
 .pick b{font-weight:500;color:#8E3556;margin-right:8px}
 .pick .go{float:right;color:#999;font-size:12px}
 .end{text-align:center;font-size:11.5px;color:#999;padding:4px 0 12px}
+/* ⭐ 2026-09-22 她嫌「像放 PPT」：新冒出来的那几行（外面包的那个 fresh 层）
+   淡入一下 —— 一点点动效就够，别做成整页动画。⚠ 晕动症偏好关掉就别动。
+   ⚠ 注释里**别照抄那段 HTML**（写 `class=...` 会让「页面里有没有」的断言误命中）。*/
+.fresh>div{animation:pop .22s ease-out}
+@keyframes pop{from{opacity:.35;transform:translateY(6px)}to{opacity:1;transform:none}}
+@media (prefers-reduced-motion:reduce){.fresh>div{animation:none}}
 """
 
+# ⭐ 2026-09-22 她要的「点选项别像翻页」⇒ **只换聊天区**（`/messages/{等级}/frag`）。
+#    ⚠⚠ 这是**渐进增强**：脚本没了 / 浏览器不支持 fetch ⇒ 链接照旧整页跳，
+#    功能一点不丢（全站零 JS 那条老规矩，只在「能不能更顺」上让步，不在「离了 JS 就废」上让步）。
+SMS_JS = r"""
+<script>
+(function () {
+  var chat = document.getElementById('chat');
+  if (!chat || !window.fetch) { return; }
+  function fragUrl(href) { return href.replace(/(\/messages\/\d+)\?/, '$1/frag?'); }
+  function go(href) {
+    chat.style.opacity = '.55';
+    fetch(fragUrl(href), { headers: { 'X-Requested-With': 'fetch' } }).then(function (r) {
+      if (!r.ok) { throw new Error(r.status); }
+      return r.text();
+    }).then(function (html) {
+      chat.innerHTML = html;
+      chat.style.opacity = '';
+      try { history.pushState(null, '', href); } catch (e) {}
+      var n = document.getElementById('new');
+      if (n) { n.scrollIntoView({ block: 'start', behavior: 'smooth' }); }
+    }).catch(function () {
+      location.href = href;                // 取不到就整页跳，功能不丢
+    });
+  }
+  document.addEventListener('click', function (e) {
+    var t = e.target;
+    var a = t && t.closest ? t.closest('a.pick') : null;
+    if (!a) { return; }
+    e.preventDefault();
+    go(a.getAttribute('href'));
+  });
+  // 整页进来（分享的链接 / 老浏览器）：也滚到最新那几行，别让她从头往下拖
+  if (!location.hash && document.getElementById('new')) {
+    document.getElementById('new').scrollIntoView({ block: 'start' });
+  }
+  window.addEventListener('popstate', function () { location.reload(); });
+})();
+</script>"""
 
-def _page(body, title="他眼里的你", css=""):
+
+def _page(body, title="他眼里的你", css="", script=""):
+    # ⭐ `script` 只给**短信详情页**用（2026-09-22 的局部刷新）；其余各页照旧零 JS。
     # ⭐ 2026-09-21 加的 `no-store`（她提：「模拟短信重置之后不是从头开始」）：
     #    这些页面**全是她私人的内容**（好感度是她的、聊天进度也是她的），而且同一串 URL
     #    会 render 出不同的东西（`/messages/13` 和 `?p=0,1` 是同一页的两个进度）——
@@ -262,8 +308,8 @@ def _page(body, title="他眼里的你", css=""):
     #    ⇒ 一句话：**私人页一律不缓存**。（ PNG/JPG 素材走 `FileResponse`，各有各的缓存头，不受这条影响。）
     return HTMLResponse("""<html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>%s</title><style>%s</style></head><body><div class="wrap">%s</div></body></html>""" %
-                        (title, CSS + css, body),
+<title>%s</title><style>%s</style></head><body><div class="wrap">%s</div>%s</body></html>""" %
+                        (title, CSS + css, body, script or ""),
                         headers={"Cache-Control": "no-store"})
 
 
@@ -669,27 +715,22 @@ async def messages_page(request: Request):
     return _page("".join(parts), title="牵绊提升")
 
 
-@app.get("/messages/{level}", response_class=HTMLResponse)
-async def message_detail(request: Request, level: int, p: str = ""):
+def _chat_html(uid, level, p):
     """
-    📱 一条牵绊短信的**详细对话页** —— 模拟手机互发消息，一句一句往下走。
+    🧱 短信对话的**气泡区**（`<div class="chat">` 里面那一段）+ 标题栏。
 
-    ⭐ 2026-09-21 她定的交互（原文：「系统：用户回复后再进行接下来的对话」）：
-       进来先只看见**他开口的第一句** + 那一段的选项；**她选了之后**，
-       她的话和他的回应才出现，再摆下一段的选项 …… 直到对话结束。
-       ⚠ 素材本来就是 A/B/C 分支树（42 条 3 段、还有 4 段 / 2 段 / 0 段的），
-         不是线性剧本 ⇒ **必须「选一个才往下走」**，一次性铺开就等于剧透自己。
+    ⭐ 详情页 `/messages/{level}` 和片段接口 `/messages/{level}/frag`
+      **共用这一份渲染**（2026-09-22 她要「点选项局部刷新」时才抽出来的）——
+      两处各渲染一遍迟早跑偏（一边新气泡、一边没新 ⇒ 修不完的 bug）。
 
-    ⚠ 进度走 URL（`?p=0,1` = 第 1 段选 A、第 2 段选 B），三个好处：
-       ① **一个字都不写盘**（web 端对 memory 只读这条铁律不破）
-       ② **不需要 JS**（跟全站一致：服务端渲染 + 链接跳转）
-       ③ 她能把这个链接存下来 / 发给别人看，进度跟着走
-    ⚠⚠ 等级没到 ⇒ 直接弹回列表：**详情页也不许泄漏没解锁的内容**。
+    返回 `(head_html, rows_html, title)`；**等级不够 / 没有这一级 ⇒ 返回 None**
+      （⚠⚠ 未解锁的正文一个字都不许出去 —— 这一层是唯一的关口，frag 也走它）。
+
+    ⭐ `class="fresh"` + `id="new"`：**最后选的那一段**（刚冒出来的那几行气泡）包一层 ——
+      JS 局部刷新后要**滚到这儿**，新气泡的淡入动画也挂在它身上。
+      ⚠ 用外层包一层（而不是给气泡加 class）⇒ 老页面里气泡的 HTML **一个字没变**，
+      那些数气泡的断言不会跟着碎。
     """
-    uid = _current_uid(request)
-    if not uid:
-        return RedirectResponse("/")
-
     a = compute(uid, MEMORY_DIR)
     lv = int(a["level"] or 1)
 
@@ -699,7 +740,7 @@ async def message_detail(request: Request, level: int, p: str = ""):
             node = n
             break
     if node is None or level > lv:
-        return RedirectResponse("/messages")
+        return None
 
     _lv, tier, title, fn = node
     full = sms_full(fn)
@@ -734,6 +775,7 @@ async def message_detail(request: Request, level: int, p: str = ""):
     if full["opening"]:
         _bub("他", full["opening"])
 
+    mark_bi = len(picked) - 1        # 最后一段（刚选的）⇒ 它的气泡包进 fresh
     bi = 0
     done = True
     for b in full["blocks"]:
@@ -755,28 +797,78 @@ async def message_detail(request: Request, level: int, p: str = ""):
                             % (level, nxt, _esc(op["key"]), _esc(op["title"])))
             break
         op = b["options"][idx]
+        if bi == mark_bi:
+            rows.append('<div class="fresh" id="new">')
         for x in op["her"]:
             _bub("她", x)
         for x in op["him"]:
             _bub("他", x)
+        if bi == mark_bi:
+            rows.append("</div>")
         bi += 1
 
     if done:
         rows.append('<div class="end">—— 说到这儿就停了 ——</div>')
 
     # ⚠ 2026-09-21 她定：标题栏**不加**头像（只有气泡里那个换真图）。别再往这儿塞 `<img>`。
+    head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
+            '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
+    return head, "".join(rows), title
+
+
+@app.get("/messages/{level}", response_class=HTMLResponse)
+async def message_detail(request: Request, level: int, p: str = ""):
+    """
+    📱 一条牵绊短信的**详细对话页** —— 模拟手机互发消息，一句一句往下走。
+
+    ⭐ 2026-09-21 她定的交互（原文：「系统：用户回复后再进行接下来的对话」）：
+       进来先只看见**他开口的第一句** + 那一段的选项；**她选了之后**，
+       她的话和他的回应才出现，再摆下一段的选项 …… 直到对话结束。
+       ⚠ 素材本来就是 A/B/C 分支树（42 条 3 段、还有 4 段 / 2 段 / 0 段的），
+         不是线性剧本 ⇒ **必须「选一个才往下走」**，一次性铺开就等于剧透自己。
+
+    ⚠ 进度走 URL（`?p=0,1` = 第 1 段选 A、第 2 段选 B），两个好处：
+       ① **一个字都不写盘**（web 端对 memory 只读这条铁律不破）
+       ② 她能把这个链接存下来 / 发给别人看，进度跟着走
+    ⭐ 2026-09-22 她嫌「像放 PPT」⇒ 加了 `SMS_JS`：**点选项只换聊天区**（不整页刷）。
+       ⚠⚠ 是**渐进增强**：脚本没了 / 浏览器太老 ⇒ 链接照样整页跳，**功能一点不丢**。
+    ⚠⚠ 等级没到 ⇒ 直接弹回列表：**详情页也不许泄漏没解锁的内容**。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+
+    got = _chat_html(uid, level, p)
+    if got is None:
+        return RedirectResponse("/messages")
+    head, chat, title = got
+
     # ⭐ 2026-09-21 加的 `id="top"` + 重置链接上的 `#top`：
     #    有的短信（比如 16 级那条）**一开局就有 8 条气泡**，页面本身还是很长 ——
     #    浏览器若接着上次的滚动位置显示，她抬眼看到的就是中间那一段，很像「没重置」。
-    #    ⇒ 挂个锚点，浏览器一定会**滚回对话开头**（一个 `#` 的事，不用 JS）。
-    head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
-            '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
-    body = ('<div class="phone" id="top">%s<div class="chat">%s</div></div>'
+    #    ⇒ 挂个锚点，浏览器一定会**滚回对话开头**。
+    body = ('<div class="phone" id="top">%s<div class="chat" id="chat">%s</div></div>'
             '<p class="footnav">'
             '<a href="/messages/%d#top" class="hint">↺ 从头再聊一遍</a> · '
             '<a href="/messages" class="hint">回列表</a></p>'
-            % (head, "".join(rows), level))
-    return _page(body, title="祁煜 · %s" % title, css=CHAT_CSS)
+            % (head, chat, level))
+    return _page(body, title="祁煜 · %s" % title, css=CHAT_CSS, script=SMS_JS)
+
+
+@app.get("/messages/{level}/frag", response_class=HTMLResponse)
+async def message_frag(request: Request, level: int, p: str = ""):
+    """
+    🧩 只回**气泡区那一段 HTML** —— 她点选项时，JS 用它换掉聊天区（不整页刷）。
+
+    ⚠ 等级 / 「有没有这一级」的校验跟详情页**同一份**（`_chat_html`）
+      ⇒ 未解锁的短信一个字也漏不出来（别在这条路上另写一套判断）。
+    ⚠ 拿不到 ⇒ **403 + 空串**；前端脚本会**退回整页跳转**，功能不丢。
+    """
+    uid = _current_uid(request)
+    got = _chat_html(uid, level, p) if uid else None
+    if got is None:
+        return HTMLResponse("", status_code=403, headers={"Cache-Control": "no-store"})
+    return HTMLResponse(got[1], headers={"Cache-Control": "no-store"})
 
 
 def _check_met_day(day, uid=""):
