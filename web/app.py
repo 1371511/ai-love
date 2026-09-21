@@ -251,10 +251,16 @@ CHAT_CSS = """
 
 
 def _page(body, title="他眼里的你", css=""):
+    # ⭐ 2026-09-21 加的 `no-store`（她提：「模拟短信重置之后不是从头开始」）：
+    #    这些页面**全是她私人的内容**（好感度是她的、聊天进度也是她的），而且同一串 URL
+    #    会 render 出不同的东西（`/messages/13` 和 `?p=0,1` 是同一页的两个进度）——
+    #    一旦被浏览器（尤其手机里的微信 / QQ 内置浏览器）缓存，就会**拿中途那一版冒充开头**。
+    #    ⇒ 一句话：**私人页一律不缓存**。（ PNG/JPG 素材走 `FileResponse`，各有各的缓存头，不受这条影响。）
     return HTMLResponse("""<html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>%s</title><style>%s</style></head><body><div class="wrap">%s</div></body></html>""" %
-                        (title, CSS + css, body))
+                        (title, CSS + css, body),
+                        headers={"Cache-Control": "no-store"})
 
 
 # ============================================================
@@ -697,13 +703,17 @@ async def message_detail(request: Request, level: int, p: str = ""):
     shown = (rec.get("display_name") or "").strip() or a["name"] or "你"
 
     # 选了哪几个（URL 里的脏值一律当「没选」，宁可让她重聊，也别把页面搞成 500）
+    # ⭐ 2026-09-21 收紧：**只认纯数字**，出现任意一个脏值就整段作废 ⇒ 从头开始。
+    #    （原来是塞个 -1 蒙混过关，于是 `?p=x,0` 这种半截状态真能渲染出半页对话 —— 看着就像没重置。）
     picked = []
     for x in (p or "").split(","):
         x = x.strip()
-        if x.isdigit():
-            picked.append(int(x))
-        elif x:
-            picked.append(-1)
+        if not x:
+            continue
+        if not x.isdigit():
+            picked = []
+            break
+        picked.append(int(x))
 
     # 🖼 他的头像 = 那张蓝海油画（2026-09-21 她给的图），走白名单路由、别把路径写进 HTML。
     #    她的还是「名字首字」那个小圆片。
@@ -751,11 +761,15 @@ async def message_detail(request: Request, level: int, p: str = ""):
         rows.append('<div class="end">—— 说到这儿就停了 ——</div>')
 
     # ⚠ 2026-09-21 她定：标题栏**不加**头像（只有气泡里那个换真图）。别再往这儿塞 `<img>`。
+    # ⭐ 2026-09-21 加的 `id="top"` + 重置链接上的 `#top`：
+    #    有的短信（比如 16 级那条）**一开局就有 8 条气泡**，页面本身还是很长 ——
+    #    浏览器若接着上次的滚动位置显示，她抬眼看到的就是中间那一段，很像「没重置」。
+    #    ⇒ 挂个锚点，浏览器一定会**滚回对话开头**（一个 `#` 的事，不用 JS）。
     head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
             '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
-    body = ('<div class="phone">%s<div class="chat">%s</div></div>'
+    body = ('<div class="phone" id="top">%s<div class="chat">%s</div></div>'
             '<p class="footnav">'
-            '<a href="/messages/%d" class="hint">↺ 从头再聊一遍</a> · '
+            '<a href="/messages/%d#top" class="hint">↺ 从头再聊一遍</a> · '
             '<a href="/messages" class="hint">回列表</a></p>'
             % (head, "".join(rows), level))
     return _page(body, title="祁煜 · %s" % title, css=CHAT_CSS)
