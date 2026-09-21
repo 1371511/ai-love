@@ -25,6 +25,8 @@ from Rafayel_config import (
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
+    REPLY_TYPING_MAX, REPLY_TYPING_MIN, REPLY_TYPING_PER_CHAR,
+    REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
     QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
     QZONE_CMT_EVENT_WS, QZONE_CMT_HOUR_END, QZONE_CMT_HOUR_START,
@@ -408,6 +410,107 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
     print("[🧪] 指令回执 sent=%s｜回她的话 %r｜内部原因 %s" % (sent, tip, note))
     return True
 
+
+# ============================================
+# ⏱ 回复节奏：等她说完 + 假装打字（2026-09-22 她定的）
+# ============================================
+# ⭐ 为什么要有这一层：她的原话是「发完一句它就立刻回了，根本没机会说四句」。
+#   秒回 + 一句一答 = 一眼机器人；真人是「等对方说完 → 想一下 → 慢慢打」。
+#
+# ⚠ 三条硬规矩：
+#   ① **每用户独立**：她等她的，别人发消息不受影响。
+#   ② **静默被新消息重置**：她接着说 ⇒ 计时从头来（这正是「等她说完」的意思）。
+#   ③ **有强制上限**（REPLY_WAIT_MAX）：她一直在说到不了静默 ⇒ 到点也发车。
+#      没有这条，她连发 5 分钟他一个字都不回 —— 比秒回还糟。
+#
+# ⚠⭐ 顺带解决**并发乱序**：`get_reply` 是同步的（里面有 requests.post），
+#    以前它把事件循环堵住、反而串行了；一旦这里改成 await，她的新消息就会并发进来
+#    ⇒ 两条回复交错。现在同一用户只在静默结束时回一次，天然串行。
+_pending_replies = {}
+
+
+def _typing_delay(text):
+    """发出去之前等几秒（假装打字）。字多就多等一点，但压在 [MIN, MAX] 里。"""
+    base = REPLY_TYPING_MIN + len(text or "") * REPLY_TYPING_PER_CHAR
+    hi = min(REPLY_TYPING_MAX, max(REPLY_TYPING_MIN, base))
+    return random.uniform(REPLY_TYPING_MIN, hi)
+
+
+def _enqueue_reply(websocket, message_type, user_id, group_id, parsed):
+    """她来一条 ⇒ 记进这一批；静默够了才真的去回复（见 `_wait_for_quiet`）。"""
+    st = _pending_replies.get(user_id)
+    if st is None:
+        st = {"lines": [], "media": False, "pure": False,
+              "t0": time.time(), "last": time.time()}
+        _pending_replies[user_id] = st
+        asyncio.ensure_future(_wait_for_quiet(user_id))
+    st["lines"].append(parsed.get("prompt") or "")
+    st["media"] = bool(st["media"] or parsed.get("sticker") or parsed.get("photo"))
+    st["pure"] = bool(parsed.get("pure"))        # 最后一条是不是只甩了张图
+    st["last"] = time.time()
+    st["ws"] = websocket
+    st["message_type"] = message_type
+    st["group_id"] = group_id
+    print("[⏱] %s 第 %d 句 ⇒ 等她说完再回" % (user_id, len(st["lines"])))
+
+
+async def _wait_for_quiet(user_id):
+    """一直等到「静默够了」或「等太久了」，然后发车。"""
+    while True:
+        await asyncio.sleep(0.25)
+        st = _pending_replies.get(user_id)
+        if st is None:                       # 已经被别处清掉了
+            return
+        if time.time() - st["last"] >= REPLY_WAIT_QUIET:
+            why = "静默 %.0fs" % REPLY_WAIT_QUIET
+            break
+        if time.time() - st["t0"] >= REPLY_WAIT_MAX:
+            why = "等太久（上限 %.0fs）" % REPLY_WAIT_MAX
+            break
+    await _flush_reply(user_id, why)
+
+
+async def _flush_reply(user_id, why=""):
+    """真的去回复：把她这一批话并起来 ⇒ 想一下 ⇒ 打字 ⇒ 发出去。"""
+    st = _pending_replies.pop(user_id, None)
+    if not st:
+        return
+    ws = st.get("ws")
+    if ws is None:
+        return
+    text = "\n".join(x for x in st["lines"] if (x or "").strip())
+    if not text:
+        return
+
+    # ⭐ `get_reply` 是同步的（里面有 requests.post）⇒ 直接调用会把整个事件循环堵住，
+    #   说说排期 / 打招呼扫描 / 别人的消息全停。丢到线程里跑。
+    reply = await asyncio.to_thread(your_ai_lover_response, text, user_id,
+                                    media=st["media"])
+
+    # 2026-09-20：她只甩了张表情、一个字没说 ⇒ 他也甩一张（对打）。
+    if st["pure"] and STICKER_REPLY_TO_STICKER and not has_sticker(reply):
+        tag = random_reply_tag()
+        if tag:
+            reply = "[表情:%s]" % tag + (reply or "").strip()
+
+    # 空回复兜底：模型一个字都没回 ⇒ 至少甩一张图，别让她等个寂寞。
+    if not (reply or "").strip():
+        tag = random_reply_tag()
+        if tag:
+            reply = "[表情:%s]" % tag
+
+    if reply:
+        d = _typing_delay(reply)
+        print("[⏱] %s：%d 句并一批 ⇒ 打字 %.1fs 再发"
+              % (why or "发车", len(st["lines"]), d))
+        await asyncio.sleep(d)
+        await send_text(ws, st["message_type"], user_id, st["group_id"], reply)
+
+    # 🎁 牵绊度跨级 ⇒ 再补一条官方素材（短信开头句 / 彩蛋）。
+    #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
+    await maybe_send_unlock(ws, st["message_type"], user_id, st["group_id"])
+
+
 # ============================================
 # WebSocket 服务端（连接 NapCat）
 # ============================================
@@ -493,35 +596,12 @@ async def process_napcat_message(data, websocket):
         #   take_opening 只在「确实是第一次」时返回文本，老朋友返回空串。
         opening = take_opening(user_id)
         if opening:
+            # ⚠ 开场白**不走等待**：她第一句话就干等十几秒，会以为 bot 坏了。
             await send_text(websocket, message_type, user_id, group_id, opening)
 
-        # 调用你的 AI 恋人逻辑（喂的是翻译过的那段话，不是 CQ 码）
-        reply = your_ai_lover_response(parsed["prompt"], user_id,
-                                       media=bool(parsed.get("sticker") or parsed.get("photo")))
-
-        # 2026-09-20：她只甩了张表情、一个字没说 ⇒ 他也甩一张（对打）。
-        #   ⚠ 必须放在 get_reply **之后**：冷却闸在里面跑，这里补的图不会被它剥掉；
-        #      而冷却闸本来就只看**他自己**最近发没发过 —— 她是发起方，他回一张天经地义。
-        if parsed["pure"] and STICKER_REPLY_TO_STICKER and not has_sticker(reply):
-            tag = random_reply_tag()
-            if tag:
-                reply = "[表情:%s]" % tag + (reply or "").strip()
-
-        # 空回复兜底：模型一个字都没回 ⇒ 至少甩一张图，别让她等个寂寞。
-        #   （reply 一空就整条不发，是「发出去没反应」里最伤的一种。）
-        if not (reply or "").strip():
-            tag = random_reply_tag()
-            if tag:
-                reply = "[表情:%s]" % tag
-
-        # 构造回复消息（符合 OneBot v11 协议）
-        if reply:
-            await send_text(websocket, message_type, user_id, group_id, reply)
-
-        # 🎁 牵绊度跨级 ⇒ 再补一条官方素材（短信开头句 / 彩蛋）。
-        #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然；
-        #      也保证不会插在他这一轮的回复前面。
-        await maybe_send_unlock(websocket, message_type, user_id, group_id)
+        # ⏱ 2026-09-22：不再秒回 —— 先等她说完（她连着说的几句并成一批一起回），
+        #    再假装打字 2~6 秒才发。细节全在 `_enqueue_reply` 那一节。
+        _enqueue_reply(websocket, message_type, user_id, group_id, parsed)
 
 # ============================================
 # 主动打招呼（他忍不住先开口）
