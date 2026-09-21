@@ -421,11 +421,16 @@ async def me(request: Request):
     #    · 不塞进上面那张卡里（那是两回事）
     #    · 也不放底部导航（底部只留「设置 / 退出」）
     #    ⚠ 这一张**不跟着 milestones 空不空**：它自己是入口，不是那张卡的尾巴。
+    # ⚠⭐ 2026-09-21 改名（她看到 15 级面板空着时顺手指出的）：
+    #    这张卡数的是 **`load_sms_nodes()` = 45 条短信**的解锁数、点进去也是 `/messages`；
+    #    而 86 条**彩蛋按她定的口径根本不进网页端**（§19.6/§19.7，只走 QQ）——
+    #    所以叫「彩蛋」是**名实不符**。⇒ 改成 **「牵绊短信」**。
+    #    ⚠ 彩蛋那条线**没被动**：QQ 端照发，「/me」上那张「他说过的那句话」照读彩蛋。
     _nodes = load_sms_nodes()
     _un = sum(1 for n in _nodes if n[0] <= a["level"])
-    egg_card = ('<div class="card">'
+    sms_card = ('<div class="card">'
                 '<div style="display:flex;justify-content:space-between;align-items:baseline">'
-                '<h2 style="margin:0">彩蛋</h2>'
+                '<h2 style="margin:0">牵绊短信</h2>'
                 '<span class="hint">已解锁 %d / %d</span></div>'
                 '<p class="muted" style="font-size:12px;margin:6px 0 0">'
                 '每跨过一个等级，他就多一点想让你听见的。</p>'
@@ -521,13 +526,14 @@ async def me(request: Request):
            a["tier"], a["level"], a["score"], pct, next_hint,
            tier_block,
            a["turns"], tokens_txt, tokens_unit,
-           chips, topics_card, ms_card, egg_card)
+           chips, topics_card, ms_card, sms_card)
     return _page(body)
 
 
 # ============================================================
 # 🎁 牵绊提升（2026-09-21 她定：牵绊短信不进 QQ ⇒ 单开一页放网页端；
-#    页面名后来从「牵绊提升彩蛋」收成「牵绊提升」，「我的页」上那张卡只剩两个字「彩蛋」）
+#    页面名后来从「牵绊提升彩蛋」收成「牵绊提升」；「我的页」上那张入口卡
+#    2026-09-21 又从「彩蛋」改成 **「牵绊短信」** —— 它数的是短信，别再叫彩蛋）
 # ------------------------------------------------------------
 # ⭐ 为什么单开一页：45 条短信带 A/B/C 三段分支，塞进 /me 会把主页撑到没法看。
 # ⚠⚠ **没解锁的内容一个字都不许进 HTML**（不是用 CSS 藏起来）——

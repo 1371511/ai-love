@@ -13,6 +13,7 @@
   ③ 日期用**同一个偏移**（`AUTO_GREET_TZ_OFFSET`）—— 整条链只该有一个「今天」。
 """
 
+import glob
 import json
 import os
 import time
@@ -150,6 +151,65 @@ def save_unlocked(user_id, data):
     except Exception as e:
         print("⚠️ 跨级解锁记录落盘失败（不影响对话）：%s" % e)
         return None
+
+
+# ---------------------------------------------------------------- 启动补底
+# ⭐⭐ 2026-09-21 她定（起因：她 15 级的号**看不到**网页端「他说过的那句话」）：
+#    `unlocked` **只由 QQ 端写**，而它只在**收到私聊**时才跑 ⇒ 两类用户会永远没有这条记录：
+#      ① 功能上线**之前**就聊过的老用户；② 换机器 / 重装后还没私聊过的号。
+#    而网页端那张卡是「**有内容才渲染**」⇒ 记录缺失 = 面板整张不出现（看着像坏了，其实没坏）。
+#    ⇒ bot **启动时**扫一遍 memory，给「没有 unlocked」的用户补一次底。
+
+def memory_uids():
+    """memory/ 里「聊过」的纯数字 uid。
+
+    ⚠ 只靠 `isdigit()` 就够：`{uid}_daily.json` / `{uid}_usage.json` / `{uid}_profile.json`
+      取到的主干都是 `123_daily` 这种带下划线的，`isdigit()` 天然为 False ⇒ 顺带排掉。
+      （跟 `auto_greet_scan` 一个口径，别再另立一套。）
+    """
+    out = []
+    try:
+        for p in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
+            uid = os.path.splitext(os.path.basename(p))[0]
+            if uid.isdigit() and uid not in out:
+                out.append(uid)
+    except Exception:
+        pass
+    return sorted(out)
+
+
+def backfill_unlocked(init_fn, level_fn, dry_run=False):
+    """
+    给「聊过、但还没有 `unlocked` 记录」的用户补一次底。返回 `(补了几个, 跳过几个, 名单)`。
+
+    `init_fn(level)` = `Rafayel_affinity.init_unlocked`；`level_fn(uid, dir)` = `current_level`。
+    （用传参而不是 import：`Rafayel_affinity` 只读、不反过来依赖本模块，别把这条单向搞反。）
+
+    ⚠ 四条硬规矩：
+      ① **只补缺** —— 已有 `unlocked` 的**一个字节都不碰**（否则会抹掉「真发过哪些」，
+         素材会重发一遍）。判据用 `load_unlocked(uid) is not None`。
+      ② **不补发历史** —— 只写记录、不推消息（跟「老用户首次接入」同一个口径，§19.7）。
+      ③ **算不出等级（0）就跳过** —— 宁可不补，也不写一份 `level=0` 的错误底：
+         那会让 `pending_unlock` 把历史素材当成新的，一级一条连着补发。
+      ④ **异常一律吞掉** —— 补底失败绝不能拖住 bot 启动。
+    """
+    filled, skipped, names = 0, 0, []
+    for uid in memory_uids():
+        try:
+            if load_unlocked(uid) is not None:      # ① 只补缺
+                skipped += 1
+                continue
+            lv = int(level_fn(uid, MEMORY_DIR) or 0)
+            if lv <= 0:                             # ③ 算不出来就不动
+                skipped += 1
+                continue
+            if not dry_run:
+                save_unlocked(uid, init_fn(lv))     # ② 只写记录，不发消息
+            filled += 1
+            names.append("%s(%d级)" % (uid, lv))
+        except Exception:                           # ④
+            skipped += 1
+    return filled, skipped, names
 
 
 def _usage_path(user_id):

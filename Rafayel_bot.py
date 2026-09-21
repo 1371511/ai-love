@@ -33,7 +33,7 @@ from Rafayel_config import (
 )
 from Rafayel_affinity import (current_level, init_unlocked, load_egg_levels,
                               load_sms_nodes, pending_unlock)
-from Rafayel_daily import load_unlocked, save_unlocked
+from Rafayel_daily import backfill_unlocked, load_unlocked, save_unlocked
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
@@ -866,6 +866,20 @@ async def main():
         if AFFINITY_UNLOCK:
             print("🎁 牵绊度跨级素材已开启（%d 个短信节点 + %d 条彩蛋；一级最多一条，短信优先）"
                   % (len(load_sms_nodes()), len(load_egg_levels())))
+            # ⭐⭐ 2026-09-21 她定：启动时给「聊过、但还没有 unlocked」的用户补一次底。
+            #    起因：这类用户的网页端「他说过的那句话」**永远空着**（那张卡有内容才渲染）
+            #      —— 而 `unlocked` 只在收到**私聊**时才写，功能上线前就聊过的老用户永远等不到。
+            #    ⚠ 只补缺、不覆盖、不补发历史（`backfill_unlocked` 里管着，别在这儿重写一遍）。
+            try:
+                _filled, _skipped, _names = backfill_unlocked(init_unlocked, current_level)
+                if _filled:
+                    print("🎁 启动补底：%d 个用户补了跨级记录（跳过 %d）—— %s%s"
+                          % (_filled, _skipped, ", ".join(_names[:6]),
+                             "…" if len(_names) > 6 else ""))
+                else:
+                    print("🎁 启动补底：没有需要补的（跳过 %d 个）" % _skipped)
+            except Exception as e:
+                print("⚠️ 启动补底失败（不影响启动）：%s" % e)
         if QZONE_AUTO:
             # ⚠ 与 auto_greet_loop 是**两个独立 task**、各自排期 —— 别把这两个合成一个循环。
             asyncio.create_task(auto_qzone_loop())
