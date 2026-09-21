@@ -192,6 +192,15 @@ a.plain{color:inherit;text-decoration:none;display:block}
 a.cta{color:#8E3556;text-decoration:none;font-size:12px}
 button.ghost{background:#fff;color:#777;border-color:rgba(0,0,0,.2)}
 img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:block;background:#EEF4FB}
+/* ⭐ 2026-09-21 她定：**底部那一条钉在屏幕底部**（原话「让它一直保持在界面里」）——
+   原本是每页各自一行居中的灰字链接，页面一长就跟着滚走。
+   ⚠ 内容**一个字都没加**（还是各页原来那几个链接）—— 她之前定的「底部只留设置 / 退出」没动。
+   ⚠⚠ `body` 那个 `padding-bottom` 是给这条**留位**的：`position:fixed` 会脱离文档流，不留位的话最后一屏内容会被压在下面。
+   ⇒ 改 `.footnav` 的高度（字号 / 内边距）**必须同步改它**。*/
+.footnav{position:fixed;left:0;right:0;bottom:0;z-index:10;
+         background:#FAFAF8;border-top:0.5px solid rgba(0,0,0,.1);
+         padding:10px 1rem;text-align:center;font-size:12px}
+body{padding-bottom:56px}
 """
 
 # 短信详情页专用（模拟手机聊天）—— 只给那一页，别塞进全站 CSS 让每页都背一遍。
@@ -518,7 +527,7 @@ async def me(request: Request):
     </div>
     <div class="card"><h2>你们之间</h2>%s</div>
     %s%s%s
-    <p style="text-align:center"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
+    <p class="footnav"><a href="/settings" class="hint">设置</a> · <a href="/logout" class="hint">退出</a></p>
     """ % (shown_name or "你",
            sub,
            _av_html,
@@ -617,7 +626,7 @@ async def messages_page(request: Request):
     #     她定：彩蛋是**QQ 端聊天时偶尔提到的语料**（等级到了才解锁），
     #     不是摆成一页给人从头翻的展示内容。彩蛋只走 QQ，网页端只有短信。
 
-    parts.append('<p style="text-align:center"><a href="/me" class="hint">回去</a></p>')
+    parts.append('<p class="footnav"><a href="/me" class="hint">回去</a></p>')
     return _page("".join(parts), title="牵绊提升")
 
 
@@ -716,7 +725,7 @@ async def message_detail(request: Request, level: int, p: str = ""):
     head = ('<div class="ph-top"><a href="/messages" class="hint">‹ 返回</a>'
             '<b>祁煜</b><span class="hint">第 %d 级</span></div>' % level)
     body = ('<div class="phone">%s<div class="chat">%s</div></div>'
-            '<p style="text-align:center">'
+            '<p class="footnav">'
             '<a href="/messages/%d" class="hint">↺ 从头再聊一遍</a> · '
             '<a href="/messages" class="hint">回列表</a></p>'
             % (head, "".join(rows), level))
@@ -831,7 +840,7 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
       </form>
       %s
 
-      <p style="margin:12px 0 0;text-align:center"><a href="/me" class="hint">回去</a></p>
+      <p class="footnav"><a href="/me" class="hint">回去</a></p>
     </div>""" % (_mask_uid(uid), msg, name, met_day, av_preview, av_state, av_remove)
     return _page(body, title="设置")
 
