@@ -39,7 +39,7 @@ ai-love/                    # 项目根 = 数据 + 入口 + 文档
 │   ├── Rafayel_sticker.py     # 🎭 表情包：标签匹配 + 冷却闸 + 说明注入
 │   ├── Rafayel_affinity.py    # 💞 牵绊度计算（**只读**，等级换算 + 档位语气）
 │   ├── Rafayel_daily.py       # 📅 每日统计 + token 用量落盘（**唯一写盘**的地方）
-│   ├── 世界书/
+│   ├── worldbook/
 │   │   └── Rafayel_worldbook.py   # 世界书关键词注入器
 │   └── _backup/               # 各阶段的 .bak 备份
 ├── card/                  # 酒馆卡产物（Rafayel.character.json、worldbook.json）

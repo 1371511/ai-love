@@ -34,8 +34,8 @@
 import json
 import os
 
-# 2026-09-17 搬家：本文件在 ai-Rafayel\世界书\ 下，card\ 在项目根 —— 要**上跳两层**。
-_HERE = os.path.dirname(os.path.abspath(__file__))          # …\ai-Rafayel\世界书
+# 2026-09-17 搬家：本文件在 ai-Rafayel\worldbook\ 下，card\ 在项目根 —— 要**上跳两层**。
+_HERE = os.path.dirname(os.path.abspath(__file__))          # …\ai-Rafayel\worldbook
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # E:\ai-love
 CARD_DIR = os.path.join(ROOT, "card")
 WORLDBOOK_JSON = os.path.join(CARD_DIR, "worldbook.json")

@@ -5,7 +5,7 @@ import sys, io, os
 ROOT = r"E:\ai-love"                        # 项目根（card\ memory\ .env 都在这）
 CODE = os.path.join(ROOT, "ai-Rafayel")     # 祁煜代码层（2026-09-17 从项目根搬入）
 sys.path.insert(0, CODE)
-sys.path.insert(0, os.path.join(CODE, "世界书"))   # 世界书代码在子目录，得单独挂
+sys.path.insert(0, os.path.join(CODE, "worldbook"))   # 世界书代码在子目录，得单独挂
 import Rafayel_worldbook as WI
 
 out = []

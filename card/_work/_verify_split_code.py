@@ -160,8 +160,8 @@ chk("项目根只剩 Rafayel_bot.py（实为：%s）" % (_py_root or "无"),
 for _f in ("Rafayel.py", "Rafayel_chat.py", "Rafayel_config.py",
            "Rafayel_llm.py", "Rafayel_memory.py", "Rafayel_profile.py"):
     chk("ai-Rafayel\\%s 在位" % _f, os.path.isfile(os.path.join(CODE, _f)))
-chk("ai-Rafayel\\世界书\\Rafayel_worldbook.py 在位",
-    os.path.isfile(os.path.join(CODE, "世界书", "Rafayel_worldbook.py")))
+chk("ai-Rafayel\\worldbook\\Rafayel_worldbook.py 在位",
+    os.path.isfile(os.path.join(CODE, "worldbook", "Rafayel_worldbook.py")))
 chk("ai-Rafayel 下**没有** memory\\（防记忆落到错位置）",
     not os.path.isdir(os.path.join(CODE, "memory")))
 chk("人设卡仍从项目根 card\\ 读到（name=%s）" % C.name,

@@ -20,10 +20,10 @@ import sys
 
 import requests
 
-# 2026-09-17 搬家：世界书代码在 ai-Rafayel\世界书\ 子目录里，**不在本文件同一层**。
+# 2026-09-17 搬家：世界书代码在 ai-Rafayel\worldbook\ 子目录里，**不在本文件同一层**。
 # Python 只会把「本文件所在目录」自动加进 sys.path，子目录里的模块默认搜不到，
 # 所以这里手动补一段。放在 import Rafayel_worldbook 之前 —— 顺序不能挪到后面。
-_WB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "世界书")
+_WB_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "worldbook")
 if _WB_DIR not in sys.path:
     sys.path.insert(0, _WB_DIR)
 

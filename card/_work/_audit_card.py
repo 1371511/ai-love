@@ -389,7 +389,7 @@ L.append("  E:\\ai-love\\ai-Rafayel\\Rafayel_config.py             配置与常�
 L.append("  E:\\ai-love\\ai-Rafayel\\Rafayel_profile.py            用户画像（批次 F）")
 L.append("  E:\\ai-love\\ai-Rafayel\\Rafayel_memory.py             记忆落盘 + ConversationManager")
 L.append("  E:\\ai-love\\ai-Rafayel\\Rafayel_llm.py                get_reply：拼请求 + 调 DeepSeek")
-L.append("  E:\\ai-love\\ai-Rafayel\\世界书\\Rafayel_worldbook.py  世界书关键词注入器")
+L.append("  E:\\ai-love\\ai-Rafayel\\worldbook\\Rafayel_worldbook.py 世界书关键词注入器")
 L.append("")
 L.append("【统计】")
 for k, v in stats.items():
