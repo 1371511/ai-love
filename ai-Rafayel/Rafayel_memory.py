@@ -150,7 +150,7 @@ def recent_context(user_id, n=6):
 
     内容 = 她最近 n 条消息 + 长期摘要尾部 + 最近几条关键事实。
 
-    ⚠ 直接读 `memory\{uid}.json`，**不碰** `ConversationManager` ——
+    ⚠ 直接读 `memory/{uid}.json`，**不碰** `ConversationManager` ——
       发说说那条链（后台 task）不该依赖对话引擎的进程内状态，
       而且它跑在**另一个协程**里，去摸 `cm.messages` 既没必要也不安全。
     """

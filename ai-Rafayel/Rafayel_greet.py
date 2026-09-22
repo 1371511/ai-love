@@ -6,7 +6,7 @@
 所以这里把「上线问候」映射成：**你冷场够久，他就忍不住先说一句**。
 
 只做三件事：
-  ① 读语料 `card\greetings.md`（素材原文，一句未改）
+  ① 读语料 `card/greetings.md`（素材原文，一句未改）
   ② 判断某个 user_id 此刻该不该主动发（冷场时长 / 时段 / 当天条数 / **排期**）
   ③ 记住发过什么、以及**下次最早什么时候能发**（避免短期内重复，也避免太频繁）
 
@@ -41,7 +41,7 @@ ROOT = os.path.dirname(_HERE)                               # E:\ai-love
 GREETINGS_MD = os.path.join(ROOT, "card", "greetings.md")
 
 # 池子名 ↔ md 里的 `## ` 小节标题
-# ⚠ 这两个字符串必须与 card\greetings.md 里的 `## ` 小节标题**逐字一致**，
+# ⚠ 这两个字符串必须与 card/greetings.md 里的 `## ` 小节标题**逐字一致**，
 #   改标题就要同步改这里，否则 load_pools 拿到的池名对不上，那个池直接空掉。
 POOL_REUNION = "重逢（冷场超过 3 天才用）"
 POOL_DAY = "白天（8:00–17:00）"
@@ -178,7 +178,7 @@ def should_greet(user_id, last_active, now=None):
     """
     判断现在该不该给这个用户主动发一句。
 
-    last_active：最后一次对话落盘的时间字符串（memory\{uid}.json 的 saved_at）。
+    last_active：最后一次对话落盘的时间字符串（memory/{uid}.json 的 saved_at）。
     返回 (True, 池名) 或 (False, 原因字符串) —— 原因只用于日志。
     """
     if not AUTO_GREET:
