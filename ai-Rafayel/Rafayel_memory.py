@@ -94,6 +94,9 @@ def save_memory(user_id: str, cm):
     data = {
         "messages": cm.messages,
         "long_term_summary": cm.long_term_summary,
+        # 待总结缓冲也要落盘：不加的话，重启会丢掉「上次满 SUMMARY_INTERVAL 轮之后、
+        # 还没累够一轮」的那批素材，它们就永远进不了摘要（2026-09-22 修）。
+        "pending_summary": cm.pending_summary,
         "key_facts": cm.key_facts,
         "turn_count": cm.turn_count,
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -117,6 +120,11 @@ def load_memory(user_id: str, cm) -> bool:
             data = json.load(f)
         cm.messages = data.get("messages", cm.messages)
         cm.long_term_summary = data.get("long_term_summary", cm.long_term_summary)
+        # 待总结缓冲也要读回来（老文件没这个 key）。不是 list 就当没有 ——
+        # 损坏的数据不该让整份记忆载入失败。
+        _pend = data.get("pending_summary")
+        if isinstance(_pend, list):
+            cm.pending_summary = _pend
         cm.key_facts = data.get("key_facts", [])
         cm.turn_count = data.get("turn_count", 0)
         # 🕐 读回「她最后一条消息」的时间戳。
