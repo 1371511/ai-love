@@ -21,7 +21,7 @@ from Rafayel_config import (
     AFFINITY_UNLOCK,
     POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
-    EVENT, EVENT_SCAN_SECONDS,
+    EVENT, EVENT_SCAN_SECONDS, WEATHER,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
@@ -1131,6 +1131,19 @@ async def main():
             asyncio.create_task(auto_event_loop())
             print("🎉 特殊事件已开启（节日当天他会主动说一句原话；每 %s 秒扫一次）"
                   % EVENT_SCAN_SECONDS)
+        if WEATHER:
+            # ⭐ 启动自检：**当场**就知道拿没拿到天气。
+            #   之后它就**静默降级**了（拿不到只是这段 prompt 少两行，不再打任何日志）
+            #   ⇒ 服务器上出不了网的话，这里是唯一能一眼看出来的地方。
+            try:
+                from Rafayel_weather import current as weather_current
+                from Rafayel_weather import debug_text as weather_debug
+                if weather_current():
+                    print("🌤 温度感知已开启：%s" % weather_debug())
+                else:
+                    print("🌤 温度感知已开启，但**现在拿不到天气**（对话照常，稍后自动再试）")
+            except Exception as e:
+                print("⚠️ 温度感知启动自检失败（不影响对话）：%s" % e)
         if AFFINITY_UNLOCK:
             print("🎁 牵绊度跨级素材已开启（%d 个短信节点 + %d 条彩蛋；一级最多一条，短信优先）"
                   % (len(load_sms_nodes()), len(load_egg_levels())))
