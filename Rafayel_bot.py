@@ -21,6 +21,7 @@ from Rafayel_config import (
     AFFINITY_UNLOCK,
     POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
+    EVENT, EVENT_SCAN_SECONDS,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
@@ -39,6 +40,7 @@ from Rafayel_config import (
 from Rafayel_affinity import (current_level, init_unlocked, load_egg_levels,
                               load_sms_nodes, pending_unlock)
 from Rafayel_daily import backfill_unlocked, load_unlocked, save_unlocked
+from Rafayel_event import try_event
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
@@ -783,6 +785,56 @@ async def auto_greet_loop():
 
 
 # ============================================
+# 特殊事件（节日）：日子到了，他说一句节日的原话
+# ============================================
+# ⚠⚠ 与「主动打招呼」「主动发说说」是**三条独立排期**：各自记录
+#    （{uid}_event.json / {uid}_greet.json / {uid}_qzone.json）、各自后台 task，
+#    **绝不共用闸**。代价是同一天可能既打招呼又过节日，这是刻意接受的。
+# 选条 / 判日期 / 去重都在 ai-Rafayel\Rafayel_event.py 里，本函数只管「发送」。
+
+async def auto_event_scan():
+    """
+    扫一遍私聊过的用户：今天要是节日，就让他开口说一句节日原话。
+
+    ⚠ NapCat 没连上时**静默什么都不做**（开头就 return，不打日志）。
+    ⚠ uid 必须纯数字（QQ 号），免得给 "cli" 这种测试号发。
+    """
+    if not EVENT or not connected_clients:
+        return
+    ws = next(iter(connected_clients))
+
+    for path in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
+        uid = os.path.splitext(os.path.basename(path))[0]
+        if uid.endswith(("_profile", "_greet", "_qzone", "_bday", "_event")):
+            continue
+        if not uid.isdigit():
+            continue
+
+        text, entry = try_event(uid)
+        if not text:
+            continue
+
+        await send_text(ws, "private", uid, None, text)
+        # ⚠ 发出去之后**立刻**记两笔：
+        #   ① 进对话历史 —— 否则她回话时模型不知道上一句是他说的，会接不住
+        #   ② 记「今年这个节日说过了」—— 放在 send 之后，发送失败就不留假记录
+        record_proactive(uid, text)
+        # ⚠ try_event 内部**不 mark**（跟打招呼同一个道理），由这里在真发出后补
+        from Rafayel_event import mark as event_mark
+        event_mark(uid, entry)
+        print("[🎉] 节日 -> %s：%r（%s）" % (uid, text[:30], (entry or {}).get("id")))
+
+
+async def auto_event_loop():
+    while True:
+        await asyncio.sleep(EVENT_SCAN_SECONDS)
+        try:
+            await auto_event_scan()
+        except Exception as e:
+            print("[⚠️] 节日扫描出错：%s" % e)
+
+
+# ============================================
 # 主动发朋友圈（S2：他自己按排期挑一条发出来）
 # ============================================
 # ⚠⚠ 与上面「主动打招呼」是**两条独立排期**：各自记录（{uid}_greet.json / {uid}_qzone.json）、
@@ -1074,6 +1126,11 @@ async def main():
         if AUTO_GREET:
             asyncio.create_task(auto_greet_loop())
             print("📣 主动打招呼已开启（冷场 %s 小时后他会先开口）" % AUTO_GREET_IDLE_HOURS)
+        if EVENT:
+            # ⚠ 与 auto_greet_loop / auto_qzone_loop 是**三个独立 task**，别合成一个循环
+            asyncio.create_task(auto_event_loop())
+            print("🎉 特殊事件已开启（节日当天他会主动说一句原话；每 %s 秒扫一次）"
+                  % EVENT_SCAN_SECONDS)
         if AFFINITY_UNLOCK:
             print("🎁 牵绊度跨级素材已开启（%d 个短信节点 + %d 条彩蛋；一级最多一条，短信优先）"
                   % (len(load_sms_nodes()), len(load_egg_levels())))
