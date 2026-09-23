@@ -105,7 +105,13 @@ def record(user_id, gap_hours=None, media=False):
 
         m = int(d.get("media") or 0) + (1 if media else 0)
 
-        out = {
+        # ⭐⭐ **以现有内容为基础再覆盖**，绝不重建一个空 dict ——
+        #    早期这里就是重建的，只显式搬了 `unlocked`，结果：
+        #      ① 当初漏搬 `unlocked` ⇒ 跨级解锁进度被抹、素材重复发（注释还留着）
+        #      ② 2026-09-24 漏掉 `qz_seen`（日常问答去重）⇒ 每说一句话就被清成 1 条
+        #    ⇒ 同一个坑踩了两次。改成 dict(d) 之后，以后新加字段**不会再漏**。
+        out = dict(d)
+        out.update({
             "user_id": user_id,
             "days": days,
             "first_day": first,
@@ -115,9 +121,9 @@ def record(user_id, gap_hours=None, media=False):
             "media": m,
             "backfilled": bool(d.get("backfilled")),   # 这批天数里含外部日志回填的部分
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        }
-        # ⭐ 跨级解锁记录（牵绊度官方素材，见 Rafayel_affinity.init_unlocked）必须**原样带过去** ——
-        #    这个 dict 每次都是重建的，漏了它 ⇒ 下一句对话就把解锁进度抹掉、素材会重复发。
+        })
+        # 跨级解锁记录（牵绊度官方素材，见 Rafayel_affinity.init_unlocked）
+        # ⚠ 上面 `dict(d)` 已经带过来了，这里再写一次是**双保险** —— 这一条丢不起。
         if isinstance(d.get("unlocked"), dict):
             out["unlocked"] = d["unlocked"]
         _save(path, out)
@@ -151,6 +157,53 @@ def save_unlocked(user_id, data):
     except Exception as e:
         print("⚠️ 跨级解锁记录落盘失败（不影响对话）：%s" % e)
         return None
+
+
+# ---------------------------------------------------------------- 日常问答去重
+# 2026-09-24 接进来（日常问答：`Rafayel_dailyq.py`）。
+# 她定的口径：**同一天她问第二次 ⇒ 换新一条** ⇒ 实际就是「每条只发一次，发完为止」。
+# ⇒ 只需要记「她听过哪几条」，不需要「今天发过没」那套一日一闸。
+#
+# ⚠ 写盘的活**只能在本文件做**（整条链上只有这里写 `{uid}_daily.json`）——
+#    `Rafayel_dailyq` 只调这两个函数，绝不自己去开文件。
+
+_DAILY_SEEN_CAP = 400           # 留最近这么多条就够（池子只有 161 条，实际撑不满）
+
+
+def daily_seen(user_id):
+    """她已经听过的日常条目 id 列表。没记过 / 读失败 ⇒ 空列表（不是 None，免得调用方踩坑）。"""
+    d = _load(_path(user_id)) or {}
+    v = d.get("qz_seen")
+    if not isinstance(v, list):
+        return []
+    return [x for x in v if isinstance(x, str)]
+
+
+def daily_seen_add(user_id, entry_id):
+    """
+    把一条记成「说过了」。返回 True/False。
+
+    ⚠ 跟 `record()` / `save_unlocked()` 一个脾气：异常一律吞掉，
+      **绝不能因为记去重把对话搞挂**（记不上最多是下次可能重发一条，不影响他说话）。
+    ⚠ 空 id 直接忽略 —— 池子里万一有没有 id 的脏条目，别把空串写进去污染列表。
+    """
+    if not entry_id:
+        return False
+    try:
+        path = _path(user_id)
+        d = _load(path) or {}
+        seen = [x for x in (d.get("qz_seen") or []) if isinstance(x, str)]
+        if entry_id in seen:
+            return True                     # 已经记过了，不用重复写盘
+        seen.append(entry_id)
+        d["qz_seen"] = seen[-_DAILY_SEEN_CAP:]
+        d.setdefault("user_id", user_id)
+        d["qz_day"] = _today()              # 最近一次是哪天（看日志用，不参与判据）
+        _save(path, d)
+        return True
+    except Exception as e:
+        print("⚠️ 日常问答去重落盘失败（不影响对话）：%s" % e)
+        return False
 
 
 # ---------------------------------------------------------------- 启动补底

@@ -33,11 +33,14 @@ from Rafayel import (
 from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
-    AFFINITY_TONE, API_URL, MAX_TOKENS, MEMORY_DIR, MODEL, QZONE_CMT_ENABLE,
-    REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK, REPLY_SPLIT_MAX_LINES,
-    REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS, WB_MAX_ENTRIES,
-    api_key,
+    AFFINITY_TONE, API_URL, DAILY_QA, MAX_TOKENS, MEMORY_DIR, MODEL,
+    QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
+    REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS,
+    WB_MAX_ENTRIES, api_key,
 )
+# 💬 日常问答：她主动问「你今天怎么过的」⇒ 从池子挑一条**照原话说**。
+#    分层上它在 llm 之下（只依赖 config / daily / qzone_auto），这里调它不会成环。
+from Rafayel_dailyq import hint_for as dailyq_hint
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
 from Rafayel_worldbook import get_worldbook
@@ -420,6 +423,17 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     if wb_after:
         request_messages.append({"role": "system", "content": wb_after})
 
+    # 4a-2. 💬 日常问答（2026-09-24）：她主动问「你今天怎么过的」⇒ 挑一条日常**照原话说**。
+    #     ⚠ 与世界书同一个口径：只进 request_messages，**绝不写回 cm.messages**
+    #       （落盘就会每轮累积，最后变成常驻人设）。
+    #     ⚠ **不在这里记去重** —— 要等消息真的发出去之后才记（见下面 5.7），
+    #       否则接口报错也会把它算成「说过了」，那条就再也轮不到。
+    _daily_entry = None
+    if DAILY_QA:
+        _dq, _daily_entry = dailyq_hint(user_id, user_message)
+        if _dq:
+            request_messages.append({"role": "system", "content": _dq})
+
     # 4b. post_history_instructions：放在历史**之后**、模型回复之前。
     # ⚠ 只加进 request_messages，不加进 cm.messages —— 否则会被 save_memory 写进
     #    memory\*.json，每轮累积一份，越滚越大。
@@ -487,6 +501,13 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
 
             # 6. 添加助手消息到对话管理器
             cm.add_assistant_message(reply)
+
+            # 5.7 💬 日常问答去重：**这一条真的说出去了**才记成「说过了」。
+            #    放在 finally 之前、return 之前 ⇒ 接口报错 / 超时都走到不到这里，
+            #    那条就还留在池子里，下次还能轮到（不会白白消耗一条）。
+            if _daily_entry is not None:
+                from Rafayel_dailyq import mark as dailyq_mark
+                dailyq_mark(user_id, _daily_entry)
 
             # 7. 触发摘要更新（如果到了总结间隔）
             if cm.should_summarize():
