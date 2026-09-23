@@ -128,12 +128,19 @@ pip install fastapi uvicorn python-multipart
 ### 3. 配置环境变量
 
 ```
-# 创建 .env 文件:
+# 创建 .env 文件（默认用 DeepSeek）:
 DEEPSEEK_API_KEY=sk-你的密钥
+
+# 想换成 Kimi 的话：加一行切换，并配上那边的 key（不用删 DeepSeek 那把，随时切回来）
+# LLM_PROVIDER=kimi
+# MOONSHOT_API_KEY=sk-你的密钥
 ```
 
 > ⚠ `load_dotenv()` 按**脚本自身位置**找 `项目根/.env`（不是当前工作目录），
 > 且 `override=False` ⇒ 改完 `.env` **必须重启进程**才生效。
+>
+> ⚠ **换模型等于把「他说话的样子」整个重新调一遍**（风格禁令、照原话说、频率控制都是照模型调的），
+> 换完务必先在终端（`python ai-Rafayel/Rafayel_chat.py`）聊几轮验过再上 QQ。
 
 ### 4. 启动服务
 
@@ -209,13 +216,18 @@ card/_work/worldbook/          → 世界书条目（改这里，目录下 14 �
 
 ## 🔑 换大模型（API 配置）
 
-**配置只有一个源** —— `ai-Rafayel/Rafayel_config.py` 末尾三行：
+**配置只有一个源** —— `ai-Rafayel/Rafayel_config.py` 里的一张表 `_LLM_PRESETS`：
 
 ```python
-API_URL = "https://api.deepseek.com/chat/completions"
-MODEL   = "deepseek-chat"
-api_key = os.environ.get("DEEPSEEK_API_KEY", DEFAULT_API_KEY)
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+# "deepseek" → https://api.deepseek.com/chat/completions + deepseek-chat + DEEPSEEK_API_KEY
+# "kimi"     → https://api.moonshot.cn/v1/chat/completions + kimi-k2.6 + MOONSHOT_API_KEY
+#              ⭐ 并随请求体带 {"thinking": {"type": "disabled"}}（K2.6 默认开思考，必须关）
 ```
+
+一句话切换：在 `.env` 写 `LLM_PROVIDER=kimi` 并配上 `MOONSHOT_API_KEY`，**重启**即可；
+改回 `deepseek` 就退回原来的**（不用删任何 key，随时 A/B 对比）**。
+⚠ `LLM_PROVIDER` 拼错 ⇒ 自动退回 `deepseek`（宁可用旧模型好好跑，也不让 bot 起不来）。
 
 所有大模型调用都走标准 **OpenAI 兼容** 的 chat-completions 格式，
 一共 **4 个调用点**：
@@ -230,13 +242,16 @@ api_key = os.environ.get("DEEPSEEK_API_KEY", DEFAULT_API_KEY)
 - 请求体统一：`{model, messages, stream: False, max_tokens, temperature}`，
   鉴权 `Authorization: Bearer`，取回答 `choices[0].message.content`。
 - ✅ **换一家 OpenAI 兼容的服务**（Kimi / 通义 / 智谱 / 硅基流动 / 火山方舟…）：
-  只改上面那三行 + `.env`，其余不用动。
+  在 `_LLM_PRESETS` 里**加一条**（`url` / `model` / `env_key` / `extra`），4 个调用点一行都不用改；
+  各家**独有的请求字段**（比如 Kimi 的 `thinking`）塞进 `extra`，它会自动拼进四个请求体。
 - ⚠ **换成非 OpenAI 格式的**（原生 Claude / 原生 Gemini）：要改请求构造与响应解析
   （system 得单独成字段、鉴权头不同、返回路径不同），4 个调用点都得动。
 - ⚠ 换家后要留意的四件事：
   ① `max_tokens` 字段名（个别家要 `max_completion_tokens`）；
   ② `temperature` 取值范围（现在是 0.8，一般安全）；
   ③ **推理模型**可能把正文放 `reasoning_content`、`content` 返回空 ⇒ 他会「不说话」；
+     ⇒ Kimi **K2.6 默认就是带思考的**，所以 `extra` 里写死了 `{"thinking": {"type": "disabled"}}`，
+     别删；同理别用 K3 / K2.7-code（那两个思考**关不掉**，且思考 token 按输出价收费）；
   ④ 摘要那条 `timeout=10` 偏短，新家首字慢就会**静默失败**（有兜底、不报错，只是记不上）。
 - ⚠ `memory/{uid}_usage.json` 靠响应里的 `usage` 字段记账，字段名不同就**记不上数**（不报错）。
 - 📮 `Rafayel_qzone_comment.py` 里也有 `requests.post`，但那是 **qzone-bridge 的 REST**，

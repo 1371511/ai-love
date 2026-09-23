@@ -18,8 +18,8 @@ import time
 import requests
 
 from Rafayel_config import (
-    API_URL, AUTO_GREET_TZ_OFFSET, MAX_FACTS, MAX_HISTORY_TURNS, MEMORY_DIR,
-    MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
+    API_URL, AUTO_GREET_TZ_OFFSET, LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
+    MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
 from Rafayel_daily import record as daily_record
@@ -503,6 +503,8 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                 "stream": False,
                 "max_tokens": SUMMARY_MAX_TOKENS
             }
+            if LLM_EXTRA:
+                data.update(LLM_EXTRA)
             response = requests.post(API_URL, headers=headers, json=data, timeout=10)
             result = response.json()
 

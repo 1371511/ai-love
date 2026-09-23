@@ -33,7 +33,7 @@ from Rafayel import (
 from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
-    AFFINITY_TONE, API_URL, DAILY_QA, MAX_TOKENS, MEMORY_DIR, MODEL,
+    AFFINITY_TONE, API_URL, DAILY_QA, LLM_EXTRA, MAX_TOKENS, MEMORY_DIR, MODEL,
     QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
     REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS,
     WB_MAX_ENTRIES, api_key,
@@ -249,6 +249,8 @@ def comment_opening(user_id: str, post_text: str) -> str:
             "max_tokens": 120,                 # 开口第一句，写长了就不像他了
             "temperature": TEMPERATURE,
         }
+        if LLM_EXTRA:
+            data.update(LLM_EXTRA)
         r = requests.post(API_URL,
                           headers={"Authorization": "Bearer %s" % api_key,
                                    "Content-Type": "application/json"},
@@ -300,6 +302,8 @@ def comment_reply(user_id: str, post_text: str, her_comment: str) -> str:
             "max_tokens": 120,
             "temperature": TEMPERATURE,
         }
+        if LLM_EXTRA:
+            data.update(LLM_EXTRA)
         r = requests.post(API_URL,
                           headers={"Authorization": "Bearer %s" % api_key,
                                    "Content-Type": "application/json"},
@@ -482,6 +486,8 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
         "max_tokens": MAX_TOKENS,
         "temperature": TEMPERATURE,
     }
+    if LLM_EXTRA:
+        data.update(LLM_EXTRA)
 
     try:
         response = requests.post(API_URL, headers=headers, json=data, timeout=30)

@@ -438,9 +438,42 @@ EVENT_HOUR_END = 22
 #  🔑 API 配置
 # ============================================================
 
-API_URL = "https://api.deepseek.com/chat/completions"
-MODEL = "deepseek-chat"
+# ⭐⭐ 2026-09-24：模型**可切换** —— 默认 deepseek，改 .env 里的 LLM_PROVIDER 就换 kimi。
+#  理由：换模型等于把「说话的样子」全部重新调一遍，得能随时退回去对比，
+#  不能把路走死。两边 key 各自独立，只认当前 provider 那把。
+#  ⚠ 新增 provider 只需在 _LLM_PRESETS 里加一条，四处请求体不用动。
+LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
+
+_LLM_PRESETS = {
+    "deepseek": {
+        "url": "https://api.deepseek.com/chat/completions",
+        "model": "deepseek-chat",
+        "env_key": "DEEPSEEK_API_KEY",
+        "extra": {},          # DeepSeek 一个额外字段都不要
+    },
+    "kimi": {
+        # ⚠ 别用 moonshot-v1 —— 那代已于 2026-08-31 退役，调了直接报模型不存在
+        "url": "https://api.moonshot.cn/v1/chat/completions",
+        "model": "kimi-k2.6",
+        "env_key": "MOONSHOT_API_KEY",
+        # ⭐⭐ 必加：K2.6 **默认开思考** —— 慢一截、reasoning token 按输出价收、
+        #   还可能把思考过程带进正文。角色扮演根本不需要它想，一律关掉。
+        "extra": {"thinking": {"type": "disabled"}},
+    },
+}
+
+# 拼错（或新环境没配）就退回默认：宁可用旧模型好好跑，也别让 bot 起不来
+if LLM_PROVIDER not in _LLM_PRESETS:
+    LLM_PROVIDER = "deepseek"
+_PRESET = _LLM_PRESETS[LLM_PROVIDER]
+
+API_URL = _PRESET["url"]
+MODEL = _PRESET["model"]
+
+# ⭐ 随请求体一起发的额外字段（DeepSeek 时空字典 ⇒ 四处调用一个有行为都不变）
+# ⚠ 调用方只能读 + dict.update()，不许就地改它
+LLM_EXTRA = _PRESET["extra"]
 
 # 从环境变量读取 API Key，如果没有则使用默认值（仅供测试）
 DEFAULT_API_KEY = "sk-需要替换成你自己的api密钥"
-api_key = os.environ.get("DEEPSEEK_API_KEY", DEFAULT_API_KEY)
+api_key = os.environ.get(_PRESET["env_key"], DEFAULT_API_KEY)
