@@ -27,6 +27,12 @@ from Rafayel_config import DAILY_POOL, DAILY_QA, DAILY_SNIPS
 from Rafayel_daily import daily_seen, daily_seen_add
 from Rafayel_qzone_auto import render_text
 
+# ⭐ 互动短句只从**「抛回给她」**这一类挑（2026-09-24 她指出「你嫌弃？」接不上之后定的）。
+#   理由：这类**不依赖前文**（你呢 / 你说呢 / 所以你今天过得怎么样），接在任何日常后面都成立；
+#   而「试探 / 邀请 / 开涮」三类都藏着前提（得他先展示什么、得她先表现出兴趣），
+#   **随机配必然时不时接不上**。它们仍留在 JSON 里，等以后能做「按内容配」再放出来。
+SNIP_GROUPS = ("A 抛回给她",)
+
 # 触发词：她**主动问**才走（她说日常事件不主动推，只由她提起才触发）
 TRIGGERS = [
     "今天怎么过", "今天过得", "怎么过的", "过得怎么样",
@@ -54,8 +60,9 @@ def _load():
         _POOL = []
     try:
         with open(DAILY_SNIPS, encoding="utf-8") as f:
-            _SNIPS = [x.get("text") for x in (json.load(f) or {}).get("snips") or []]
-            _SNIPS = [x for x in _SNIPS if x]
+            _SNIPS = [(x.get("group"), x.get("text"))
+                      for x in (json.load(f) or {}).get("snips") or []]
+            _SNIPS = [(g, t) for g, t in _SNIPS if t]
     except Exception as e:
         print("⚠️ 互动短句池读取失败（只说日常原句）：%s" % e)
         _SNIPS = []
@@ -87,7 +94,9 @@ def pick(user_id):
     if not fresh:
         fresh = list(_POOL)          # 都听过了 ⇒ 从头再来一轮
     e = random.choice(fresh)
-    snip = random.choice(_SNIPS) if _SNIPS else None
+    # 只从启用中的类别挑；万一那类被清空了，退回全部（不至于一句话都接不上）
+    enabled = [t for g, t in _SNIPS if g in SNIP_GROUPS] or [t for _, t in _SNIPS]
+    snip = random.choice(enabled) if enabled else None
     return e, snip
 
 
@@ -114,11 +123,14 @@ def render(user_id, entry, snip):
              "你今天其实是这样过的（照原话说，一个字都别改）：",
              text]
     if snip_txt:
-        lines.append("然后接这样一句，把话头递给她（也是照原话说）：")
+        # ⭐ 2026-09-24 她指出随机配的短句会接不上（「你嫌弃？」前面是句感慨 ⇒ 断了）
+        #   ⇒ 参考句只给**口气**，接得上就照说，接不上让他自己接一句。
+        lines.append("说完把话头递给她，一句就够，要短。下面这句是口气参考，接得上就照着说：")
         lines.append(snip_txt)
+        lines.append("接不上就自己接一句——反问她、问她今天过得怎么样都行。")
     lines.append(
-        "规矩：不许改字、不许加细节、不许在结尾升华讲道理；"
-        "日常那句是你的原话，直接说就行，别解释它。"
+        "规矩：日常那句不许改字、不许加细节、也别解释它；"
+        "你接的那一句不许升华讲道理、不许报时间。"
     )
     return "\n".join(lines)
 
