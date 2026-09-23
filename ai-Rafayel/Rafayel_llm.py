@@ -41,8 +41,10 @@ from Rafayel_config import (
 # 💬 日常问答：她主动问「你今天怎么过的」⇒ 从池子挑一条**照原话说**。
 #    分层上它在 llm 之下（只依赖 config / daily / qzone_auto），这里调它不会成环。
 from Rafayel_dailyq import hint_for as dailyq_hint
+from Rafayel_event import fest_today as event_fest_today
 from Rafayel_memory import ConversationManager, load_memory, save_memory
 from Rafayel_sticker import apply_cooldown, sticker_instructions
+from Rafayel_weather import nudge as weather_nudge
 from Rafayel_worldbook import get_worldbook
 
 
@@ -455,7 +457,16 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     #     ⚠ 同样只进 request_messages，绝不写回 cm.messages。
     #     ⚠ 位置 = 整段 prompt 的最后一条（原来靠「system 越靠后越受关注」，
     #        现在换成「全局最靠后」，注意力不比原来差；真机 A/B 再定）。
-    _now = cm.now_hint_text()
+    #    🌤 突变关怀（降温/高温/严寒/下雨）一天最多一次 —— **只在主对话这条路取**，
+    #       一次性 prompt 那种没历史的地方不该消耗这个额度（见 `Rafayel_weather.nudge`）。
+    #    🎉 今天是不是节日：让他心里有数，她提起来接得住（开口归节日模块管）。
+    #       ⚠ 两个都包了 try：节日表/天气出任何问题都只是少两行，绝不能把对话搞崩。
+    try:
+        _fest = event_fest_today()[0]
+        _nudge = weather_nudge()
+    except Exception:
+        _fest, _nudge = None, ""
+    _now = cm.now_hint_text(fest=_fest, nudge=_nudge)
     if _now:
         request_messages.append({"role": "system", "content": _now})
 

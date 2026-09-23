@@ -65,9 +65,32 @@ def _period_cn(hour):
     return "凌晨"          # 2:00–5:00
 
 
-def now_prompt_text(gap_hours=None):
+def _season_cn(month):
+    """
+    ⭐ 月份 → **季节**（2026-09-24 加的日期感知）。
+
+    ⚠ 只给四季，不给「初秋/深秋」这种 —— 月份和季节是**客观事实**，
+      而「初秋」是我加的形容，容易跟他实际说的话对不上（也更容易变成他主动开口念叨）。
+    """
+    if 3 <= month <= 5:
+        return "春天"
+    if 6 <= month <= 8:
+        return "夏天"
+    if 9 <= month <= 11:
+        return "秋天"
+    return "冬天"
+
+
+def now_prompt_text(gap_hours=None, fest=None, nudge=None):
     """
     拼「## 🕐 现在」那一段；`NOW_PROMPT` 关掉就返回空串。
+
+    fest  = 今天是什么节日（None = 不是节日）；由调用方从 `Rafayel_event.fest_today` 取
+            —— ⚠ 不在这里 import event：那会让 memory 反向依赖更高的一层。
+    nudge = 今天的「突变关怀」指令（None = 没有/今天已经用过了）；
+            由调用方从 `Rafayel_weather.nudge` 取，**只在主对话那条路传**
+            （一次性 prompt 那种没历史的地方不该消耗这个「一天一次」的额度）。
+
 
     ⚠ 两件必须说清的事（都是她实测踩出来的）：
       ① **照实说**：模型没时间感知，不注入就会瞎编钟点 ⇒ 明确写「她问就照实说」。
@@ -81,9 +104,30 @@ def now_prompt_text(gap_hours=None):
     n = _now_bj()
     # ⭐ 只写**时段**，精确钟点降级成括号里的备注（她问才说）—— 见 `_period_cn` 的注释。
     lines = ["## 🕐 现在（北京时间）",
-             "%d年%d月%d日 %s %s（%02d:%02d）" % (
+             "%d年%d月%d日 %s %s %s（%02d:%02d）%s" % (
                  n.tm_year, n.tm_mon, n.tm_mday, _WEEKDAYS_CN[n.tm_wday],
-                 _period_cn(n.tm_hour), n.tm_hour, n.tm_min)]
+                 _season_cn(n.tm_mon), _period_cn(n.tm_hour), n.tm_hour, n.tm_min,
+                 "周末" if n.tm_wday >= 5 else "工作日")]
+
+    # 🎉 今天是节日 ⇒ 让他心里有数（她提起来接得住；要不要开口归节日模块管）
+    if fest:
+        lines.append("今天是%s。" % fest)
+
+    # 🌤 温度：只给数值，**不提城市**（她定的：她是深圳的，说「上海」会出戏）
+    try:
+        from Rafayel_weather import weather_line
+        wl = weather_line()
+    except Exception:
+        wl = ""          # ⚠ 天气拿不到就当没这项功能，绝不能把对话搞崩
+    if wl:
+        lines.append(wl)
+        lines.append(
+            "（她问起才照实说。她没问就不要主动提温度、天气，"
+            "也别拿天气做文章——「今天好热」「外面在下雨」这类话，她不问就别说。）"
+        )
+    # ⭐ 突变关怀：一天最多一次，是**允许的例外**（她定的）
+    if nudge:
+        lines.append("%s——说成关心一句就够，别重复说，也别像播天气。" % nudge)
 
     if gap_hours is not None and gap_hours >= NOW_GAP_HOURS:
         # ⚠ 分钟档**必须单独写**：Python 的 `round(0.5)` 是 **0**（银行家舍入），
@@ -276,7 +320,7 @@ class ConversationManager:
 
         return full_prompt
 
-    def now_hint_text(self):
+    def now_hint_text(self, fest=None, nudge=None):
         """
         🕐 「现在几点 + 隔了多久」那一段 —— 由调用方**追加在聊天历史之后**送出去。
 
@@ -292,7 +336,7 @@ class ConversationManager:
         ⚠ 注意力：原来靠「system 越靠后越受关注」，现在改成「整段 prompt 的最后一条」，
           位置同样是最靠后 ⇒ 真机 A/B 验过再定，不行就往回挪。
         """
-        return now_prompt_text(self.gap_hours)
+        return now_prompt_text(self.gap_hours, fest=fest, nudge=nudge)
 
     def _compute_gap_hours(self):
         """
