@@ -38,6 +38,33 @@ def _now_bj():
     return time.localtime(time.time() + AUTO_GREET_TZ_OFFSET * 3600)
 
 
+def _period_cn(hour):
+    """
+    ⭐ 钟点 → **时段词**（2026-09-24 她提「时间提得太频繁了」⇒ 降精度）。
+
+    为什么降：以前每轮都把 `04:08` 这种**精确到分钟**的钟点摆在整段 prompt 的最后一条
+      （注意力最强的位置），模型就把它当成「要交代出去的信息」⇒ 开口就是
+      「凌晨四点还没睡」「这个点还没睡」。
+    ⇒ 平时只给「凌晨 / 清晨 / 上午…」这种**粗粒度**的词：他知道大概什么时候，
+      但嘴里没有那个具体数字可念。精确钟点挪进括号里当**备注**，她问才说。
+    """
+    if 5 <= hour < 8:
+        return "清晨"
+    if 8 <= hour < 11:
+        return "上午"
+    if 11 <= hour < 13:
+        return "中午"
+    if 13 <= hour < 17:
+        return "下午"
+    if 17 <= hour < 19:
+        return "傍晚"
+    if 19 <= hour < 23:
+        return "晚上"
+    if hour >= 23 or hour < 2:
+        return "深夜"
+    return "凌晨"          # 2:00–5:00
+
+
 def now_prompt_text(gap_hours=None):
     """
     拼「## 🕐 现在」那一段；`NOW_PROMPT` 关掉就返回空串。
@@ -52,9 +79,11 @@ def now_prompt_text(gap_hours=None):
     if not NOW_PROMPT:
         return ""
     n = _now_bj()
+    # ⭐ 只写**时段**，精确钟点降级成括号里的备注（她问才说）—— 见 `_period_cn` 的注释。
     lines = ["## 🕐 现在（北京时间）",
-             "%d年%d月%d日 %s %02d:%02d" % (n.tm_year, n.tm_mon, n.tm_mday,
-                                            _WEEKDAYS_CN[n.tm_wday], n.tm_hour, n.tm_min)]
+             "%d年%d月%d日 %s %s（%02d:%02d）" % (
+                 n.tm_year, n.tm_mon, n.tm_mday, _WEEKDAYS_CN[n.tm_wday],
+                 _period_cn(n.tm_hour), n.tm_hour, n.tm_min)]
 
     if gap_hours is not None and gap_hours >= NOW_GAP_HOURS:
         # ⚠ 分钟档**必须单独写**：Python 的 `round(0.5)` 是 **0**（银行家舍入），
@@ -80,7 +109,13 @@ def now_prompt_text(gap_hours=None):
             hint = "—— 中间过了这么久，你手上的事（做饭、洗澡、走路这类）也该有进展了，别还停在原地。"
         lines.append("她上一条消息是%s %s" % (when, hint))
 
-    lines.append("（这是真实时间。她问就照实说，别自己编一个钟点。）")
+    # ⚠⭐ 2026-09-24 她提「时间提得太频繁」⇒ 这里补上**反向那条禁令**。
+    #     原来只写了「她问就照实说」，等于只管了一半：模型照样主动报时。
+    lines.append(
+        "（这是真实时间。她问起才照实说，别自己编一个钟点。"
+        "她没问就不要主动报时，也别拿时间做文章——"
+        "「这个点」「凌晨四点」「都这个时间了」这类话，她不问就别说。）"
+    )
     return "\n".join(lines)
 
 

@@ -23,6 +23,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CARD_DIR = os.path.dirname(HERE)
@@ -40,6 +41,35 @@ BAN_EXACT = {
 ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(\d+)\s*\|")
 SEC_RE = re.compile(r"^###\s+(.+?)（(\d+)\s*条）")
 PLACE_RE = re.compile(r"[\[【][^\]】]*[\]】]")
+
+
+# ⚠⭐ 排版清洗（2026-09-24 真机冒烟暴露的冲突）：
+#   池子原句里有 30 条带 emoji、若干条带 ASCII 双引号，而人设卡的【不许这么写】
+#   明写着「不写 emoji」「不用 ASCII 双引号」（会被原样注入）。日常问答又要求
+#   **照原话说** ⇒ 模型照抄就跟禁令打架（实测回出「…也不过如此😎」「号称"分手催化剂"…」）。
+#   ⇒ 裁断：**改的是排版符号，不是内容** ——
+#       · emoji 一律剥掉（要表情就走表情包那套，不由原句带出来）
+#       · ASCII 双引号成对换成「」，孤立的直接去掉
+#     全角引号（“”）本来就是允许的，不动。
+EMOJI_RANGES = [(0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF),
+                (0x2190, 0x21FF), (0xFE00, 0xFE0F)]
+PAIR_QUOTE_RE = re.compile(r'"([^"]*)"')
+
+
+def _is_emoji(c):
+    return any(lo <= ord(c) <= hi for lo, hi in EMOJI_RANGES)
+
+
+def clean_text(s):
+    """剥 emoji + ASCII 双引号 → 「」。返回 (清洗后, 剥掉几个 emoji, 换了几处引号)"""
+    t = s or ""
+    n_e = sum(1 for c in t if _is_emoji(c))
+    t = "".join(c for c in t if not _is_emoji(c))
+    n_q = len(PAIR_QUOTE_RE.findall(t))
+    t = PAIR_QUOTE_RE.sub(lambda m: "「%s」" % m.group(1), t)
+    t = t.replace('"', "")            # 落单的引号直接去掉
+    t = re.sub(r"\s{2,}", " ", t).strip()
+    return t, n_e, n_q
 
 
 def norm(s):
@@ -98,7 +128,7 @@ def main():
     if len(items) != 162:
         A("⚠ 清单条数是 %d，不是 162 —— 解析可能有问题，先看这里" % len(items))
 
-    kept, missed, banned = [], [], []
+    kept, missed, banned, cleaned = [], [], [], []
     for it in items:
         t = it["text"]
         if t in BAN_EXACT:
@@ -108,7 +138,11 @@ def main():
         if e is None:
             missed.append(it)
             continue
-        kept.append({"id": e.get("id"), "cat": it["cat"], "text": e.get("text")})
+        raw_text = e.get("text") or ""
+        ct, n_e, n_q = clean_text(raw_text)
+        if n_e or n_q:
+            cleaned.append((it["cat"], raw_text, ct, n_e, n_q))
+        kept.append({"id": e.get("id"), "cat": it["cat"], "text": ct})
 
     A("对上池子 %d 条 / 对不上 %d 条 / 按邀请句排除 %d 条" % (len(kept), len(missed), len(banned)))
     A("")
@@ -122,6 +156,12 @@ def main():
         for it in banned:
             A("  [%s] %s" % (it["cat"], it["text"]))
         A("")
+
+    A("")
+    A("== 排版清洗（剥 emoji / ASCII 双引号→「」）共 %d 条 ==" % len(cleaned))
+    for cat_, a, b, n_e, n_q in cleaned:
+        A("  [%s] %s  ⇒  %s   (emoji %d, 引号 %d)" % (cat_, a, b, n_e, n_q))
+    A("")
 
     # 报一下：带「用户」占位符的（要换成她的称呼）、原本带图的（已不带）
     with_user = [k for k in kept if "用户" in (k["text"] or "")]
@@ -149,6 +189,19 @@ def main():
         A("RESULT: STOPPED（有对不上的条目，先解决再生成）")
         io.open(REPORT, "w", encoding="utf-8", newline="").write("\r\n".join(L) + "\r\n")
         sys.exit(2)
+
+    # ⭐ 收口自检：清洗完还留着 emoji 或 ASCII 引号 ⇒ 说明 clean_text 漏了，直接停下
+    bad_final = [k for k in kept
+                 if any(_is_emoji(c) for c in (k["text"] or "")) or '"' in (k["text"] or "")]
+    if bad_final:
+        A("")
+        A("RESULT: STOPPED —— 清洗后仍有 %d 条带 emoji / ASCII 引号：" % len(bad_final))
+        for k in bad_final[:10]:
+            A("   %s" % k["text"])
+        io.open(REPORT, "w", encoding="utf-8", newline="").write("\r\n".join(L) + "\r\n")
+        sys.exit(2)
+    A("")
+    A("清洗自检：池子里已无 emoji、无 ASCII 双引号 ✅")
 
     data = {"schema": 1, "count": len(kept), "entries": kept}
     tmp = OUT_JSON + ".tmp"
