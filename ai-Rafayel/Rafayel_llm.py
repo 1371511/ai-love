@@ -401,6 +401,15 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
 
     cm = _user_managers[user_id]
 
+    # 0. 🗓 跨天滚动：把「昨天」的原话摘出历史、换成一条带日期的小结。
+    #    ⚠ 必须在 add_user_message **之前** —— 否则她刚说的这句也会被当成「昨天的」摘走。
+    #    ⚠ 同一天只会走到「不滚」那一支 ⇒ 平时零成本；跨天那次多一次模型调用（1~2s）。
+    #    ⚠ 自己吞异常：整理记忆失败绝不能拖累这一轮回复。
+    try:
+        cm.roll_days(effective_api_key)
+    except Exception as e:
+        print("⚠️ 跨天小结失败（不影响对话）：%s" % e)
+
     # 1. 添加用户消息（media 只用于每日统计，不参与对话内容）
     cm.add_user_message(user_message, media=media)
 

@@ -18,7 +18,8 @@ import time
 import requests
 
 from Rafayel_config import (
-    API_URL, AUTO_GREET_TZ_OFFSET, LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
+    API_URL, AUTO_GREET_TZ_OFFSET, DAY_KEEP, DAY_ROLL, DAY_ROLL_MIN_GAP,
+    DAY_SUMMARY_MAX_TOKENS, LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
@@ -163,6 +164,61 @@ def now_prompt_text(gap_hours=None, fest=None, nudge=None):
     return "\n".join(lines)
 
 
+def _day_key(ts):
+    """
+    epoch 秒 → `"YYYY-MM-DD"`（按 `AUTO_GREET_TZ_OFFSET` 换算后的自然日）。
+
+    ⚠ 跨天判定必须走这个函数，**别用 `time.localtime` 裸算** —— 否则换时区/换服务器时，
+      这里的「今天」会和「现在几点」那段的「今天」对不上。
+    """
+    return time.strftime("%Y-%m-%d", time.localtime(float(ts) + AUTO_GREET_TZ_OFFSET * 3600))
+
+
+def _day_label(day_key):
+    """`"2026-09-23"` → `"9月23日 星期三"`；解析不了就原样返回。"""
+    try:
+        t = time.strptime(day_key, "%Y-%m-%d")
+        return "%d月%d日 %s" % (t.tm_mon, t.tm_mday, _WEEKDAYS_CN[t.tm_wday])
+    except Exception:
+        return str(day_key or "")
+
+
+def _rel_day_label(day_key, today_key):
+    """带上「昨天 / 前天」这种相对说法 —— 模型对「昨天」比对日期敏感得多。"""
+    if day_key == today_key:
+        return "今天（%s）" % _day_label(day_key)
+    try:
+        d = time.mktime(time.strptime(day_key, "%Y-%m-%d"))
+        t = time.mktime(time.strptime(today_key, "%Y-%m-%d"))
+        delta = int(round((t - d) / 86400.0))
+        if delta == 1:
+            return "昨天（%s）" % _day_label(day_key)
+        if delta == 2:
+            return "前天（%s）" % _day_label(day_key)
+        if delta > 2:
+            return "%d 天前（%s）" % (delta, _day_label(day_key))
+    except Exception:
+        pass
+    return _day_label(day_key)
+
+
+def _clean_day_text(text, limit=200):
+    """
+    小结文本**必须清洗**才能进 system：
+
+    ⚠ 这段是**模型写的**，而 system 里禁 markdown 星号与 ASCII 双引号（锁定口径）
+      ⇒ 不洗的话，模型随手一个 `**重点**` 就成了注入 system 的脏数据。
+      跟节日/日常池子生成时的清洗是同一个道理。
+    """
+    s = str(text or "")
+    s = re.sub(r"\*\*|\*|#+\s*", "", s)
+    s = re.sub(r'"([^"\n]{0,80})"', "「\\1」", s)   # 成对的引号换中文引号
+    s = s.replace('"', "").replace("`", "")        # 落单的引号/反引号直接去掉
+    s = re.sub(r"[ \t]+", " ", s)
+    s = re.sub(r"\n{2,}", "\n", s)
+    return s.strip()[:limit]
+
+
 # ============================================================
 #  💾 记忆持久化
 # ============================================================
@@ -181,6 +237,8 @@ def save_memory(user_id: str, cm):
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         # 🕐 她最后一条消息的时间戳（用于重启后第一条也算得出「隔了多久」）
         "last_msg_at": cm.last_msg_at,
+        # 🗓 跨天小结（2026-09-24）：[{date: "YYYY-MM-DD", text: "…"}]，最多 DAY_KEEP 条
+        "day_summaries": cm.day_summaries,
     }
     path = os.path.join(MEMORY_DIR, f"{user_id}.json")
     tmp = path + ".tmp"
@@ -217,6 +275,11 @@ def load_memory(user_id: str, cm) -> bool:
             except Exception:
                 stamp = None
         cm.last_msg_at = stamp
+        # 🗓 跨天小结：老文件没有这个 key（2026-09-24 之前）⇒ 当空表处理，
+        #    ⚠ 不能因此报错 —— 读记忆失败会让整份记忆从头开始，代价太大。
+        _days = data.get("day_summaries")
+        if isinstance(_days, list):
+            cm.day_summaries = [d for d in _days if isinstance(d, dict) and d.get("text")][-DAY_KEEP:]
         return True
     except Exception as e:
         print(f"⚠️ 读取记忆失败（{user_id}）：{e}，将从头开始")
@@ -253,6 +316,12 @@ def recent_context(user_id, n=6):
     summary = (data.get("long_term_summary") or "").strip()
     if summary and summary != "（你们刚开始聊天，还没有值得记录的重要事件。）":
         parts.append(summary[-300:])          # 摘要可能很长，只取尾巴（越近越有用）
+
+    # 🗓 跨天小结：跨天滚动之后 `messages` 会变空 ⇒ 只靠 messages 取材会「没话说」，
+    #    把最近一天的小结也带上（挑说说时同样是「她最近在聊什么」）。
+    for d in (data.get("day_summaries") or [])[-1:]:
+        if isinstance(d, dict) and d.get("text"):
+            parts.append(str(d["text"])[:200])
 
     for f in (data.get("key_facts") or [])[-5:]:
         parts.append(str(f))
@@ -292,6 +361,11 @@ class ConversationManager:
         # 用户画像：独立文件，从对话里慢慢积累
         self.profile = UserProfile(user_id)
 
+        # 🗓 跨天小结（2026-09-24）：[{"date": "YYYY-MM-DD", "text": "…"}]，最多 DAY_KEEP 条。
+        #    为什么要有它：`messages` 里**没有时间戳** ⇒ 昨天的原话今天看着还是「当下」，
+        #    模型就会把昨天的事当成今天。跨天时把昨天的原话摘出去、换成一条带日期的小结。
+        self.day_summaries = []
+
     def get_full_system_prompt(self):
         """构建完整的系统提示词，包含用户画像、记忆摘要和关键事实"""
         # 基础 prompt
@@ -304,6 +378,13 @@ class ConversationManager:
 
         # 追加长期记忆摘要
         full_prompt += f"\n\n## 📖 长期记忆摘要（请记住这些重要内容）\n{self.long_term_summary}"
+
+        # 🗓 跨天小结（2026-09-24）：让他知道哪件事是哪天的，别把昨天当成今天。
+        #    位置紧跟长期摘要 —— 两者都是「记忆」，挨着才读得顺。
+        #    ⚠ 这节一天只变一次（跨天那轮），不会每轮破坏前缀缓存。
+        _days = self._render_days()
+        if _days:
+            full_prompt += "\n\n" + _days
 
         # 追加关键事实
         if self.key_facts:
@@ -348,6 +429,125 @@ class ConversationManager:
             return (time.time() - float(self.last_msg_at)) / 3600.0
         except (TypeError, ValueError):
             return None
+
+    # ============================================================
+    #  🗓 跨天滚动（2026-09-24）
+    # ============================================================
+    #  症状（她 2026-09-24 反馈）：他昨天说「今天去海边走了走」，今天早上又当成今天的事说。
+    #  根因：messages 里消息**没有时间戳**，`truncate_history` 又只按条数裁
+    #        ⇒ 跨天后昨天的原话原封不动留在历史里，模型自然当成刚说过。
+    #  ⇒ 跨天时把「上一自然日」的原话**摘出历史** + 让模型压成一条带日期的小结，
+    #    小结随 system 注入（长期摘要下面）⇒ 他知道那是哪天的事，也不再拿着旧原话当今天。
+
+    def _summarize_day(self, day_key, msgs, api_key):
+        """
+        把某一天的原话压成 1~3 句带日期的小结。
+
+        ⚠⭐ 失败一律返回空串 —— 调用方据此**不摘历史**：
+          宁可他今天还把昨天当今天（能自愈，明天再滚一次），也**绝不能丢聊天记录**。
+        ⚠ 生成的文本要过 `_clean_day_text`：它最终会进 system（禁星号 / ASCII 引号）。
+        """
+        lines = []
+        for m in msgs[-40:]:
+            if not isinstance(m, dict):
+                continue
+            role = "她" if m.get("role") == "user" else "你"
+            c = str(m.get("content") or "").replace("\n", " ").strip()[:120]
+            if c:
+                lines.append("%s：%s" % (role, c))
+        if not lines:
+            return ""
+
+        prompt = (
+            "下面是祁煜和她那天的聊天记录（%s）。\n"
+            "请用 1~3 句话写成一条给祁煜自己看的备忘，好让他以后不把那天的旧事当成今天发生的。\n"
+            "要求：① 只写这段里真有的内容，不推测、不补细节；"
+            "② 写清是谁说了或做了什么，不要写感想、不要抒情；"
+            "③ 不许用星号、井号、英文引号；④ 直接给正文，不要任何标题或前缀。\n\n%s"
+        ) % (_day_label(day_key), "\n".join(lines))
+
+        data = {
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": False,
+            "max_tokens": DAY_SUMMARY_MAX_TOKENS,
+            "temperature": 0.3,          # 这是备忘不是聊天，别让它发挥
+        }
+        if LLM_EXTRA:
+            data.update(LLM_EXTRA)
+        try:
+            r = requests.post(API_URL,
+                              headers={"Authorization": "Bearer %s" % api_key,
+                                       "Content-Type": "application/json"},
+                              json=data, timeout=15)
+            out = r.json()["choices"][0]["message"]["content"]
+        except Exception:
+            return ""
+        return _clean_day_text(out)
+
+    def roll_days(self, api_key):
+        """
+        跨天就滚一次：写小结 ⇒ **成功之后**才把旧原话摘出历史。返回 True = 真滚了。
+
+        ⚠ 顺序不能反：先摘历史再写小结的话，模型一挂那段对话就永久没了。
+        ⚠ 同一天内怎么聊都只会走到 `prev == today` 那一支 ⇒ 不动历史、不花 token。
+        """
+        if not DAY_ROLL or not api_key:
+            return False
+        if not self.messages or len(self.messages) <= 1:
+            return False                      # 没有历史可滚
+        ts = self.last_msg_at
+        if not ts:
+            return False                      # 没有「她上次说话」的基准 ⇒ 不猜
+        now = time.time()
+        today = _day_key(now)
+        prev = _day_key(ts)
+        if prev == today:
+            return False                      # 同一天：不滚
+        try:
+            gap = (now - float(ts)) / 3600.0
+        except (TypeError, ValueError):
+            gap = 0.0
+        if gap < DAY_ROLL_MIN_GAP:
+            # 零点前后紧接的几句仍算「连着聊」—— 刚聊完一分钟就被做成「昨天」，太怪
+            return False
+
+        old = [m for m in self.messages[1:]]
+        text = self._summarize_day(prev, old, api_key)
+        if not text:
+            return False                      # ⚠ 写不出小结就不摘：绝不丢记录
+
+        self.messages = [self.messages[0]]
+        self.day_summaries.append({"date": prev, "text": text})
+        # 只留最近 DAY_KEEP 天（老的自然掉队，文件也不会越长越大）
+        self.day_summaries = self.day_summaries[-DAY_KEEP:]
+        return True
+
+    def _render_days(self):
+        """
+        「## 🗓 最近几天」那一段（进 system）。
+
+        ⚠ 一天只变一次 ⇒ 不会像「现在几点」那样每轮把前缀缓存拦腰截断；
+          没有小结时**整段不注入**（新用户不该看到空壳）。
+        """
+        if not DAY_ROLL or not self.day_summaries:
+            return ""
+        today = _day_key(time.time())
+        rows = ["## 🗓 最近几天（过去的事别当成今天）",
+                "今天是%s。" % _day_label(today)]
+        for item in self.day_summaries[-DAY_KEEP:]:
+            d = str(item.get("date") or "")
+            txt = str(item.get("text") or "").strip()
+            if not d or not txt or d == today:
+                continue
+            rows.append("%s：%s" % (_rel_day_label(d, today), txt))
+        if len(rows) <= 2:
+            return ""                          # 只有「今天是…」一行 ⇒ 不值得占位置
+        rows.append(
+            "（以上都是过去发生的事。她说「今天」时只指%s；"
+            "这些旧事你可以记得、可以提，但别再当成今天发生的。）" % _day_label(today)
+        )
+        return "\n".join(rows)
 
     def update_system_message(self):
         """更新 messages 中的 system 消息"""
@@ -469,12 +669,20 @@ class ConversationManager:
         self.pending_summary = []
 
         # 构造摘要 prompt
+        # 🗓 2026-09-24：把「这段对话发生在哪一天」写进 prompt。
+        #    原来不带日期 ⇒ 摘要是**无时间坐标**的一段话，昨天的和今天的混在一起，
+        #    这正是「把昨天当成今天」的另一个来源（她反馈的那个症状）。
+        _day_now = _day_key(time.time())
         summary_prompt = f"""你正在为祁煜整理对话记忆。
+
+【这段对话发生在】{_day_label(_day_now)}
 
 【任务一】用一段话（不超过200字）总结这段对话的核心内容：
 1. 她表现出了哪些情绪、需求或想法？
 2. 祁煜做出了哪些重要的回应、承诺或行动？
 3. 发生了什么可能影响后续对话的重要事件？
+⚠ 写到具体事情时带上时间坐标（比如「{_day_label(_day_now)}她说…」），
+  别把不同天的事并成一件；不确定是哪天就写「那天」。
 
 【任务二】从对话里留意「关于她」的事实。只写**她自己明确说过**的，不要推测、不要脑补：
 - name：她让祁煜怎么叫她（没说过就空字符串）
