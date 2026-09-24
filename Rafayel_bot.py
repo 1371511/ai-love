@@ -40,7 +40,7 @@ from Rafayel_config import (
 from Rafayel_affinity import (current_level, init_unlocked, load_egg_levels,
                               load_sms_nodes, pending_unlock)
 from Rafayel_daily import backfill_unlocked, load_unlocked, save_unlocked
-from Rafayel_event import try_event
+from Rafayel_event import bubbles_of, try_event
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
@@ -814,7 +814,16 @@ async def auto_event_scan():
         if not text:
             continue
 
-        await send_text(ws, "private", uid, None, text)
+        # 💬 2026-09-24 她定的：拼接 / 补收尾出来的那条偏长（最长 56 字）
+        #   ⇒ **拆成两条气泡连着发**，跟回复的分段共用同一套间隔
+        #   （他的短信原话本来就是这样一句一条发的）。
+        #   ⚠ 历史仍记**整条** —— 气泡只是呈现方式，不是两条不同的话。
+        bubbles = bubbles_of(entry) or [text]
+        for i, b in enumerate(bubbles):
+            if i:
+                await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
+            await send_text(ws, "private", uid, None, b)
+
         # ⚠ 发出去之后**立刻**记两笔：
         #   ① 进对话历史 —— 否则她回话时模型不知道上一句是他说的，会接不住
         #   ② 记「今年这个节日说过了」—— 放在 send 之后，发送失败就不留假记录
@@ -822,7 +831,8 @@ async def auto_event_scan():
         # ⚠ try_event 内部**不 mark**（跟打招呼同一个道理），由这里在真发出后补
         from Rafayel_event import mark as event_mark
         event_mark(uid, entry)
-        print("[🎉] 节日 -> %s：%r（%s）" % (uid, text[:30], (entry or {}).get("id")))
+        print("[🎉] 节日 -> %s：%r（%s，%d 条气泡）"
+              % (uid, text[:30], (entry or {}).get("id"), len(bubbles)))
 
 
 async def auto_event_loop():

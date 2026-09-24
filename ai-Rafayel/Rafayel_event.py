@@ -189,6 +189,26 @@ def render(user_id, entry):
     return render_text(entry, user_id)
 
 
+def bubbles_of(entry):
+    """
+    这条该分几条气泡发。返回 list[str]（至少一条）。
+
+    ⭐ 2026-09-24 17:37 她定的：节日台词里「拼接 / 补收尾」那种**整条偏长**（最长 56 字），
+    拆成两条气泡**连着发** —— 他的短信原话本来就是这样一句一条
+    （素材里 `祁煜：A` / `祁煜：B` 就是两条消息）。切分在生成器里做好、写进 `bubbles`。
+
+    ⚠ 安全网：`bubbles` 拼起来必须**正好等于**整条；不一致、或只有一条 ⇒ 退回单条。
+      宁可发一条长的，也不发丢字 / 发乱的。
+    """
+    if not entry:
+        return []
+    text = entry.get("text") or ""
+    b = entry.get("bubbles")
+    if isinstance(b, list) and len(b) >= 2 and "".join(b) == text:
+        return list(b)
+    return [text] if text else []
+
+
 def due(user_id, now=None, pool=None):
     """
     该不该给这个用户开口。返回 (entry, 原因)；不该发返回 (None, 原因字符串)。
@@ -219,7 +239,11 @@ def due(user_id, now=None, pool=None):
 
 
 def try_event(user_id, now=None):
-    """一步到位：该发就返回 (文本, entry)，不该发返回 ("", None)。"""
+    """一步到位：该发就返回 (文本, entry)，不该发返回 ("", None)。
+
+    ⚠ 返回的**文本是整条**（进对话历史用整条）；要分气泡发的话，
+      拿 entry 走 `bubbles_of(entry)`，两者拼起来一致。
+    """
     entry, why = due(user_id, now)
     if not entry:
         return "", None

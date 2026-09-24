@@ -24,7 +24,10 @@
    "entries":[{"id","fest","key","text","src"}]}
   ⭐ 自写条目的 src = "自写" 且多一个 `written: true`；
      拼接/编写条目**保留 src = 素材路径**（可溯源），多一条 `based_on: [原句…]`，
-     其中**真加了我写的字**的那种再多一个 `adapted: true`。
+     其中**真加了我写的字**的那种再多一个 `adapted: true`；
+     拼接/编写出来偏长的（她 2026-09-24 17:37 定的）再多一条 `bubbles: [气泡…]`
+     —— **每句原句一条、我加的收尾单独一条**，拼起来必须正好等于 `text`。
+     （bot 侧照它分条连发，见 `Rafayel_event.bubbles_of`。）
 
 写盘：tmp + os.replace。
 """
@@ -357,9 +360,34 @@ def main():
                 break
             rest = rest[:i] + rest[i + len(p):]
         tail_len = len(rest) if tail_ok else len(ct)
+
+        # —— 气泡切分（2026-09-24 17:37 她定的）——
+        #   「合并出来的一条 56 字太长 ⇒ 拆成两条气泡连着发」。
+        #   切法：**每句原句一条、我加的收尾单独一条** ——
+        #   他的短信原话本来就是这样一句一条发的（素材里 `祁煜：A` / `祁煜：B` 是两条）。
+        #   ⚠ 紧跟原句的句末标点归**那一条**（原句常常没标点，那个句号是我补的）。
+        bub, rest2, can = [], ct, True
+        for p in parts:
+            i = rest2.find(p)
+            if i < 0:
+                can = False
+                break
+            j = i + len(p)
+            while j < len(rest2) and rest2[j] in WRITTEN_END:
+                j += 1
+            bub.append(rest2[:j])
+            rest2 = rest2[j:]
+        if not can:
+            bub = []
+        elif rest2.strip():
+            bub.append(rest2)
+        if len(bub) < 2:
+            bub = []                  # 只有一条就不必写进产物
+
         rec = {"fest": it["fest"], "no": it["no"], "text": ct,
                "based_on": base_texts, "src": rel, "n_e": n_e, "n_q": n_q,
-               "n_p": n_p, "in_order": in_order, "tail_len": tail_len}
+               "n_p": n_p, "in_order": in_order, "tail_len": tail_len,
+               "bubbles": bub}
         entry = {
             "id": "%s-%d" % (FEST_KEY[it["fest"]], it["no"]),
             "fest": it["fest"],
@@ -368,6 +396,8 @@ def main():
             "src": rel,
             "based_on": base_texts,
         }
+        if bub:
+            entry["bubbles"] = bub
         if not verbatim:
             entry["adapted"] = True
             adapted.append(rec)
@@ -428,15 +458,29 @@ def main():
             why.append("整条 %d 字，超过 %d（拼接别拼成一段话）" % (len(ct), MERGED_MAX))
         if not ct.endswith(tuple(WRITTEN_END)):
             why.append("句末标点不在 %s 里" % WRITTEN_END)
+        if w["bubbles"] and "".join(w["bubbles"]) != ct:
+            why.append("气泡拼起来不等于整条（切分内部不一致）")
         if w["n_e"] or w["n_q"] or w["n_p"] or '"' in ct or "*" in ct \
                 or PLACE_NAME.search(ct) or TAG_RE.search(ct):
             why.append("含 emoji / ASCII 引号 / 星号 / 占位符 / 标签")
         A("  [%s] %s" % (w["fest"], ct))
         A("        原句：%s" % PART_SEP.join(w["based_on"]))
-        A("        整条 %d 字 / 其中我加的 %d 字 ⇒ %s"
-          % (len(ct), w["tail_len"], "OK" if not why else "；".join(why)))
+        A("        整条 %d 字 / 我加 %d 字 / %d 条气泡 ⇒ %s"
+          % (len(ct), w["tail_len"], len(w["bubbles"]) or 1,
+             "OK" if not why else "；".join(why)))
+        for b in w["bubbles"]:
+            A("          · %s" % b)
         if why:
             bad_a.append((w["fest"], ct, why))
+
+    # ②d 分多条气泡的条目一览（她 2026-09-24 17:37 定的：合并出来偏长的那条拆开连发）
+    multi = [k for k in kept if k.get("bubbles")]
+    A("")
+    A("== 分多条气泡的条目（共 %d 条，其余都是单条）==" % len(multi))
+    for k in multi:
+        A("  [%s] %d 条" % (k["id"], len(k["bubbles"])))
+        for b in k["bubbles"]:
+            A("        · %s" % b)
 
     # ③ 收口自检
     bad = [k for k in kept
