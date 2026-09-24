@@ -1129,7 +1129,7 @@ async def main():
         if EVENT:
             # ⚠ 与 auto_greet_loop / auto_qzone_loop 是**三个独立 task**，别合成一个循环
             asyncio.create_task(auto_event_loop())
-            print("🎉 特殊事件已开启（节日当天他会主动说一句原话；每 %s 秒扫一次）"
+            print("🎉 特殊事件已开启（节日当天他会主动说一句节日台词；每 %s 秒扫一次）"
                   % EVENT_SCAN_SECONDS)
         if WEATHER:
             # ⭐ 启动自检：**当场**就知道拿没拿到天气。
