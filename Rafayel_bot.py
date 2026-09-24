@@ -28,7 +28,9 @@ from Rafayel_config import (
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
     POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
     POKE_TYPING_MAX, POKE_TYPING_MIN,
-    REPLY_BUBBLE_GAP, REPLY_TYPING_MAX, REPLY_TYPING_MIN,REPLY_BUBBLE_MAX_CHARS,REPLY_BUBBLE_MAX,
+    REPLY_BUBBLE_GAP, REPLY_BUBBLE_MAX, REPLY_BUBBLE_MAX_CHARS,
+    REPLY_BUBBLE_MIN_TAIL,
+    REPLY_TYPING_MAX, REPLY_TYPING_MIN,
     REPLY_TYPING_PER_CHAR, REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
     QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
@@ -43,16 +45,7 @@ from Rafayel_event import bubbles_of, try_event
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
-                             split_segments)，
-def _split_bubble(text, limit):
-    # ① 先标出所有表情标记占的区间 —— 这些是"原子块"，不能拆
-    blocks = [(m.start(), m.end()) for m in STICKER_RE.finditer(text)]
-    # ② 选切点时多一道判断：切点不能落在任何一个块的内部
-    def _safe(cut):
-        return not any(s < cut < e for s, e in blocks)
-    # ③ 原本"在窗口内找最靠后的句号"，改成
-    #    "找最靠后、且 _safe(cut) 为真的句号"
-    #    找不到 ⇒ 切点往前退到那个标记的 start() 之前（整块留给下一条）
+                             split_segments, STICKER_RE)
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_comment import (already_replied, clean_comment,
                                    fetch_feeds, is_known_user, mark_done,
@@ -728,30 +721,32 @@ async def _flush_reply(user_id, why=""):
 
     if reply:
         d = _typing_delay(reply)
+
+        # 💬 2026-09-22 深夜她拍板的：所谓「分段」就是**一条气泡一段**——
+        #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
         lines = [l.strip() for l in str(reply).replace("\r\n", "\n").split("\n")
                  if l.strip()] or [reply]
-        #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
-        #   一段本身也很长 ⇒ 再按字数细切成多条（见 _split_bubble），
-        #   段与段/条与条之间隔 3s（REPLY_BUBBLE_GAP）。
+
+        # 💬 2026-09-25：一段本身也很长 ⇒ 每段再按字数细切成多条（见 _split_bubble）。
+        #   ⚠ 顺序：表情前缀（611 行）已经加过了 ⇒ 这里切不会劈开 [表情:xxx]。
         bubbles = []
         for line in lines:
             bubbles.extend(_split_bubble(line))
         if len(bubbles) > REPLY_BUBBLE_MAX:
-            print("[⚠️] 气泡数 %d 超上限 %d，截断（原文 %d 字）"
+            print("[⚠️] 气泡数 %d 超上限 %d ⇒ 截断（原文 %d 字）"
                   % (len(bubbles), REPLY_BUBBLE_MAX, len(str(reply))))
-            bubbles = bubbles[:REPLY_BUBBLE_MAX]        # 兜底：别刷屏
-        print("[⏱] %s：%d 句并一批 ⇒ 打字 %.1fs 再发"
-              % (why or "发车", len(st["lines"]), d))
+            bubbles = bubbles[:REPLY_BUBBLE_MAX]        # 兜底：别刷屏 + 总时长失控
+
+        print("[⏱] %s：%d 句并一批 ⇒ 拆成 %d 条气泡（打字 %.1fs）"
+              % (why or "发车", len(st["lines"]), len(bubbles), d))
         await asyncio.sleep(d)
-        # 💬所谓「分段」就是**一条气泡一段**——
-        #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
-        #   一段一条消息发；段与段之间隔一小会儿（0.8~1.6s 随机），像在连续打字。
-        lines = [l.strip() for l in str(reply).replace("\r\n", "\n").split("\n")
-                 if l.strip()] or [reply]
-        for i, line in enumerate(lines):
+
+        # 一条一条发；条与条之间隔 REPLY_BUBBLE_GAP（她定约 3s），像在连续打字。
+        # ⚠ 第一条不等（打字延迟已经在上面等过了）。
+        for i, b in enumerate(bubbles):
             if i:
                 await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
-            await send_text(ws, st["message_type"], user_id, st["group_id"], line)
+            await send_text(ws, st["message_type"], user_id, st["group_id"], b)
 
     # 🎁 牵绊度跨级 ⇒ 解锁该级的官方素材（短信 / 彩蛋）。
     #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
