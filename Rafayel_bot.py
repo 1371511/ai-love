@@ -19,7 +19,6 @@ from Rafayel_chat import (comment_opening, comment_reply, get_reply,
                          recent_context, record_proactive, take_opening)
 from Rafayel_config import (
     AFFINITY_UNLOCK, AFFINITY_UNLOCK_SEND,
-    POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     EVENT, EVENT_SCAN_SECONDS, WEATHER,
     QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
@@ -29,7 +28,7 @@ from Rafayel_config import (
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
     POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
     POKE_TYPING_MAX, POKE_TYPING_MIN,
-    REPLY_BUBBLE_GAP, REPLY_TYPING_MAX, REPLY_TYPING_MIN,
+    REPLY_BUBBLE_GAP, REPLY_TYPING_MAX, REPLY_TYPING_MIN,REPLY_BUBBLE_MAX_CHARS,REPLY_BUBBLE_MAX,
     REPLY_TYPING_PER_CHAR, REPLY_WAIT_MAX, REPLY_WAIT_QUIET,
     STICKER_IMAGE_AS_FILE_URI, STICKER_REPLY_TO_STICKER, STICKER_SUB_TYPE,
     QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN, QZONE_CMT_ENABLE,
@@ -44,7 +43,16 @@ from Rafayel_event import bubbles_of, try_event
 from Rafayel_greet import try_greet
 from Rafayel_sticker import (available_tags, has_sticker, parse_incoming,
                              pick_sticker, plain_text, random_reply_tag,
-                             split_segments)
+                             split_segments)，
+def _split_bubble(text, limit):
+    # ① 先标出所有表情标记占的区间 —— 这些是"原子块"，不能拆
+    blocks = [(m.start(), m.end()) for m in STICKER_RE.finditer(text)]
+    # ② 选切点时多一道判断：切点不能落在任何一个块的内部
+    def _safe(cut):
+        return not any(s < cut < e for s, e in blocks)
+    # ③ 原本"在窗口内找最靠后的句号"，改成
+    #    "找最靠后、且 _safe(cut) 为真的句号"
+    #    找不到 ⇒ 切点往前退到那个标记的 start() 之前（整块留给下一条）
 from Rafayel_qzone import UGC_ALL, UGC_PARTIAL, build_payload
 from Rafayel_qzone_comment import (already_replied, clean_comment,
                                    fetch_feeds, is_known_user, mark_done,
@@ -598,6 +606,97 @@ async def _wait_for_quiet(user_id):
     await _flush_reply(user_id, why)
 
 
+# 切分时用的标点与括号（跟 Rafayel_llm._force_segments 同一套口径）
+_PUNCT_STRONG = "。！？!?…"        # 句末：优先在这儿断
+_PUNCT_WEAK = "，；、,;"           # 句中：没有句末标点才退而求其次
+_BRACKET_OPEN = "（「『【"
+_BRACKET_CLOSE = "）」』】"
+
+
+def _split_bubble(text, limit=REPLY_BUBBLE_MAX_CHARS):
+    """
+    一条气泡的话太长 ⇒ 按标点细切成多条（**保原意，不硬切**）。
+
+    返回 list[str]；短于 limit 就原样返回一条。
+
+    ⚠ 三条硬规矩（踩了就是 bug）：
+      ① **括号不跨段**：切点左边括号必须都闭合了 —— 否则「（把笔搁下」和
+         「，转身看她）」被拆到两条气泡里，两条都读不通。
+      ② **[表情:xxx] 是原子块**：切点不能落在标记内部 —— 劈开之后两条都
+         认不出标记，那张表情图就凭空消失了（见 STICKER_RE）。
+      ③ **尾巴太短就并回去**：别发出去一条「。」或者「意]」。
+
+    ⚠ 是纯函数（不 async、不碰 websocket）⇒ 本地能 import 出来单测。
+    """
+    t = (text or "").strip()
+    if not t:
+        return []
+    if limit <= 0 or len(t) <= limit:
+        return [t]
+
+    # ① 标出所有表情标记的区间 —— 这些位置不许切
+    blocks = [(m.start(), m.end()) for m in STICKER_RE.finditer(t)]
+
+    def _blocked(cut):
+        """切点是不是落在某个表情标记的内部"""
+        return any(s < cut < e for s, e in blocks)
+
+    def _depth_ok(cut):
+        """切点左边，括号是不是都闭合了"""
+        depth = 0
+        for ch in t[:cut]:
+            if ch in _BRACKET_OPEN:
+                depth += 1
+            elif ch in _BRACKET_CLOSE:
+                depth = max(0, depth - 1)
+        return depth == 0
+
+    def _safe(cut):
+        return (not _blocked(cut)) and _depth_ok(cut)
+
+    def _find_cut(lo, hi, punct):
+        """在 [lo, hi) 里找最靠后的、安全的标点（切点 = 标点之后）"""
+        for i in range(hi - 1, lo - 1, -1):
+            if t[i] in punct and _safe(i + 1):
+                return i + 1
+        return None
+
+    # 切点只在 60%~100% 那段里找：太靠前会把话切得稀碎，看着像故意断句
+    lo = max(1, int(limit * 0.6))
+    hi = min(len(t), limit + 1)
+
+    cut = _find_cut(lo, hi, _PUNCT_STRONG)
+    if cut is None:
+        cut = _find_cut(lo, hi, _PUNCT_WEAK)
+    if cut is None:
+        # 一个标点都没有 ⇒ 硬切。但硬切也得躲开表情块与括号：
+        # 先往前退；退到底都不行就**往后找**（宁可这条稍长，也不切坏）
+        cut = limit
+        while cut > lo and not _safe(cut):
+            cut -= 1
+        if cut <= lo:
+            cut = limit
+            while cut < len(t) and not _safe(cut):
+                cut += 1
+
+    head = t[:cut].strip()
+    rest = t[cut:].strip()
+    out = [head] if head else []
+    if not rest:
+        return out
+
+    more = _split_bubble(rest, limit)
+    if not more:
+        return out
+    # ③ 切出来的第一截太短 ⇒ 并回上一条
+    if out and len(more[0]) < REPLY_BUBBLE_MIN_TAIL:
+        out[-1] = out[-1] + more[0]
+        out.extend(more[1:])
+    else:
+        out.extend(more)
+    return out
+
+
 async def _flush_reply(user_id, why=""):
     """真的去回复：把她这一批话并起来 ⇒ 想一下 ⇒ 打字 ⇒ 发出去。"""
     st = _pending_replies.pop(user_id, None)
@@ -629,10 +728,22 @@ async def _flush_reply(user_id, why=""):
 
     if reply:
         d = _typing_delay(reply)
+        lines = [l.strip() for l in str(reply).replace("\r\n", "\n").split("\n")
+                 if l.strip()] or [reply]
+        #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
+        #   一段本身也很长 ⇒ 再按字数细切成多条（见 _split_bubble），
+        #   段与段/条与条之间隔 3s（REPLY_BUBBLE_GAP）。
+        bubbles = []
+        for line in lines:
+            bubbles.extend(_split_bubble(line))
+        if len(bubbles) > REPLY_BUBBLE_MAX:
+            print("[⚠️] 气泡数 %d 超上限 %d，截断（原文 %d 字）"
+                  % (len(bubbles), REPLY_BUBBLE_MAX, len(str(reply))))
+            bubbles = bubbles[:REPLY_BUBBLE_MAX]        # 兜底：别刷屏
         print("[⏱] %s：%d 句并一批 ⇒ 打字 %.1fs 再发"
               % (why or "发车", len(st["lines"]), d))
         await asyncio.sleep(d)
-        # 💬 2026-09-22 深夜她拍板的：所谓「分段」就是**一条气泡一段**——
+        # 💬所谓「分段」就是**一条气泡一段**——
         #   像真人连发几条那样，不是一条气泡里换行（换行她看着还是一大坨）。
         #   一段一条消息发；段与段之间隔一小会儿（0.8~1.6s 随机），像在连续打字。
         lines = [l.strip() for l in str(reply).replace("\r\n", "\n").split("\n")
@@ -644,8 +755,8 @@ async def _flush_reply(user_id, why=""):
 
     # 🎁 牵绊度跨级 ⇒ 解锁该级的官方素材（短信 / 彩蛋）。
     #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
-    #    ⚠ 2026-09-24 起**不再发到 QQ**（`AFFINITY_UNLOCK_SEND = False`）⇒ 这一步只记账。
-    #      她反馈过：跨级时插一条官方原文会**打断正在进行的对话** ⇒ 取消主动发送。
+    #    ⚠ **不再发到 QQ**（`AFFINITY_UNLOCK_SEND = False`）⇒ 这一步只记账。
+    #      跨级时插一条官方原文会**打断正在进行的对话** ⇒ 取消主动发送。
     await maybe_send_unlock(ws, st["message_type"], user_id, st["group_id"])
 
 
