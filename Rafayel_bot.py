@@ -18,7 +18,7 @@ if _CODE_DIR not in sys.path:
 from Rafayel_chat import (comment_opening, comment_reply, get_reply,
                          recent_context, record_proactive, take_opening)
 from Rafayel_config import (
-    AFFINITY_UNLOCK,
+    AFFINITY_UNLOCK, AFFINITY_UNLOCK_SEND,
     POKE_ENABLE, POKE_PROMPT,
     AUTO_GREET, AUTO_GREET_IDLE_HOURS, AUTO_GREET_SCAN_SECONDS, MEMORY_DIR,
     EVENT, EVENT_SCAN_SECONDS, WEATHER,
@@ -147,30 +147,35 @@ async def send_text(websocket, message_type, user_id, group_id, text):
 
 
 # ============================================
-# 🎁 牵绊度跨级 ⇒ 补一条**官方原文**（2026-09-21 新）
+# 🎁 牵绊度跨级 ⇒ 解锁一条官方素材（2026-09-21 新）
 # ============================================
-# 跨过一个等级时，让他发一条官方素材：
-#   该等级是 45 个短信节点之一 ⇒ 发那条短信的**开头句**（`card\affinity\牵绊短信\`）；
-#   否则取 86 条彩蛋里绑在该等级上的那条（等级映射在 `card\affinity.md` 的 `EGG_AT=`）。
-# ⭐ 一级最多一条、**短信优先于彩蛋**；每用户每条只发一次；**不补发历史**。
-# ⚠ 素材原文直发、不改一个字（只有 `用户` 这种占位符换成她的称呼），**不进 LLM ⇒ 零 token**。
+# 跨过一个等级时，把该等级的官方素材标成「已解锁」，素材映射在 `card\affinity.md`：
+#   该等级是 45 个短信节点之一 ⇒ 标进 `unlocked.sms`（网页端 `/messages` 读它）；
+#   另外 86 条彩蛋按等级铺开 ⇒ 标进 `unlocked.eggs`（网页端 `/me` 的「他说过的那句话」读它）。
+# ⚠⚠ 2026-09-24 她定：**取消 QQ 里的主动发送**（开关 `AFFINITY_UNLOCK_SEND = False`）。
+#   她实测的反馈：好感度一提升就突然冒出一条官方原文，**打断了正在进行的对话**。
+#   ⇒ 解锁照做、等级照推，只是**一个字都不发到 QQ**（网页端两张卡照常更新）。
+#   想放回来只改那一个常量，本文件逻辑一行不用碰。
 
 async def maybe_send_unlock(websocket, message_type, user_id, group_id):
     """
-    跨级了就补一条官方素材。决策在 `Rafayel_affinity.pending_unlock`（**只读**），
-    本函数只负责「发出去 + 记账」。
+    跨级了就处理该级的官方素材：**记账为主，发送由开关说了算**。
+    决策在 `Rafayel_affinity.pending_unlock`（**只读**），本函数只负责「发（或 标）+ 记账」。
 
-    ⭐⭐ **牵绊短信不进 QQ**（2026-09-21 她定：那批已经进网页端了）——
-      ⇒ QQ 端**只发彩蛋**；短信节点一到级就**只标「已解锁」、一个字都不发**，
-        留给网页端展示。所以这里 `mark_sms` 是记账、`send` 才是要说话的。
+    ⭐⭐ **QQ 端不发任何官方素材**：
+      · 短信：**从来不发**（2026-09-21 她定：那批已经进网页端了）⇒ 只标「已解锁」。
+      · 彩蛋：2026-09-24 她定**取消主动发送**（`AFFINITY_UNLOCK_SEND = False`）⇒ 只标「已解锁」。
+      ⇒ 两列现在的语义**都是「已解锁」**（`sms` 喂 `/messages`，`eggs` 喂 `/me` 那张卡）。
+        她那句「到级就算说过了」的口径没变，只是从「到级 ∪ 真发过」退化成纯「到级」。
 
-    ⚠ 四条铁律：
-      ① 发出去的那句话**必须进对话记忆**（`record_proactive`）—— 不然她回话时模型
-         不知道上一句是他说的，会出现完全接不住的回复（老规矩，跟打招呼/说说同一口径）。
-      ② 记「已发送」放在**发送成功之后** —— 发送抛异常就不留下"他说过"的假记录。
-         （短信那列是「已解锁」不是「已发送」，且根本不发，所以一进来就能记。）
+    ⚠ 三条铁律（发送开关打开时依然适用）：
+      ① 真发出去的那句话**必须进对话记忆**（`record_proactive`）—— 不然她回话时模型
+         不知道上一句是他说的，会出现完全接不住的回复（跟打招呼/说说同一口径）。
+         ⚠ 现在不发 ⇒ **也不记** —— 绝不能留下"他说过"的假记忆。
+      ② 记账放在**发送成功之后** —— 发送抛异常就不留下"他说过"的假记录。
+         （两列都是「已解锁」语义，所以不发的情况下可以一进来就记。）
       ③ **不等回执**。主流程里等回执必然超时，真根因见 `_watch_receipt` 那段注释。
-      ④ 只在**私聊**里发：群里冒出一条官方素材很奇怪。
+      ④ 只在**私聊**里处理：群里冒出一条官方素材很奇怪。
     """
     if not AFFINITY_UNLOCK:
         return
@@ -189,31 +194,35 @@ async def maybe_send_unlock(websocket, message_type, user_id, group_id):
         if not item:
             return
 
-        # ① 短信：只记「已解锁」（网页端读它），**绝不发到 QQ**
+        # ① 短信：只标「已解锁」（网页端读它），**绝不发到 QQ**
         got_sms = [int(x) for x in (rec.get("sms") or [])]
         for lv in (item.get("mark_sms") or []):
             if lv not in got_sms:
                 got_sms.append(int(lv))
         rec["sms"] = sorted(got_sms)
 
-        # ② 彩蛋才是唯一真的发出去的东西
+        # ② 彩蛋：标「已解锁」；**只有开关打开时才真的说出口**
         send = item.get("send")
         if send:
-            await send_text(websocket, message_type, user_id, group_id, send["text"])
-            record_proactive(user_id, send["text"])
+            if AFFINITY_UNLOCK_SEND:
+                await send_text(websocket, message_type, user_id, group_id, send["text"])
+                record_proactive(user_id, send["text"])
+                print("[💗] 牵绊度 %d 级 ⇒ 发彩蛋：%r" % (send["level"], send["text"][:30]))
+            else:
+                print("[💗] 牵绊度 %d 级 ⇒ 解锁彩蛋（已关主动发送，不打扰对话）：%r"
+                      % (send["level"], send["text"][:20]))
             got = list(rec.get("eggs") or [])
             if send["key"] not in got:
                 got.append(send["key"])
             rec["eggs"] = got
-            print("[💗] 牵绊度 %d 级 ⇒ 发彩蛋：%r" % (send["level"], send["text"][:30]))
         else:
-            print("[💗] 牵绊度 %d 级 ⇒ 这级没有彩蛋（只解锁，短信不进 QQ）"
+            print("[💗] 牵绊度 %d 级 ⇒ 这级没有彩蛋（只解锁，素材都不进 QQ）"
                   % item["level_now"])
 
         rec["level"] = max(int(rec.get("level") or 0), int(item["level_now"] or 0))
         save_unlocked(user_id, rec)
     except Exception as e:
-        print("[💗] 跨级素材发送失败（不影响对话）：%s" % e)
+        print("[💗] 跨级素材处理失败（不影响对话）：%s" % e)
 
 
 # ============================================
@@ -633,8 +642,10 @@ async def _flush_reply(user_id, why=""):
                 await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
             await send_text(ws, st["message_type"], user_id, st["group_id"], line)
 
-    # 🎁 牵绊度跨级 ⇒ 再补一条官方素材（短信开头句 / 彩蛋）。
+    # 🎁 牵绊度跨级 ⇒ 解锁该级的官方素材（短信 / 彩蛋）。
     #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
+    #    ⚠ 2026-09-24 起**不再发到 QQ**（`AFFINITY_UNLOCK_SEND = False`）⇒ 这一步只记账。
+    #      她反馈过：跨级时插一条官方原文会**打断正在进行的对话** ⇒ 取消主动发送。
     await maybe_send_unlock(ws, st["message_type"], user_id, st["group_id"])
 
 
@@ -1155,8 +1166,10 @@ async def main():
             except Exception as e:
                 print("⚠️ 温度感知启动自检失败（不影响对话）：%s" % e)
         if AFFINITY_UNLOCK:
-            print("🎁 牵绊度跨级素材已开启（%d 个短信节点 + %d 条彩蛋；一级最多一条，短信优先）"
-                  % (len(load_sms_nodes()), len(load_egg_levels())))
+            print("🎁 牵绊度跨级解锁已开启（%d 个短信节点 + %d 条彩蛋；%s）"
+                  % (len(load_sms_nodes()), len(load_egg_levels()),
+                     "QQ 端主动发送：开" if AFFINITY_UNLOCK_SEND
+                     else "只解锁、QQ 端不主动发"))
             # ⭐⭐ 2026-09-21 她定：启动时给「聊过、但还没有 unlocked」的用户补一次底。
             #    起因：这类用户的网页端「他说过的那句话」**永远空着**（那张卡有内容才渲染）
             #      —— 而 `unlocked` 只在收到**私聊**时才写，功能上线前就聊过的老用户永远等不到。
