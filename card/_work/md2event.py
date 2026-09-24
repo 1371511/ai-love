@@ -2,21 +2,29 @@
 """
 生成 `card/event_pool.json` —— 「特殊事件（节日）」用的池子 + 日期表。
 
-⭐ 唯一真相源 = 她审过的清单 `F:\\workB\\JOB\\祁煜节日-纳入清单.md`（42 条 + 日期表）。
+⭐ 唯一真相源 = 她审过的清单 `F:\\workB\\JOB\\祁煜节日-纳入清单.md`（39 条 + 日期表）。
    JSON 是产物，**绝不手改**。
 
-三道闸门（任何一道不过就报错停下，绝不静默丢）：
-  ① 每条原句必须能回**素材原文**精确匹配（防手滑 / 防我编）
-     ⚠ 例外：出处列写 `自写` 的（游戏里没这个节日的素材）**跳过①**，改走 ④
+五道闸门（任何一道不过就报错停下，绝不静默丢）：
+  ① 每条**原句**必须能回**素材原文**精确匹配（防手滑 / 防我编）
+     · 出处列写 `自写` 的（游戏里没这个节日的素材）**跳过①**，改走 ④
+     · 表格支持**四列**：`| 序号 | 台词（发出的） | 原句（素材逐字） | 出处 |`
+       ⇒ 多句原句用全角 `｜` 隔开，**每一句都要逐字搜得到**（这是「原句+编写」的地基）
   ② 每个小节的条数必须对上 md 里写的「（N 条）」
   ③ 清洗完还留着 emoji / ASCII 双引号 / 昵称占位符 / 机制标签 ⇒ 停
   ④ **自写闸**（2026-09-24 加）：自写条目没有原文兜底 ⇒ 长度 6~40 字、
      句末必须是 。？！…、无 emoji / ASCII 引号 / 星号 / 占位符 / 标签
+  ⑤ **原句+编写闸**（2026-09-24 晚加，她定的「原句 + 适当编写」）：
+     台词比原句多出来的部分**必须接在原句后面**（顺序包含，不是把原句改写掉）；
+     那条（拼接/补收尾）额外过一遍 ④ 的硬规矩（长度 / 句末 / 禁用符号）。
+     ⚠ 台词 == 原句拼接（一个自造的字都没有）⇒ 仍算 `素材`，只是多记一条 `based_on`。
 
 产物 schema：
   {"schema":1, "count":N, "fixed":{节日:"MM-DD"}, "lunar":{年:{...}},
    "entries":[{"id","fest","key","text","src"}]}
-  ⭐ 自写条目的 src = "自写" 且多一个 `written: true` ⇒ 随时能单独摘出来。
+  ⭐ 自写条目的 src = "自写" 且多一个 `written: true`；
+     拼接/编写条目**保留 src = 素材路径**（可溯源），多一条 `based_on: [原句…]`，
+     其中**真加了我写的字**的那种再多一个 `adapted: true`。
 
 写盘：tmp + os.replace。
 """
@@ -53,8 +61,20 @@ FEST_KEY = {
 FIXED_EXPECT = 4
 
 SEC_RE = re.compile(r"^###\s+(.+?)（(\d+)\s*条")
-ROW_RE = re.compile(r"^\|\s*(\d+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|")
 QIYU = re.compile(r"^祁煜[：:]\s*(.+?)\s*$")
+# 四列表格里「多句原句」的分隔符 —— 用**全角**｜，不会和 markdown 的列分隔符 | 撞
+PART_SEP = "｜"
+
+
+def row_cells(ln):
+    """把一行 markdown 表格拆成单元格；不是数据行返回 None。"""
+    s = (ln or "").strip()
+    if not s.startswith("|"):
+        return None
+    cells = [c.strip() for c in s.strip("|").split("|")]
+    if len(cells) < 3 or not cells[0].isdigit():
+        return None
+    return cells
 
 # 昵称占位符：素材里有好几种写法，统一成「用户」（发送前换她的称呼）
 PLACE_NAME = re.compile(r"[\[<（(]\s*(?:玩家昵称|专属昵称)\s*[\]>）)]")
@@ -71,6 +91,11 @@ PAIR_QUOTE_RE = re.compile(r'"([^"]*)"')
 WRITTEN_TAG = "自写"
 WRITTEN_MIN, WRITTEN_MAX = 6, 40   # 语料实测 P90=29 / P99=38 ⇒ 上限 40
 WRITTEN_END = "。？！…"            # 句末必须落在这几个上（不能停在逗号上）
+# ⚠ 拼接/编写的长度口径（2026-09-24 晚定）：**闸门卡的是「我加的字」，不是整条**。
+#   两条素材原话接起来天然就 40+ 字（她的「2 和 4 合并」= 56 字），拿单句的 40 字上限去卡
+#   整条等于把「合并」这件事直接禁掉。所以：① 我加的部分 ≤ WRITTEN_MAX
+#   ② 整条给一个宽松上限 MERGED_MAX（防拼成一段话）。
+MERGED_MAX = WRITTEN_MAX * 2
 
 
 def _is_emoji(c):
@@ -152,10 +177,15 @@ def parse_md():
             continue
         if cur is None:
             continue
-        m = ROW_RE.match(ln.strip())
-        if m:
-            items.append({"fest": cur, "no": int(m.group(1)),
-                          "text": m.group(2).strip(), "src": m.group(3).strip()})
+        cells = row_cells(ln)
+        if cells:
+            # 三列：| 序号 | 原句 | 出处 |                        ⇒ 原句 = 台词（一字未改）
+            # 四列：| 序号 | 台词（发出的） | 原句（素材逐字） | 出处 |  ⇒ 支持多句原句（｜隔开）
+            text, base, src = cells[1], cells[1], cells[2]
+            if len(cells) >= 4:
+                base, src = cells[2], cells[3]
+            items.append({"fest": cur, "no": int(cells[0]),
+                          "text": text, "base": base, "src": src})
 
     # —— 日期表：「### 固定日期（MM-DD）」/「### 农历日期（MM-DD）」——
     fixed, lunar = {}, {}
@@ -245,7 +275,7 @@ def main():
 
     # ② 回素材精确匹配（自写条目跳过这一道，走 ②b 的自写闸）
     cache = {}
-    kept, missed, cleaned, written = [], [], [], []
+    kept, missed, cleaned, written, adapted = [], [], [], [], []
     for it in items:
         rel = it["src"]
         if (rel or "").startswith(WRITTEN_TAG):
@@ -261,34 +291,91 @@ def main():
                 "written": True,
             })
             continue
+        # —— 素材 / 拼接 / 原句+编写 ——
+        #    先按 ｜ 拆出若干**原句**，每一句都必须能在那篇素材里逐字搜到（闸门①）。
+        parts = [p.strip() for p in (it.get("base") or it["text"]).split(PART_SEP)
+                 if p.strip()]
+        if not parts:
+            missed.append((it, "「原句」列是空的"))
+            continue
         if rel not in cache:
             cache[rel] = read_corpus(rel)
         raws, bare = cache[rel]
         if raws is None:
             missed.append((it, "素材文件不存在"))
             continue
-        want = norm(it["text"])
-        hit = -1
-        for i, b in enumerate(bare):
-            if norm(b) == want:
-                hit = i
-                break
-        if hit < 0:
-            missed.append((it, "原文里找不到这句"))
+        hits, bad_parts = [], []
+        for p in parts:
+            wp = norm(p)
+            h = -1
+            for i, b in enumerate(bare):
+                if norm(b) == wp:
+                    h = i
+                    break
+            if h < 0:
+                bad_parts.append(p)
+            else:
+                hits.append(h)
+        if bad_parts:
+            missed.append((it, "「原句」在素材里搜不到：%s" % PART_SEP.join(bad_parts)))
             continue
-        raw_text = raws[hit]
-        ct, n_e, n_q, n_p = clean_text(raw_text)
-        if n_e or n_q or n_p:
-            cleaned.append((it["fest"], raw_text, ct, n_e, n_q, n_p))
-        kept.append({
+        base_texts = [raws[i] for i in hits]      # 素材里那几句的**原文**
+        # 台词 == 原句拼接 ⇒ 一个自造的字都没有（纯照抄 / 纯拼接）
+        verbatim = norm(it["text"]) == norm("".join(parts))
+
+        if verbatim and len(base_texts) == 1:
+            # 老路子：正文直接取**素材原文**（不取 md 里那行，防手滑）
+            ct, n_e, n_q, n_p = clean_text(base_texts[0])
+            if n_e or n_q or n_p:
+                cleaned.append((it["fest"], base_texts[0], ct, n_e, n_q, n_p))
+            kept.append({
+                "id": "%s-%d" % (FEST_KEY[it["fest"]], it["no"]),
+                "fest": it["fest"],
+                "key": FEST_KEY[it["fest"]],
+                "text": ct,
+                "src": rel,
+            })
+            continue
+
+        # —— 拼接（多句原话接起来）或 原句+编写（加了收尾）——
+        ct, n_e, n_q, n_p = clean_text(it["text"])
+        # 闸门⑤-1：多出来的部分必须**接在原句后面** ⇒ 各原句按顺序原样出现在台词里
+        s, pos, in_order = norm(ct), 0, True
+        for p in parts:
+            np_ = norm(p)
+            at = s.find(np_, pos)
+            if at < 0:
+                in_order = False
+                break
+            pos = at + len(np_)
+        # 我额外加的字（= 台词去掉各原句后剩下的那点）—— 长度闸只卡这部分
+        rest, tail_ok = ct, True
+        for p in parts:
+            i = rest.find(p)
+            if i < 0:
+                tail_ok = False
+                break
+            rest = rest[:i] + rest[i + len(p):]
+        tail_len = len(rest) if tail_ok else len(ct)
+        rec = {"fest": it["fest"], "no": it["no"], "text": ct,
+               "based_on": base_texts, "src": rel, "n_e": n_e, "n_q": n_q,
+               "n_p": n_p, "in_order": in_order, "tail_len": tail_len}
+        entry = {
             "id": "%s-%d" % (FEST_KEY[it["fest"]], it["no"]),
             "fest": it["fest"],
             "key": FEST_KEY[it["fest"]],
             "text": ct,
             "src": rel,
-        })
+            "based_on": base_texts,
+        }
+        if not verbatim:
+            entry["adapted"] = True
+            adapted.append(rec)
+        if n_e or n_q or n_p:
+            cleaned.append((it["fest"], PART_SEP.join(base_texts), ct, n_e, n_q, n_p))
+        kept.append(entry)
 
-    n_mat = len(kept) - len(written)
+    n_mat = len(kept) - len(written) - len(adapted)
     A("")
     A("素材条目：匹配上 %d 条 / 对不上 %d 条" % (n_mat, len(missed)))
     if missed:
@@ -322,6 +409,34 @@ def main():
         A("        %d 字 ⇒ %s" % (len(ct), "OK" if not why else "；".join(why)))
         if why:
             bad_w.append((w["fest"], ct, why))
+
+    # ②c 原句+编写闸（2026-09-24 晚加）—— 她定的「原句 + 适当编写」
+    #     · 地基已在 ② 验过：每一句原句都能在素材里逐字搜到
+    #     · 这里再验两件：① 多出来的字**接在原句后面**（不是把原句改写掉）
+    #                     ② 整条过一遍自写闸（长度 / 句末 / 禁用符号）
+    A("")
+    A("== 原句+编写条目（素材打底、我补了字，共 %d 条）==" % len(adapted))
+    bad_a = []
+    for w in adapted:
+        ct = w["text"]
+        why = []
+        if not w["in_order"]:
+            why.append("多出来的部分没有接在原句后面（顺序包含失败 ⇒ 等于改写了原句）")
+        if w["tail_len"] > WRITTEN_MAX:
+            why.append("我加的那部分 %d 字，超过 %d" % (w["tail_len"], WRITTEN_MAX))
+        if len(ct) > MERGED_MAX:
+            why.append("整条 %d 字，超过 %d（拼接别拼成一段话）" % (len(ct), MERGED_MAX))
+        if not ct.endswith(tuple(WRITTEN_END)):
+            why.append("句末标点不在 %s 里" % WRITTEN_END)
+        if w["n_e"] or w["n_q"] or w["n_p"] or '"' in ct or "*" in ct \
+                or PLACE_NAME.search(ct) or TAG_RE.search(ct):
+            why.append("含 emoji / ASCII 引号 / 星号 / 占位符 / 标签")
+        A("  [%s] %s" % (w["fest"], ct))
+        A("        原句：%s" % PART_SEP.join(w["based_on"]))
+        A("        整条 %d 字 / 其中我加的 %d 字 ⇒ %s"
+          % (len(ct), w["tail_len"], "OK" if not why else "；".join(why)))
+        if why:
+            bad_a.append((w["fest"], ct, why))
 
     # ③ 收口自检
     bad = [k for k in kept
@@ -364,7 +479,8 @@ def main():
     else:
         A("  %d 个有台词的节日全部可达 ✅" % len(all_keys))
 
-    if missed or bad or bad_w or mism or dateless or len(fixed) != FIXED_EXPECT:
+    if missed or bad or bad_w or bad_a or mism or dateless \
+            or len(fixed) != FIXED_EXPECT:
         A("")
         if mism:
             A("RESULT: STOPPED —— 小节条数与 md 声明的「（N 条）」对不上：")
@@ -375,6 +491,10 @@ def main():
         if bad_w:
             A("RESULT: STOPPED —— 自写条目有 %d 条不过闸：" % len(bad_w))
             for f, ct, why in bad_w:
+                A("   [%s] %s   ← %s" % (f, ct, "；".join(why)))
+        if bad_a:
+            A("RESULT: STOPPED —— 原句+编写有 %d 条不过闸：" % len(bad_a))
+            for f, ct, why in bad_a:
                 A("   [%s] %s   ← %s" % (f, ct, "；".join(why)))
         if dateless:
             A("RESULT: STOPPED —— 有节日的台词查不到日期（永远不会触发）：")

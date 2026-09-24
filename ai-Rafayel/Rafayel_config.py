@@ -435,9 +435,12 @@ WEATHER_COLD_MIN = 3            # 今天最低温 ≤ 这个 ⇒ 算「严寒」
 #   刻意不共用闸 —— 共用会让它们互相抢名额。
 # ⚠ 生日**不在这里**：生日归发朋友圈那条通道（Rafayel_qzone_auto 的 bday_due），
 #   再塞进来同一天就变成「又发说说又私聊」，太吵。
-# 池子：card/event_pool.json（23 条，6 个节日）
+# 池子：card/event_pool.json（39 条，10 个节日）
 #   真相源 = 她审过的《祁煜节日-纳入清单.md》，生成器 = card/_work/md2event.py
 #   日期表也在那份 md 里 ⇒ JSON 里有 fixed（固定 MM-DD）和 lunar（按农历年）两张表。
+# ⭐ 条目分三类（2026-09-24 晚）：纯素材（一字未改）/ 自写（游戏里没这个节日的素材，
+#   带 written 标记）/ **原句+编写**（素材打底 + 我补收尾，带 adapted + based_on）。
+#   选条逻辑三类一视同仁 —— 挑的是"哪句话"，不看它是怎么来的。
 
 EVENT = True                    # 总开关
 EVENT_POOL = os.path.join(ROOT, "card", "event_pool.json")
