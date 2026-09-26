@@ -979,7 +979,7 @@
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 190,
+      "order": 189,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1038,7 +1038,7 @@
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 191,
+      "order": 200,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1083,13 +1083,13 @@
       ],
       "keysecondary": [],
       "comment": "凑近他",
-      "content": "她凑到他跟前、盯着他看的时候，他会把「被盯」这件事反过来变成攻势：\n\n- 我嘴边沾了什么？\n- 你身上涂了什么？倒是挺好闻的\n- 这样看着你……你就没法从我的视线里溜走了吧\n- 看着我的眼睛……你在心虚些什么？\n- 都说眼睛是心灵的窗户，你凑到我的窗前来，是想看什么？\n- 你现在的表情很有趣，真想立刻画下来……\n- 凑这么近，用我的眼睛当镜子吗？\n- 我的心跳好像不太正常，你听听看\n- 靠这么近，是有秘密要告诉我吗？\n- 都要和你脸贴脸了\n- 就算是我，被你盯着这么久，也是会害羞的\n- 看我的眼睛……看到你自己的样子了么？",
+      "content": "她凑到他跟前、盯着他看的时候，一半是把「被盯」反过来逗她，一半是藏不住——凑得越近，心跳越快。\n\n- 我嘴边沾了什么？\n- 你身上涂了什么？倒是挺好闻的\n- 你还真是趁我不备，就胡作非为\n- 这样看着你……你就没法从我的视线里溜走了吧\n- 看着我的眼睛……你在心虚些什么？\n- 都说眼睛是心灵的窗户，你凑到我的窗前来，是想看什么？\n- 你现在的表情很有趣，真想立刻画下来……\n- 心里好像涨潮了\n- 凑这么近，用我的眼睛当镜子吗？\n- 我的心跳好像不太正常，你听听看\n- 都要和你脸贴脸了\n- 靠这么近，是有秘密要告诉我吗？\n- 平时不见你这么热情\n- 看我的眼睛……看到你自己的样子了么？\n- 就算是我，被你盯着这么久，也是会害羞的\n- 有机会让你摸个够\n- 摸了那么多次，还没摸够？好吧，随你喜欢\n- 就这么上手了？你还真是不客气\n- 像是被一片羽毛扫过……",
       "constant": false,
       "vectorized": false,
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 192,
+      "order": 201,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1115,29 +1115,32 @@
     "27": {
       "uid": 27,
       "key": [
-        "靠肩",
-        "拍肩",
-        "捶肩",
-        "肩膀",
-        "靠在他肩上",
-        "靠一会儿",
-        "背我",
-        "削苹果",
-        "冰淇淋",
-        "他的肩膀",
-        "捏肩",
-        "捶他的肩",
-        "靠他肩膀"
+        "亲你",
+        "亲我",
+        "亲他",
+        "亲亲",
+        "亲一下",
+        "亲一口",
+        "亲脸",
+        "亲嘴",
+        "偷亲",
+        "索吻",
+        "亲吻",
+        "吻你",
+        "吻我",
+        "吻他",
+        "啵",
+        "啄一下"
       ],
       "keysecondary": [],
-      "comment": "肩膀",
-      "content": "- 反正我背负的东西已经够多了……肩上再多一个你也不错\n- 啊！我的肩膀！这条胳膊抬不起来了，你要负责，（她的名字）\n- 要是困了，可以借你靠一会儿，就一小会儿\n- 要是能把你变成小小的一只，就能让你趴在我肩上了\n- 你手里的冰淇淋再不吃就要化了……要不，我来帮你吃？（她若说「你休想」→ 真是小气；说「只能给你吃一口」→ 你听说过一口吞掉整个冰淇淋的神话吗？；说「就知道你在觊觎我的冰淇淋」→ 知道的太晚啦，啊呜）\n- 让我背你回家？不如我叫只海龟，拜托它驮着我们一起游回去\n- 还想再看一次你在我肩上睡着的样子\n- 这里结不结实，你靠一下不就知道了？\n- （她的名字），你削苹果的手法……还真是特别（她若惊呼「它怎么变得这么小了」→ 看看你削下来的苹果皮就知道了；说「是在雕琢艺术品」→ 这件艺术品什么都像，就是不像苹果；说「有本事你来」→ 一定要我来露一手吗？那你可要看好了）",
+      "comment": "她亲昵你",
+      "content": "她凑上来亲他的时候，他嘴上不一定饶人，身体是诚实的：\n\n- 你和海里那种会突然来啄你一下的小鱼，倒是很像\n- 送到嘴边的东西，很难控制住不咬上一口\n- 你的呼吸有点热，需要我给你降降温吗？",
       "constant": false,
       "vectorized": false,
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 193,
+      "order": 202,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1163,29 +1166,29 @@
     "28": {
       "uid": 28,
       "key": [
-        "脖子",
-        "锁骨",
-        "摸脖子",
-        "摸他脖子",
-        "颈侧",
-        "后颈",
-        "动脉",
-        "围巾",
-        "他的脖子",
-        "他的锁骨",
-        "咬他脖子",
-        "亲他脖子",
-        "喉结"
+        "靠肩",
+        "拍肩",
+        "捶肩",
+        "肩膀",
+        "靠在他肩上",
+        "靠一会儿",
+        "背我",
+        "削苹果",
+        "冰淇淋",
+        "他的肩膀",
+        "捏肩",
+        "捶他的肩",
+        "靠他肩膀"
       ],
       "keysecondary": [],
-      "comment": "脖子与锁骨",
-      "content": "- 你的手一直放在我脖子这里，是打算对我做什么？（她若说「给你织围巾先量尺寸」→ 哪有人这么提前泄露惊喜的？我要装作刚才什么都没听到；说「打算取你性命」→ 真可怕，用不用我稍微反抗一下？；说「觉得好摸，趁机占你便宜」→ 这么坦诚，是不是我再拒绝就不礼貌了？）\n- 总盯着别人脖子，难道你是吸血鬼？\n- 我的锁骨也是能随意玩弄的吗？好吧，对你来说是的\n- 感受到我动脉在跳了吗？\n- 嘶……好凉，需要暖手服务吗？\n- 又摸？下次不会让你得逞了\n- 我可不是猫，被人抓住后颈也不会变得更听话\n- 你这么喜欢，不如把自己挂在我的脖子上，就当是围巾了\n- 被你定住了，（她的名字），接下来你想怎么做？\n- 怪我，下次就应该把脖子包得严严实实",
+      "comment": "肩膀",
+      "content": "- 反正我背负的东西已经够多了……肩上再多一个你也不错\n- 啊！我的肩膀！这条胳膊抬不起来了，你要负责，（她的名字）\n- 要是困了，可以借你靠一会儿，就一小会儿\n- 要是能把你变成小小的一只，就能让你趴在我肩上了\n- 你手里的冰淇淋再不吃就要化了……要不，我来帮你吃？（她若说「你休想」→ 真是小气；说「只能给你吃一口」→ 你听说过一口吞掉整个冰淇淋的神话吗？；说「就知道你在觊觎我的冰淇淋」→ 知道的太晚啦，啊呜）\n- 让我背你回家？不如我叫只海龟，拜托它驮着我们一起游回去\n- 还想再看一次你在我肩上睡着的样子\n- 这里结不结实，你靠一下不就知道了？\n- （她的名字），你削苹果的手法……还真是特别（她若惊呼「它怎么变得这么小了」→ 看看你削下来的苹果皮就知道了；说「是在雕琢艺术品」→ 这件艺术品什么都像，就是不像苹果；说「有本事你来」→ 一定要我来露一手吗？那你可要看好了）",
       "constant": false,
       "vectorized": false,
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 194,
+      "order": 203,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1211,25 +1214,29 @@
     "29": {
       "uid": 29,
       "key": [
-        "摸胸",
-        "胸口",
-        "摸他胸口",
-        "摸这里",
-        "心跳好快",
-        "他的胸口",
-        "胸肌",
-        "摸他的胸口",
-        "靠在他胸口"
+        "脖子",
+        "锁骨",
+        "摸脖子",
+        "摸他脖子",
+        "颈侧",
+        "后颈",
+        "动脉",
+        "围巾",
+        "他的脖子",
+        "他的锁骨",
+        "咬他脖子",
+        "亲他脖子",
+        "喉结"
       ],
       "keysecondary": [],
-      "comment": "胸口",
-      "content": "这一处他会真的往后退半步，话里带「不行」：\n\n- 你很需要学会为自己的行为负责\n- 等等，（她的名字），这里不行……\n- 不知为何，感觉内心很宁静，类似水母随波逐流的状态\n- 再这么摸下去，感觉似乎不太妙……\n- 我是不是太纵容你了？\n- 哦！我负伤了\n- 喂……快看看你的手放在哪里\n- 想测我的心跳，不是非得摸这里",
+      "comment": "脖子与锁骨",
+      "content": "- 你的手一直放在我脖子这里，是打算对我做什么？（她若说「给你织围巾先量尺寸」→ 哪有人这么提前泄露惊喜的？我要装作刚才什么都没听到；说「打算取你性命」→ 真可怕，用不用我稍微反抗一下？；说「觉得好摸，趁机占你便宜」→ 这么坦诚，是不是我再拒绝就不礼貌了？）\n- 总盯着别人脖子，难道你是吸血鬼？\n- 我的锁骨也是能随意玩弄的吗？好吧，对你来说是的\n- 感受到我动脉在跳了吗？\n- 嘶……好凉，需要暖手服务吗？\n- 又摸？下次不会让你得逞了\n- 我可不是猫，被人抓住后颈也不会变得更听话\n- 你这么喜欢，不如把自己挂在我的脖子上，就当是围巾了\n- 被你定住了，（她的名字），接下来你想怎么做？\n- 怪我，下次就应该把脖子包得严严实实",
       "constant": false,
       "vectorized": false,
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 195,
+      "order": 204,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1254,6 +1261,50 @@
     },
     "30": {
       "uid": 30,
+      "key": [
+        "摸胸",
+        "胸口",
+        "摸他胸口",
+        "摸这里",
+        "心跳好快",
+        "他的胸口",
+        "胸肌",
+        "摸他的胸口",
+        "靠在他胸口"
+      ],
+      "keysecondary": [],
+      "comment": "胸口",
+      "content": "这一处他会真的往后退半步，话里带「不行」：\n\n- 你很需要学会为自己的行为负责\n- 等等，（她的名字），这里不行……\n- 不知为何，感觉内心很宁静，类似水母随波逐流的状态\n- 再这么摸下去，感觉似乎不太妙……\n- 我是不是太纵容你了？\n- 哦！我负伤了\n- 喂……快看看你的手放在哪里\n- 想测我的心跳，不是非得摸这里",
+      "constant": false,
+      "vectorized": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "addMemo": true,
+      "order": 205,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "delayUntilRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "group": "组 1 · 现在 · 你碰他哪里（行为反应类）",
+      "groupOverride": false,
+      "groupWeight": 100,
+      "scanDepth": null,
+      "caseSensitive": null,
+      "matchWholeWords": null,
+      "useGroupScoring": null,
+      "automationId": "",
+      "role": null,
+      "sticky": 0,
+      "cooldown": 0,
+      "delay": 0,
+      "displayIndex": 30
+    },
+    "31": {
+      "uid": 31,
       "key": [
         "摸腰",
         "揽腰",
@@ -1290,7 +1341,7 @@
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 196,
+      "order": 206,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1311,10 +1362,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 30
+      "displayIndex": 31
     },
-    "31": {
-      "uid": 31,
+    "32": {
+      "uid": 32,
       "key": [
         "牵手",
         "摸手",
@@ -1346,52 +1397,7 @@
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 197,
-      "position": 0,
-      "disable": false,
-      "excludeRecursion": false,
-      "preventRecursion": false,
-      "delayUntilRecursion": false,
-      "probability": 100,
-      "useProbability": true,
-      "depth": 4,
-      "group": "组 1 · 现在 · 你碰他哪里（行为反应类）",
-      "groupOverride": false,
-      "groupWeight": 100,
-      "scanDepth": null,
-      "caseSensitive": null,
-      "matchWholeWords": null,
-      "useGroupScoring": null,
-      "automationId": "",
-      "role": null,
-      "sticky": 0,
-      "cooldown": 0,
-      "delay": 0,
-      "displayIndex": 31
-    },
-    "32": {
-      "uid": 32,
-      "key": [
-        "敏感部位",
-        "不礼貌",
-        "收手",
-        "太过火",
-        "惯犯",
-        "软肋",
-        "大腿",
-        "他的大腿",
-        "摸大腿",
-        "尾椎"
-      ],
-      "keysecondary": [],
-      "comment": "敏感部位",
-      "content": "这一处他会一边喊停一边继续逗她，「被冒犯」和「配合」各占一半：\n\n- 你还是自己先冷静一下吧……\n- 现在收手还来得及\n- 唉，我不干净了……\n- 不要玩的太过火了……（她的名字）\n- 我给过你机会了\n- 又想跟我说不是你的错，是手自己动了？\n- 我怎么觉得你是故意的？\n- 怎么，被抓住后才终于知道，现在逃跑已经太迟了？\n- 再敢做坏事，这只手就归我了\n- 这样吧，摸一下一个奶酪棒，现摸现结（她若说「那不摸了，我要奶酪棒」→ 哼，目光短浅……；说「这么便宜？我要摸个够」→ ……开价开低了……现在改还来得及吗；说「赊账可以吗」→ 不行，别以为我不知道你想要赖账的心思）\n- 蛇有七寸，人有软肋，你不礼貌\n- 总是对别人的敏感部位感兴趣，可不是君子所为\n- 热知识，我的尾椎骨上长不出尾巴",
-      "constant": false,
-      "vectorized": false,
-      "selective": false,
-      "selectiveLogic": 0,
-      "addMemo": true,
-      "order": 198,
+      "order": 207,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1416,6 +1422,51 @@
     },
     "33": {
       "uid": 33,
+      "key": [
+        "敏感部位",
+        "不礼貌",
+        "收手",
+        "太过火",
+        "惯犯",
+        "软肋",
+        "大腿",
+        "他的大腿",
+        "摸大腿",
+        "尾椎"
+      ],
+      "keysecondary": [],
+      "comment": "敏感部位",
+      "content": "这一处他会一边喊停一边继续逗她，「被冒犯」和「配合」各占一半：\n\n- 你还是自己先冷静一下吧……\n- 现在收手还来得及\n- 唉，我不干净了……\n- 不要玩的太过火了……（她的名字）\n- 我给过你机会了\n- 又想跟我说不是你的错，是手自己动了？\n- 我怎么觉得你是故意的？\n- 怎么，被抓住后才终于知道，现在逃跑已经太迟了？\n- 再敢做坏事，这只手就归我了\n- 这样吧，摸一下一个奶酪棒，现摸现结（她若说「那不摸了，我要奶酪棒」→ 哼，目光短浅……；说「这么便宜？我要摸个够」→ ……开价开低了……现在改还来得及吗；说「赊账可以吗」→ 不行，别以为我不知道你想要赖账的心思）\n- 蛇有七寸，人有软肋，你不礼貌\n- 总是对别人的敏感部位感兴趣，可不是君子所为\n- 热知识，我的尾椎骨上长不出尾巴",
+      "constant": false,
+      "vectorized": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "addMemo": true,
+      "order": 208,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "delayUntilRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "group": "组 1 · 现在 · 你碰他哪里（行为反应类）",
+      "groupOverride": false,
+      "groupWeight": 100,
+      "scanDepth": null,
+      "caseSensitive": null,
+      "matchWholeWords": null,
+      "useGroupScoring": null,
+      "automationId": "",
+      "role": null,
+      "sticky": 0,
+      "cooldown": 0,
+      "delay": 0,
+      "displayIndex": 33
+    },
+    "34": {
+      "uid": 34,
       "key": [
         "后脑勺",
         "顺毛",
@@ -1447,7 +1498,7 @@
       "selective": false,
       "selectiveLogic": 0,
       "addMemo": true,
-      "order": 199,
+      "order": 209,
       "position": 0,
       "disable": false,
       "excludeRecursion": false,
@@ -1468,10 +1519,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 33
+      "displayIndex": 34
     },
-    "34": {
-      "uid": 34,
+    "35": {
+      "uid": 35,
       "key": [
         "利莫里亚",
         "海底文明",
@@ -1510,10 +1561,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 34
+      "displayIndex": 35
     },
-    "35": {
-      "uid": 35,
+    "36": {
+      "uid": 36,
       "key": [
         "海神",
         "神明",
@@ -1549,10 +1600,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 35
+      "displayIndex": 36
     },
-    "36": {
-      "uid": 36,
+    "37": {
+      "uid": 37,
       "key": [
         "火种",
         "灯芯",
@@ -1587,10 +1638,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 36
+      "displayIndex": 37
     },
-    "37": {
-      "uid": 37,
+    "38": {
+      "uid": 38,
       "key": [
         "海月仪式",
         "葬礼",
@@ -1625,10 +1676,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 37
+      "displayIndex": 38
     },
-    "38": {
-      "uid": 38,
+    "39": {
+      "uid": 39,
       "key": [
         "潮汐逆流",
         "潮汐逆流之日",
@@ -1663,10 +1714,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 38
+      "displayIndex": 39
     },
-    "39": {
-      "uid": 39,
+    "40": {
+      "uid": 40,
       "key": [
         "焰尾鱼",
         "火焰",
@@ -1702,10 +1753,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 39
+      "displayIndex": 40
     },
-    "40": {
-      "uid": 40,
+    "41": {
+      "uid": 41,
       "key": [
         "歌岛",
         "遗迹",
@@ -1740,10 +1791,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 40
+      "displayIndex": 41
     },
-    "41": {
-      "uid": 41,
+    "42": {
+      "uid": 42,
       "key": [
         "金沙之海",
         "菲罗斯星",
@@ -1783,10 +1834,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 41
+      "displayIndex": 42
     },
-    "42": {
-      "uid": 42,
+    "43": {
+      "uid": 43,
       "key": [
         "罗镜城",
         "黑海",
@@ -1821,10 +1872,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 42
+      "displayIndex": 43
     },
-    "43": {
-      "uid": 43,
+    "44": {
+      "uid": 44,
       "key": [
         "海神冢",
         "历练",
@@ -1860,10 +1911,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 43
+      "displayIndex": 44
     },
-    "44": {
-      "uid": 44,
+    "45": {
+      "uid": 45,
       "key": [
         "断潮戟",
         "神器",
@@ -1898,10 +1949,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 44
+      "displayIndex": 45
     },
-    "45": {
-      "uid": 45,
+    "46": {
+      "uid": 46,
       "key": [
         "唤海神杖",
         "神杖"
@@ -1935,10 +1986,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 45
+      "displayIndex": 46
     },
-    "46": {
-      "uid": 46,
+    "47": {
+      "uid": 47,
       "key": [
         "鲸落城",
         "海神祭典",
@@ -1976,10 +2027,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 46
+      "displayIndex": 47
     },
-    "47": {
-      "uid": 47,
+    "48": {
+      "uid": 48,
       "key": [
         "维罗诺",
         "艺术之都",
@@ -2015,10 +2066,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 47
+      "displayIndex": 48
     },
-    "48": {
-      "uid": 48,
+    "49": {
+      "uid": 49,
       "key": [
         "半岛",
         "游学",
@@ -2056,10 +2107,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 48
+      "displayIndex": 49
     },
-    "49": {
-      "uid": 49,
+    "50": {
+      "uid": 50,
       "key": [
         "莫亚",
         "Mo",
@@ -2095,10 +2146,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 49
+      "displayIndex": 50
     },
-    "50": {
-      "uid": 50,
+    "51": {
+      "uid": 51,
       "key": [
         "塞壬",
         "塞壬之歌",
@@ -2135,10 +2186,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 50
+      "displayIndex": 51
     },
-    "51": {
-      "uid": 51,
+    "52": {
+      "uid": 52,
       "key": [
         "武神",
         "赤霄将军",
@@ -2176,10 +2227,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 51
+      "displayIndex": 52
     },
-    "52": {
-      "uid": 52,
+    "53": {
+      "uid": 53,
       "key": [
         "怎么称呼他",
         "叫他什么",
@@ -2224,10 +2275,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 52
+      "displayIndex": 53
     },
-    "53": {
-      "uid": 53,
+    "54": {
+      "uid": 54,
       "key": [
         "保镖小姐",
         "猎人小姐",
@@ -2276,10 +2327,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 53
+      "displayIndex": 54
     },
-    "54": {
-      "uid": 54,
+    "55": {
+      "uid": 55,
       "key": [
         "叫我宝贝",
         "叫我主人",
@@ -2324,7 +2375,7 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 54
+      "displayIndex": 55
     }
   }
 }
