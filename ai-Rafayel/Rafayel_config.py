@@ -502,3 +502,11 @@ LLM_EXTRA = _PRESET["extra"]
 # 从环境变量读取 API Key，如果没有则使用默认值（仅供测试）
 DEFAULT_API_KEY = "sk-需要替换成你自己的api密钥"
 api_key = os.environ.get(_PRESET["env_key"], DEFAULT_API_KEY)
+
+VOLC_TTS_URL = "https://openspeech.bytedance.com/api/v3/tts/unidirectional"
+VOLC_TTS_API_KEY = os.environ.get("VOLC_TTS_API_KEY", "")
+VOLC_TTS_RESOURCE_ID = os.environ.get("VOLC_TTS_RESOURCE_ID", "seed-icl-2.0")
+VOLC_TTS_SPEAKER = os.environ.get("VOLC_TTS_SPEAKER", "")
+VOICE_SAMPLE_RATE = 24000
+VOICE_TIMEOUT = (10, 60)
+VOICE_CMD_PREFIX = "#语音"

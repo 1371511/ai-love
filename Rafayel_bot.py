@@ -5,8 +5,9 @@ import os
 import random
 import sys
 import time
-
 import websockets
+
+
 
 # ========== 导入祁煜（Rafayel）的对话引擎 ==========
 # 2026-09-17 搬家：引擎代码都在 ai-Rafayel\ 子目录，而入口 bot 仍留在项目根 ——
@@ -25,7 +26,7 @@ from Rafayel_config import (
     QZONE_AUTO_REMIND_DELAY_MAX, QZONE_AUTO_REMIND_DELAY_MIN, QZONE_AUTO_SCAN_SECONDS,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
-    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,
+    QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,VOICE_CMD_PREFIX,
     POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
     POKE_TYPING_MAX, POKE_TYPING_MIN,
     REPLY_BUBBLE_GAP, REPLY_BUBBLE_MAX, REPLY_BUBBLE_MAX_CHARS,
@@ -56,6 +57,7 @@ from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_schedule, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
 )
+from Rafayel_voice import synth_wav, to_record_segment
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str, media: bool = False) -> str:
@@ -119,8 +121,12 @@ def build_message(text):
 
 
 async def send_text(websocket, message_type, user_id, group_id, text):
-    """按 OneBot v11 协议发一条消息（私聊 / 群聊）"""
-    message = build_message(text)
+    # 2026-09-27：允许直接传「已经拼好的消息段**列表**」（如语音 record 段）⇒ 原样透传。
+    #   传 str 的老调用方**行为一字不变**（照旧走 build_message）。
+    if isinstance(text, list):
+        message = text
+    else:
+        message = build_message(text)
     if message_type == "private":
         response = {
             "action": "send_private_msg",
@@ -347,6 +353,48 @@ async def maybe_handle_sticker_cmd(websocket, message_type, user_id, group_id, r
     # ⚠ 这也是他**真的发出来**的东西 ⇒ 进对话记忆，否则她回「这表情好可爱」他接不住
     record_proactive(user_id, "[表情:%s]" % chosen)
     print("[🎭] 表情测试：%s ⇒ %s" % (note, chosen))
+    return True
+
+
+async def maybe_handle_voice_cmd(websocket, message_type, user_id, group_id, raw_message):
+    """
+    语音测试指令（`#语音 想说的话`）。命中并处理了返回 True，否则 False。
+
+    ⚠ 三条口径（跟 #表情 / #发说说 一致）：
+      ① 只私聊 —— 群里冒出一条语音很奇怪（类型不对就静默忽略，原因进日志）。
+      ② 失败降级 —— TTS 挂了说一句人话；**真实原因只进服务端日志**
+         （后台/日志/回执这些词一个字都不许出现在她能看见的地方）。
+      ③ 发出去的语音必须进对话记忆 —— 不然她回「这声音好听」他接不住。
+    """
+    text = (raw_message or "").strip()
+    if not VOICE_CMD_PREFIX or not text.startswith(VOICE_CMD_PREFIX):
+        return False
+
+    say = text[len(VOICE_CMD_PREFIX):].strip()
+    if not say:
+        await send_text(websocket, message_type, user_id, group_id,
+                        "（他挑了下眉）你想让我说什么？")
+        return True
+
+    if message_type != "private":
+        print("[🔊] #语音 只在私聊里生效（当前 %s），已忽略" % message_type)
+        return True
+
+    try:
+        # ⚠ 合成是同步请求 ⇒ 必须丢线程！直接调用会把事件循环堵住，
+        #   说说排期 / 打招呼扫描 / 别人的消息全停。
+        wav = await asyncio.to_thread(synth_wav, say)
+    except Exception as e:
+        print("[🔊] 语音测试失败（真实原因只在这里）：%s" % e)
+        await send_text(websocket, message_type, user_id, group_id,
+                        "（他清了清嗓子，顿了顿）……这句我一时说不出来。")
+        return True
+
+    # ⚠ 外面这层方括号不能省 —— send_text 只认"列表"
+    await send_text(websocket, message_type, user_id, group_id,
+                    [to_record_segment(wav)])
+    record_proactive(user_id, say)      # ⚠ 记的是**他说的那句话**，不是 "#语音"
+    print("[🔊] 语音测试：%.1f KB ⇒ 已发" % (len(wav) / 1024.0))
     return True
 
 
@@ -838,6 +886,11 @@ async def process_napcat_message(data, websocket):
         # 2026-09-19：表情包测试指令（#表情 / #表情 标签）—— 命中就甩一张图，不进对话。
         if await maybe_handle_sticker_cmd(websocket, message_type, user_id,
                                           group_id, raw_message):
+            return
+
+        # 2026-09-27：语音测试指令（#语音 内容）—— 命中就合成 + 发一条语音，不进对话。   ← 加这 3 行
+        if await maybe_handle_voice_cmd(websocket, message_type, user_id,
+                                        group_id, raw_message):
             return
 
         # 2026-09-18：新用户第一次说话时，先主动打一声招呼再回答。
