@@ -371,8 +371,8 @@ QZONE_CMT_POLL_SECONDS = 900    # 多久查一次评论数（跟说说/打招呼
 QZONE_CMT_DELAY_MIN = 3         # 发现她留话之后，隔几分钟才来找她（秒回太假）
 QZONE_CMT_DELAY_MAX = 10
 QZONE_CMT_MAX_PER_DAY = 2       # 每天最多因此找她几次（不然她评论一次就被追着问）
-QZONE_CMT_HOUR_START = 8        # 同样别半夜打扰
-QZONE_CMT_HOUR_END = 23
+QZONE_CMT_HOUR_START = 0        # 2026-09-29 关掉时段闸（原 8），全时段可回；改回 8 即恢复，排查问题中……
+QZONE_CMT_HOUR_END = 24
 QZONE_CMT_FEED_NUM = 10         # 每次拉最近几条说说来比对评论数
 # qzone-bridge 的 REST 地址（它自己起的服务，不是 NapCat 的）
 QZONE_BRIDGE_URL = "http://127.0.0.1:5700"
