@@ -54,7 +54,8 @@ from Rafayel_qzone_comment import (already_replied, clean_comment,
                                    fetch_feeds, is_known_user, mark_done,
                                    mark_replied, note_posted, refresh_baseline,
                                    remembered_tid_content, remember_tids,
-                                   scan_new_comments, send_comment, take_ready)
+                                   scan_new_comments, send_comment,
+                                   sync_credentials_to_bridge, take_ready)
 from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_schedule, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
@@ -568,8 +569,22 @@ async def _watch_credentials(echo, fut):
             print("[🔑] ps_key 字段：%s" % ps_key)
         if "p_skey" in cookies or ps_key:
             print("[🔑] ✅ 有 p_skey ⇒ NapCat 路线成立，可以喂 bridge")
+            ok, why = await asyncio.to_thread(sync_credentials_to_bridge, cookies)
+            if ok:
+                print("[🔑] ✅ 已把凭据喂给 bridge（/login_cookie，免重启）")
+            else:
+                print("[🔑] ⚠ 喂 bridge 失败：%s" % why)
+                return
+            uin = str(QZONE_SELF_UIN or globals().get("SELF_UIN") or "")
+            if uin:
+                posts, err = await asyncio.to_thread(fetch_feeds, uin)
+                if err:
+                    print("[🔑] bridge 复活验证失败：%s" % err)
+                else:
+                    print("[🔑] 🎉 bridge 复活：拉到 %d 条说说" % len(posts))
         else:
             print("[🔑] ❌ cookies 里没有 p_skey ⇒ 换路线")
+
     except asyncio.TimeoutError:
         print("[🔑] get_credentials 回执没到（这版 NapCat 可能不支持该 action）")
     except Exception as e:

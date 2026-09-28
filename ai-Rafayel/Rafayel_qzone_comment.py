@@ -379,3 +379,25 @@ def send_comment(target_uin, target_tid, content):
     if d.get("status") == "failed" or (d.get("retcode") not in (0, None)):
         return False, "bridge 返回失败：%s" % (d.get("message") or d)
     return True, ""
+
+
+def sync_credentials_to_bridge(cookies):
+    """
+    把 NapCat 吐出来的 cookie 喂给 bridge 的 `/login_cookie`（免重启热更新）。
+    返回 (True, "") 或 (False, 原因)。
+
+    ⭐ bridge 会把它写进自己的 Cookie 缓存文件（cookies.json），下次重启自动复用。
+    ⚠ cookies 是敏感凭据：失败原因可以进日志，但 **cookies 本身绝不落日志**。
+    """
+    try:
+        r = requests.post(
+            QZONE_BRIDGE_URL.rstrip("/") + "/login_cookie",
+            json={"cookie": cookies},
+            timeout=QZONE_BRIDGE_TIMEOUT,
+        )
+        d = r.json()
+    except Exception as e:
+        return False, "bridge 请求失败：%s" % e
+    if d.get("status") == "failed" or (d.get("retcode") not in (0, None)):
+        return False, "bridge 返回失败：%s" % (d.get("message") or d)
+    return True, ""
