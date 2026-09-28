@@ -4,10 +4,15 @@ import io
 import json
 import wave
 import requests
+import array
+import math
+import re
 from Rafayel_config import (
     ROOT,
     VOLC_TTS_API_KEY, VOLC_TTS_RESOURCE_ID, VOLC_TTS_SPEAKER, VOLC_TTS_URL,
     VOICE_SAMPLE_RATE, VOICE_TIMEOUT,
+    VOICE_NORMALIZE, VOICE_TARGET_DB, VOICE_CEILING_DB,
+    VOICE_SKIP_BRACKET,
 )
 
 
@@ -64,6 +69,45 @@ def synth_pcm(text, timeout=None):
         raise RuntimeError("TTS 一帧音频都没拿到")
     return b"".join(frames)                               # ← 改：探针这里是写盘
 
+def normalize_pcm(pcm, target_db=None, ceiling_db=None):
+    """
+    把 PCM 的平均响度抬到 target_db，同时把峰值按在 ceiling_db 以下。
+
+    ⚠ 为什么不能只用增益：源峰值已 -1.9 dB，纯加增益必削波。
+      「增益 + 软拐点限幅」= 抬平均、只对超过天花板的**瞬态**做压缩。
+      实测：+4.8 dB 增益下只有 0.38% 的样点触发（mean -18.8→-14.1，max -1.9→-0.4）。
+
+    ⚠ 纯标准库（array + 手算 RMS），不依赖 numpy / ffmpeg / audioop。
+    """
+    if not pcm:
+        return pcm
+
+    samples = array.array("h")
+    samples.frombytes(pcm)
+    if not samples:
+        return pcm
+
+    tgt = VOICE_TARGET_DB if target_db is None else target_db
+    ceil_ = VOICE_CEILING_DB if ceiling_db is None else ceiling_db
+
+    rms = math.sqrt(sum(float(v) * v for v in samples) / len(samples))
+    if rms <= 0:
+        return pcm
+
+    gain = 10 ** ((tgt - 20 * math.log10(rms / 32768.0)) / 20)
+    limit = 32767 * (10 ** (ceil_ / 20))
+
+    out = array.array("h")
+    for v in samples:
+        x = v * gain
+        a = abs(x)
+        if a > limit:                     # 软拐点：超出天花板的部分只保留 20%
+            a = limit + (a - limit) * 0.2
+        if a > 32767:                     # 兜底硬夹，防溢出
+            a = 32767
+        out.append(int(math.copysign(a, x)))
+    return out.tobytes()
+
 
 def wav_from_pcm(pcm, sample_rate=None):
     """
@@ -84,7 +128,10 @@ def wav_from_pcm(pcm, sample_rate=None):
 
 def synth_wav(text, timeout=None):
     """合成 + 打包成 wav，一步到位（bot 只调这一个）。"""
-    return wav_from_pcm(synth_pcm(text, timeout=timeout))     # ← 新
+    pcm = synth_pcm(text, timeout=timeout)
+    if VOICE_NORMALIZE:
+        pcm = normalize_pcm(pcm)
+    return wav_from_pcm(pcm)
 
 
 def to_record_segment(audio_bytes):
@@ -117,3 +164,44 @@ if __name__ == "__main__":
 
     print("wav 长度：%.1f KB" % (len(wav) / 1024.0))
     print("已写出：%s" % out_path)
+
+_ACTION_RE = re.compile(r"[（(][^）)]*[）)]")
+
+
+def strip_actions(text):
+    """
+    把一句气泡原文拆成「括号段」和「台词」两部分。
+
+    返回 (actions, lines)：
+      · actions —— 所有括号段拼起来（给文字气泡用），例如 "（他笑）（挑眉）"
+      · lines   —— 剥掉括号后的台词列表（一句话都不丢）
+
+    例：
+      "（他笑）今天风很大。"  ⇒  ("（他笑）", ["今天风很大。"])
+      "（他笑）今天风很大。（挑眉）"  ⇒  ("（他笑）（挑眉）", ["今天风很大。"])
+      "（他笑）"             ⇒  ("（他笑）", [])      ← 没台词
+    """
+    t = (text or "").strip()
+    if not t:
+        return "", []
+
+    actions = "".join(m.group(0) for m in _ACTION_RE.finditer(t))
+    bare = _ACTION_RE.sub("\n", t)                 # 括号替换成换行 ⇒ 天然分段
+    lines = [l.strip() for l in bare.split("\n") if l.strip()]
+    return actions, lines
+
+
+def filter_actions(actions):
+    """
+    括号段里含「图片 / 表情 / 语音 / 文件 / 链接」这类系统词的 ⇒ 整块丢掉。
+
+    ⚠ 为什么：剥出来当文字气泡会很怪（用户看到孤零零一个"（图片）"）。
+    """
+    if not actions:
+        return ""
+    keep = []
+    for m in _ACTION_RE.finditer(actions):
+        if any(w in m.group(0) for w in VOICE_SKIP_BRACKET):
+            continue
+        keep.append(m.group(0))
+    return "".join(keep)

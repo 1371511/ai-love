@@ -509,4 +509,35 @@ VOLC_TTS_RESOURCE_ID = os.environ.get("VOLC_TTS_RESOURCE_ID", "seed-icl-2.0")
 VOLC_TTS_SPEAKER = os.environ.get("VOLC_TTS_SPEAKER", "")
 VOICE_SAMPLE_RATE = 24000
 VOICE_TIMEOUT = (10, 60)
+VOICE_NORMALIZE = False
+VOICE_TARGET_DB = -16.0
+VOICE_CEILING_DB = -1.5
 VOICE_CMD_PREFIX = "#语音"
+VOICE_AUTO_ENABLE = True  #自动回复发语音总开关
+VOICE_MIN_CHARS = 2   #少于2个字，不发
+VOICE_MAX_CHARS = 60  #超过60字，不发
+VOICE_CHANCE = 0.2  #未命中关键词，自动发送概率
+VOICE_DAILY_LIMIT = 20  #日上限
+
+VOICE_KEYWORDS = (
+    # 道别问候
+    "晚安", "早安", "午安", "我出门了", "我回来了", "路上小心",
+    # 情感表达
+    "想你", "爱你", "喜欢你", "舍不得", "心疼", "别难过", "我在",
+    # 承诺
+    "我等你", "我会一直在", "别怕", "有我在",
+    # 特殊日子
+    "生日快乐", "新年快乐", "圣诞", "情人节", "纪念日",
+    # 亲密动作
+    "抱抱", "亲亲", "摸摸头", "拥抱", "牵手",
+    # 称呼
+    "保镖小姐",
+)
+
+VOICE_SKIP_WORDS = (
+    "好的", "收到", "知道了", "明白", "嗯嗯", "我看看", "我查查", "稍等",
+    "几点", "多少", "是不是", "有没有", "怎么办",
+    "格式", "参数", "代码", "文件", "配置", "报错",
+)
+
+VOICE_SKIP_BRACKET = ("图片", "表情", "语音", "文件", "链接")

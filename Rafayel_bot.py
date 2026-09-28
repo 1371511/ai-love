@@ -27,6 +27,8 @@ from Rafayel_config import (
     QZONE_BDAY, QZONE_BDAY_RAFAYEL,
     QZONE_CMD_FAIL_TEXT, QZONE_CMD_PREFIX, QZONE_CMD_UIDS, QZONE_RECEIPT_TIMEOUT,
     QZONE_TEST_TEXT, STICKER_CMD_PREFIX, STICKER_IMAGE_AS_BASE64,VOICE_CMD_PREFIX,
+    VOICE_AUTO_ENABLE, VOICE_MIN_CHARS, VOICE_MAX_CHARS, VOICE_CHANCE,
+    VOICE_DAILY_LIMIT, VOICE_KEYWORDS, VOICE_SKIP_WORDS, VOICE_SKIP_BRACKET,
     POKE_COOLDOWN_SECONDS, POKE_ENABLE, POKE_PROMPT, POKE_REPLY_BACK,
     POKE_TYPING_MAX, POKE_TYPING_MIN,
     REPLY_BUBBLE_GAP, REPLY_BUBBLE_MAX, REPLY_BUBBLE_MAX_CHARS,
@@ -57,7 +59,7 @@ from Rafayel_qzone_auto import (
     bday_due, bday_pool, has_schedule, image_paths, mark_bday_sent, mark_posted,
     pick_manual, pick_post, pool_stats, reminder_text, render_text, should_post,
 )
-from Rafayel_voice import synth_wav, to_record_segment
+from Rafayel_voice import synth_wav, to_record_segment, strip_actions, filter_actions
 
 # ============================================
 def your_ai_lover_response(user_message: str, user_id: str, media: bool = False) -> str:
@@ -355,6 +357,44 @@ async def maybe_handle_sticker_cmd(websocket, message_type, user_id, group_id, r
     print("[🎭] 表情测试：%s ⇒ %s" % (note, chosen))
     return True
 
+# ── 自动语音（4c，2026-09-28）───────────────────────────────
+# 每天发出去的条数（内存计数，重启归零 —— 够用，不落盘）。
+_voice_sent_day = None
+_voice_sent_count = 0
+
+
+def _voice_daily_ok():
+    """日限闸门：同一天内发够 VOICE_DAILY_LIMIT 条 ⇒ 返回 False。"""
+    global _voice_sent_day, _voice_sent_count
+    today = time.strftime("%Y-%m-%d")
+    if _voice_sent_day != today:
+        _voice_sent_day = today
+        _voice_sent_count = 0
+    return _voice_sent_count < VOICE_DAILY_LIMIT
+
+
+def _voice_mark_sent():
+    """记一条已发（跨过日限闸门后才调）。"""
+    global _voice_sent_count
+    _voice_sent_count += 1
+
+
+def should_voice(lines):
+    """
+    判断这段台词要不要发语音。返回 True / False。
+
+    ⚠ 纯函数（只读全局表，不碰网络、不碰 IO）⇒ 本地能 import 出来单测。
+    """
+    text = "".join(lines).strip()
+    if not text:
+        return False
+    if len(text) < VOICE_MIN_CHARS or len(text) > VOICE_MAX_CHARS:
+        return False
+    if any(w in text for w in VOICE_SKIP_WORDS):      # 否决词优先
+        return False
+    if any(w in text for w in VOICE_KEYWORDS):        # 命中关键词 ⇒ 必发
+        return True
+    return random.random() < VOICE_CHANCE             # 没命中 ⇒ 掷骰子
 
 async def maybe_handle_voice_cmd(websocket, message_type, user_id, group_id, raw_message):
     """
@@ -791,10 +831,38 @@ async def _flush_reply(user_id, why=""):
 
         # 一条一条发；条与条之间隔 REPLY_BUBBLE_GAP（她定约 3s），像在连续打字。
         # ⚠ 第一条不等（打字延迟已经在上面等过了）。
+        # 🔊 2026-09-28（4c）：这一条要不要拆成「文字动作 + 语音台词」两发？
         for i, b in enumerate(bubbles):
             if i:
                 await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
-            await send_text(ws, st["message_type"], user_id, st["group_id"], b)
+
+            if not VOICE_AUTO_ENABLE:
+                await send_text(ws, st["message_type"], user_id, st["group_id"], b)
+                continue
+
+            actions, lines = strip_actions(b)
+            if not lines or not _voice_daily_ok() or not should_voice(lines):
+                await send_text(ws, st["message_type"], user_id, st["group_id"], b)
+                continue
+
+            # ✂ 要拆：先把括号段（纯文字）发出去
+            shown = filter_actions(actions)
+            if shown:
+                await send_text(ws, st["message_type"], user_id, st["group_id"], shown)
+                await asyncio.sleep(random.uniform(*REPLY_BUBBLE_GAP))
+
+            # 再把台词合成语音发出去；TTS 挂了就退回发文字（别让她白等）
+            say = "".join(lines)
+            try:
+                wav = await asyncio.to_thread(synth_wav, say)
+                await send_text(ws, st["message_type"], user_id, st["group_id"],
+                                [to_record_segment(wav)])
+                _voice_mark_sent()
+                print("[🔊] 自动语音：%.1f KB ⇒ 已发（今日 %d/%d）"
+                      % (len(wav) / 1024.0, _voice_sent_count, VOICE_DAILY_LIMIT))
+            except Exception as e:
+                print("[🔊] 自动语音合成失败（真实原因只在这里）：%s" % e)
+                await send_text(ws, st["message_type"], user_id, st["group_id"], b)
 
     # 🎁 牵绊度跨级 ⇒ 解锁该级的官方素材（短信 / 彩蛋）。
     #    ⚠ 放在回复**之后**：升级一定发生在她刚说完话之后，语境最自然。
