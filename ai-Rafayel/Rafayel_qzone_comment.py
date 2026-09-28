@@ -400,4 +400,18 @@ def sync_credentials_to_bridge(cookies):
         return False, "bridge 请求失败：%s" % e
     if d.get("status") == "failed" or (d.get("retcode") not in (0, None)):
         return False, "bridge 返回失败：%s" % (d.get("message") or d)
+
+    # ⭐ 2026-09-29 实测：光喂 cookie 不够 —— bridge 的 API 层还挂着旧会话，
+    #   要 reset 一次新凭据才生效（否则每次还得手动 curl reset_api_caches）。
+    try:
+        r = requests.post(
+            QZONE_BRIDGE_URL.rstrip("/") + "/reset_api_caches",
+            json={}, timeout=QZONE_BRIDGE_TIMEOUT,
+        )
+        d2 = r.json()
+    except Exception as e:
+        return False, "reset_api_caches 请求失败：%s" % e
+    if d2.get("retcode") not in (0, None):
+        return False, "reset_api_caches 失败：%s" % d2
     return True, ""
+
