@@ -518,6 +518,65 @@ async def maybe_handle_qzone_cmd(websocket, message_type, user_id, group_id, raw
     print("[🧪] 指令回执 sent=%s｜回她的话 %r｜内部原因 %s" % (sent, tip, note))
     return True
 
+async def maybe_handle_qzone_cookie_cmd(websocket, message_type, user_id, group_id, raw_message):
+    """
+    空间凭据侦察指令（`#空间cookie`，2026-09-29）。
+
+    背景：bridge 的 Cookie 过期（「未登录」）⇒ 评论回复两条路全废。
+    这次不手工复制 Cookie —— NapCat 自己就登录着，发 `get_credentials`
+    看它吐出来的 cookies 里有没有 **p_skey**（QQ 空间专用凭据）。
+    有 ⇒ 下一步做「自动同步凭据给 bridge」；没有 ⇒ 换路线。
+
+    ⚠ 只在 QZONE_CMD_UIDS 白名单里生效（跟 #发说说 同一把锁）。
+    ⚠ 回执是敏感凭据：只进服务器日志，贴出来前先打码。
+    """
+    text = (raw_message or "").strip()
+    if not text.startswith("#空间cookie"):
+        return False
+    if QZONE_CMD_UIDS and user_id not in [str(u) for u in QZONE_CMD_UIDS]:
+        print("[🔑] 空间凭据指令被忽略（%s 不在白名单）" % user_id)
+        return False
+
+    echo = _next_echo()
+    fut = asyncio.get_running_loop().create_future()
+    _pending_receipts[echo] = fut
+    try:
+        await websocket.send(json.dumps({
+            "action": "get_credentials",
+            "params": {"domain": "user.qzone.qq.com"},
+            "echo": echo,
+        }))
+    except Exception as e:
+        _pending_receipts.pop(echo, None)
+        print("[🔑] 发送 get_credentials 失败：%r" % e)
+        return True
+
+    asyncio.create_task(_watch_credentials(echo, fut))
+    print("[🔑] 已向 NapCat 请求 get_credentials（domain=user.qzone.qq.com）")
+    return True
+
+
+async def _watch_credentials(echo, fut):
+    """后台等 get_credentials 回执（原因同 _watch_receipt：主流程里等必锁死）。"""
+    try:
+        receipt = await asyncio.wait_for(fut, timeout=QZONE_RECEIPT_TIMEOUT)
+        data = receipt.get("data") or {}
+        cookies = str(data.get("cookies") or "")
+        ps_key = str(data.get("ps_key") or "")
+        print("[🔑] 回执 retcode=%s｜cookies 原文：%s" % (receipt.get("retcode"), cookies))
+        if ps_key:
+            print("[🔑] ps_key 字段：%s" % ps_key)
+        if "p_skey" in cookies or ps_key:
+            print("[🔑] ✅ 有 p_skey ⇒ NapCat 路线成立，可以喂 bridge")
+        else:
+            print("[🔑] ❌ cookies 里没有 p_skey ⇒ 换路线")
+    except asyncio.TimeoutError:
+        print("[🔑] get_credentials 回执没到（这版 NapCat 可能不支持该 action）")
+    except Exception as e:
+        print("[🔑] get_credentials 出错：%r" % e)
+    finally:
+        _pending_receipts.pop(echo, None)
+
 
 # ============================================
 # 👆 戳一戳（2026-09-22 加；她选 C：回戳 + 说一句）
@@ -960,6 +1019,12 @@ async def process_napcat_message(data, websocket):
         if await maybe_handle_voice_cmd(websocket, message_type, user_id,
                                         group_id, raw_message):
             return
+
+        # 2026-09-29：空间凭据侦察（#空间cookie）—— 验 NapCat 能不能吐 p_skey。
+        if await maybe_handle_qzone_cookie_cmd(websocket, message_type, user_id,
+                                               group_id, raw_message):
+            return
+
 
         # 2026-09-18：新用户第一次说话时，先主动打一声招呼再回答。
         #   旧版 QQ 端完全没有开场白 —— 用户第一条消息进来就直接进入问答，
