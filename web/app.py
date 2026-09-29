@@ -10,6 +10,8 @@
      web/base.py           底座（**无路由**）：路径 / 密钥 / 用户 / 登录态 / 页面外壳 / 转义工具
      web/page/login.py      `/`（首页=登录页）· `/login` · `/logout`
      web/page/menu.py       `/menu` **目录页**（登录后的落点；入口表在 `base.NAV`）
+     web/page/home.py       `/home` 主页（个人信息 + 他记住的你 + 他记住的事）
+     web/page/diary.py      `/diary` 日记（他每几轮写下的那段话，按天分组；能增删改）
      web/page/me.py         `/me`（**老地址跳转壳** → `/affinity`）
      web/page/affinity.py   `/affinity` 好感度后台（原「我的页」的内容整块搬来的）
      web/page/messages.py   `/messages` 家族
@@ -31,6 +33,8 @@ import os
 #    ⚠ `me` 现在是**跳转壳**，真正的内容页是紧跟其后的 `affinity`（2026-09-29 搬的）。
 from page import login       # noqa: F401  首页 · 登录 / 登出
 from page import menu        # noqa: F401  目录页（登录后落这儿）
+from page import home        # noqa: F401  主页（她自己的那一页：个人信息 + 他记住的）
+from page import diary       # noqa: F401  日记（他每隔几轮写下的那段话，可按天多次）
 from page import me          # noqa: F401  老地址跳转壳 → /affinity
 from page import affinity    # noqa: F401  好感度后台（原「我的页」的内容）
 from page import messages    # noqa: F401  牵绊提升（短信）

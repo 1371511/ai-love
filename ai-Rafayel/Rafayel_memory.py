@@ -19,7 +19,8 @@ import requests
 
 from Rafayel_config import (
     API_URL, AUTO_GREET_TZ_OFFSET, DAY_KEEP, DAY_ROLL, DAY_ROLL_MIN_GAP,
-    DAY_SUMMARY_MAX_TOKENS, LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
+    DAY_SUMMARY_MAX_TOKENS, DIARY_ENABLE, DIARY_HARD_LEN, DIARY_MAX_ITEMS, DIARY_MAX_LEN,
+    LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
@@ -262,7 +263,16 @@ def load_memory(user_id: str, cm) -> bool:
         _pend = data.get("pending_summary")
         if isinstance(_pend, list):
             cm.pending_summary = _pend
-        cm.key_facts = data.get("key_facts", [])
+        # ⚠⚠ `key_facts` **必须是列表**（2026-09-30 加这道闸，跟上面 `_pend`、
+        #    下面 `_days` 同一个 `isinstance` 口径 —— 三处原先就差这一个）。
+        #    它是**字符串**时会怎样（文件名假设被人手改过）：
+        #      · 加一条 ⇒ `cm.key_facts.append(...)` ⇒ AttributeError ⇒ 网页端 500
+        #      · 改 / 删 ⇒ `[x for x in cm.key_facts ...]` 会去**遍历字符**，
+        #        把 `"她对海鲜过敏"` 变成 `['她','对','海','鲜','过','敏']` 存回去
+        #        ⇒ 她的「他记住的事」整组炸成一个字一个字，**而且什么都没报错**。
+        #    ⇒ 不是列表就当没有（跟 `_pend` / `_days` 一致的收法）。
+        _kf = data.get("key_facts")
+        cm.key_facts = _kf if isinstance(_kf, list) else []
         cm.turn_count = data.get("turn_count", 0)
         # 🕐 读回「她最后一条消息」的时间戳。
         #    老文件没有 `last_msg_at` ⇒ 退回 `saved_at`（那是上次**存盘**的时刻，
@@ -741,6 +751,20 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                 if len(self.long_term_summary) > 1500:
                     self.long_term_summary = self.long_term_summary[-1500:]
                     self.long_term_summary = "...(较早记忆已压缩)...\n" + self.long_term_summary
+
+                # 📔 日记（2026-09-30 · 她：「按天进行多次总结」）：
+                #    同一次摘要，在日记里也留一条 ⇒ **一次摘要 = 一条**，
+                #    一天聊得多就一天多条（她的例子：20 轮 ÷ 每 8 轮 = 2 条）。
+                # ⚠⚠ 这段**必须自己 try**（不能靠外层那个）：
+                #    外层 `except` 会把 `pending_summary` **重新排回队列**（:746，本意是
+                #    「LLM 调用失败就下次再摘要」）⇒ 日记写盘一抛异常，这段对话会被
+                #    **反复摘要**，日记里就冒出重复条目。
+                # ⚠ 位置放在 `long_term_summary` 之后：日记写不成，也**不该影响**他的长期记忆。
+                # ⚠ `DIARY_ENABLE=False` ⇒ 摘要照旧，日记一条不加（开关只影响这一处）。
+                try:
+                    add_diary(self.user_id, new_summary, src="he")
+                except Exception as de:
+                    print(f"⚠️ 日记写入失败（不影响对话）：{de}")
         except Exception as e:
             print(f"⚠️ 摘要生成失败：{e}，将继续正常对话")
             self.pending_summary = to_summarize + self.pending_summary
@@ -756,3 +780,374 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
         """限制关键事实数量"""
         if len(self.key_facts) > MAX_FACTS:
             self.key_facts = self.key_facts[-MAX_FACTS:]
+
+
+# ============================================================
+#  🌐 她**自己在网页上**改「他记住的事」（2026-09-30 主页第 4 批）
+# ============================================================
+# ⚠ 这三个是**模块级**函数，给 `web/page/home.py` 用 ——
+#    `Rafayel_memory` 在 `check_static.py` 的 `WRITER_MODULES` 里，
+#    网页端 import 得先在 `WEB_WRITE_EXCEPTION` 开口（本批开的第 5 条）。
+# ⭐ 一律 `load_memory()` → 改 → `save_memory()` ⇒ 跟 bot 走**同一套**落盘逻辑，
+#    不会「网页存成一种格式、bot 又存成另一种」。
+def _facts_edit(user_id: str, fn) -> bool:
+    """
+    「读 → 改 → 存」的壳。`fn(cm)` 返回 True 才落盘。
+
+    ⚠⭐ `load_memory()` 返回 False ⇒ **直接放弃，绝不 save** ——
+       那意味着文件不存在或读坏了；这时候拿一个空对象去存 = 把她整份记忆清空。
+       **宁可这次改不成，也不能赌**（顺带也避免了「网页端凭空造出一份记忆」）。
+    ⚠ 网页端**不许**自己 `json.load` / `json.dump` `memory/{uid}.json`：
+       那份文件的字段清单归 `save_memory()` 管（它只写固定的那些），
+       自己拼就会漏字段或写出多余的键。
+    """
+    cm = ConversationManager("", user_id)
+    if not load_memory(user_id, cm):
+        return False
+    if not fn(cm):
+        return False
+    save_memory(user_id, cm)
+    return True
+
+
+def add_fact_by_her(user_id: str, text: str) -> bool:
+    """
+    🌐 她**自己在网页上加一条**「他记住的事」。返回是否有变化。
+
+    ⭐ 去重口径跟 `_add_fact()`（规则轨）一致：**字面相等**。
+       key_facts 存的是带模板前缀的整句（「用户让你记住：xxx」/「祁煜答应了：xxx」），
+       语义去重会把两条不同来源的约定并成一条 —— 那种静默丢信息比多记一条更糟。
+    ⚠ 长度上限 80 —— 跟 `_add_fact()` 里的 `fact[:80]` 对齐（那边存的时候也是这么截的）。
+    """
+    text = (text or "").strip()
+    if not text or len(text) > 80:
+        return False
+
+    def _do(cm):
+        if text in cm.key_facts:
+            return False
+        cm.key_facts.append(text)
+        cm.trim_facts()                # 超 20 条丢最早的
+        return True
+    return _facts_edit(user_id, _do)
+
+
+def edit_fact_by_her(user_id: str, old: str, new: str) -> bool:
+    """
+    🌐 她**自己在网页上改一条**。返回是否有变化。
+
+    ⚠ **整条替换（含前缀）** —— 前缀（`用户让你记住：` 那些）本批不拆，
+       显示什么样就编辑什么样；拆前缀要解析 6 种模板，拆错就把内容改坏了。
+    """
+    old = (old or "").strip()
+    new = (new or "").strip()
+    if not old or not new or len(new) > 80 or old == new:
+        return False
+
+    def _do(cm):
+        if old not in cm.key_facts:
+            return False
+        cm.key_facts = [new if x == old else x for x in cm.key_facts]
+        return True
+    return _facts_edit(user_id, _do)
+
+
+def delete_fact_by_her(user_id: str, text: str) -> bool:
+    """
+    🌐 她**自己在网页上删一条**。返回是否有变化。
+
+    ⭐ **不留抑制名单** —— 跟第 3 批删画像标签**不一样**，是刻意的：
+       key_facts 只有两种来源 —— 她说「记住：xxx」、祁煜说「我保证：xxx」。
+       删掉之后要再生成，得**重新发生一次那样的发言**；那是一次**新事件**，不该被拦。
+       ⇒ 留痕反而是错的：她改主意想记回来时，会被自己上次点的「删」挡住。
+    ⚠ 必须 `save_memory()` —— 只改内存的话，页面看着删了，一刷新就回来
+       （第 2 批踩过同款 P0：`suppress()` 只改内存）。
+    """
+    text = (text or "").strip()
+    if not text:
+        return False
+
+    def _do(cm):
+        rest = [x for x in cm.key_facts if x != text]
+        if len(rest) == len(cm.key_facts):
+            return False
+        cm.key_facts = rest
+        return True
+    return _facts_edit(user_id, _do)
+
+
+# ============================================================
+#  📔 日记 `memory/{uid}_diary.json`（2026-09-30 · 目录页那格「纪念日」改成的功能页）
+# ============================================================
+# 她定的三条（原话：「LLM 每 8 轮总结出来的那段话，放在『纪念日』改成『日记』，
+#   按天进行多次总结。同样支持增删修改」）：
+#   · 内容 = 他每次摘要（每 8 轮一次）那一段 ⇒ **一次摘要 = 一条**，
+#     一天聊得多就一天多条（她给的例子：一天 20 轮 ⇒ 2 条）
+#   · 按天分组展示
+#   · 她**能增删改**，而且**他写的那几条她也能改能删**（她选的「都能改都能删」）
+#
+# ⚠⚠ 三条最要紧的规矩（改这一段之前先读）：
+#   1. **`long_term_summary` 一个字都不动** —— 那份是喂 prompt 的 1500 字滚动窗口。
+#      日记是**旁路记录**，不是它的替代品；把它换成日记 = 改他的记忆行为 = 改人设。
+#   2. **绝不写进 `{uid}.json`** —— `save_memory()` 只写固定 8 个字段，
+#      塞进去 bot 一保存就被冲没。所以另开一个文件（跟 `{uid}_daily.json` 同一个做法）。
+#   3. **bot 侧调用必须包在内层 try 里**（见 `generate_summary()` 末尾那段）——
+#      外层那个 try 的 `except` 会把 `pending_summary` **重新排回队列**，
+#      日记写盘一抛异常，同一段对话就会被**反复摘要**，日记里冒出重复条目。
+#
+# 存储（`day` **平时不存**，展示时用 `_day_key(ts)` 推 ⇒ 以后改时区偏移，历史条目跟着换算；
+#      只有老数据导入才显式写 `day` —— 那条得挂到一个跟 `ts` 不完全对应的日子上）：
+#   {"entries": [{"id": "1790664027290", "ts": 1790664027.29, "src": "he", "text": "…"}],
+#    "updated_at": "2026-09-30 05:20:01"}
+# ⚠ **按 `id` 增删改，别拿文本当主键**：日记自带时间戳，而且同一段话可能重复出现
+#   （他今天和明天都可能总结出相似的一句），拿文本定位会删错。
+# ⚠ 这一套之所以放在 `Rafayel_memory` 而不是新开 `Rafayel_diary.py`：
+#    写钩子本来就在这个文件的 `generate_summary()` 里，而且网页端**已经**为「他记住的事」
+#    开过 `Rafayel_memory` 的口子 ⇒ 放这儿 = 那个新页面**零新增 ADR-22 开口**。
+#    代价是这个文件更长，将来真嫌大再拆。
+
+
+def _diary_path(user_id: str) -> str:
+    return os.path.join(MEMORY_DIR, f"{user_id}_diary.json")
+
+
+def _diary_ok(e) -> bool:
+    """一条日记是不是有效（`id` / `text` 齐不齐、正文非空）。"""
+    return (isinstance(e, dict) and str(e.get("id") or "").strip()
+            and isinstance(e.get("text"), str) and e["text"].strip())
+
+
+def _diary_ts(e) -> float:
+    try:
+        return float(e.get("ts") or 0)
+    except Exception:
+        return 0.0
+
+
+def _diary_id(ts: float) -> str:
+    """毫秒时间戳当 id（够唯一；真撞了在 `add_diary()` 里挂个尾巴）。"""
+    return str(int(float(ts) * 1000))
+
+
+def _hm(ts) -> str:
+    """epoch 秒 → `"HH:MM"`（按 `AUTO_GREET_TZ_OFFSET` 换算，跟 `_day_key` 同一套口径）。"""
+    return time.strftime("%H:%M", time.localtime(float(ts) + AUTO_GREET_TZ_OFFSET * 3600))
+
+
+def load_diary(user_id: str):
+    """
+    读一个人的日记。**纯读**：没有 / 读坏 ⇒ 返回空结构，**绝不创建文件、绝不写**。
+
+    ⚠ 这里把「读不出来」收敛成空列表，是因为**界面表现**本来就该一样
+      （「他还没写过日记」和「日记文件坏了」都只能显示引导文案）。
+    ⚠ 但**写盘**的时候不能这么宽松（见 `_diary_edit()`）：那时候
+      「文件读坏了」和「文件不存在」是两件完全不同的事 —— 前者绝不能覆盖。
+    """
+    path = _diary_path(user_id)
+    if not os.path.isfile(path):
+        return {"entries": []}
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"[📔] 日记读失败（{os.path.basename(path)}）：{e}")
+        return {"entries": []}
+    if not isinstance(data, dict):
+        return {"entries": []}
+    return {"entries": [e for e in (data.get("entries") or []) if _diary_ok(e)]}
+
+
+def _diary_trim(entries):
+    """
+    总量上限。⚠ **丢最早的时候绝不丢她自己写的** ——
+    他写的可以按时间滚（跟 `long_term_summary` 一个道理），
+    她自己手写一条是**有意为之**，被机器挤掉就是这个功能的失败。
+    做法：从最早的 `he` 开始丢；万一全是 `her`，再退化成按时间丢。
+    """
+    if len(entries) <= DIARY_MAX_ITEMS:
+        return
+    order = sorted(range(len(entries)), key=lambda i: _diary_ts(entries[i]))
+    drop = len(entries) - DIARY_MAX_ITEMS
+    killed = set()
+    for i in order:
+        if drop <= 0:
+            break
+        if entries[i].get("src") == "he":
+            killed.add(i)
+            drop -= 1
+    for i in order:
+        if drop <= 0:
+            break
+        if i not in killed:
+            killed.add(i)
+            drop -= 1
+    if killed:
+        entries[:] = [e for i, e in enumerate(entries) if i not in killed]
+
+
+def _diary_edit(user_id: str, fn) -> bool:
+    """
+    「读 → 改 → 原子落盘」的壳。`fn(entries)` 返回 True 才写。
+
+    ⚠⚠ **文件存在但读坏了 ⇒ 直接放弃，绝不 save**：拿一个空列表去存 = 把她整本日记清空。
+      宁可这次改不成。（跟 `_facts_edit()` 同一个道理；差别只是日记**允许首次创建**。）
+    """
+    path = _diary_path(user_id)
+    data = {"entries": []}
+    if os.path.isfile(path):
+        try:
+            with open(path, encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"[📔] 日记读失败，这次不改（{os.path.basename(path)}）：{e}")
+            return False
+        if not isinstance(data, dict):
+            print(f"[📔] 日记格式不对，这次不改（{os.path.basename(path)}）")
+            return False
+        raw = data.get("entries")
+        # ⚠⚠ `entries` **不是列表 ⇒ 一律当「坏文件」处理，放弃**。
+        #    别小看这个分支：`{"entries": {"0": {...}}}`（对象而不是数组）时，
+        #    直接 `(raw or [])` 会去**遍历它的 key**，key 是字符串 ⇒ `_diary_ok()` 全否
+        #    ⇒ 过滤完变空列表 ⇒ 下面照常落盘 ⇒ **整本日记被静默清空**。
+        #    同理 `"entries": "abc"` 会遍历字符。所以这里必须**先看类型再看内容**。
+        if raw is None:
+            raw = []
+        elif not isinstance(raw, list):
+            print(f"[📔] 日记 entries 不是列表，这次不改（{os.path.basename(path)}）")
+            return False
+    else:
+        raw = []
+    entries = [e for e in raw if _diary_ok(e)]
+    if not fn(entries):
+        return False
+    try:
+        os.makedirs(MEMORY_DIR, exist_ok=True)
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"entries": entries,
+                       "updated_at": time.strftime("%Y-%m-%d %H:%M:%S")},
+                      f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)
+    except Exception as e:
+        print(f"[📔] 日记写失败（{os.path.basename(path)}）：{e}")
+        return False
+    return True
+
+
+def add_diary(user_id: str, text: str, src: str = "he", ts=None,
+              day: str = "", legacy: bool = False) -> bool:
+    """
+    追加一条日记。返回是否写入。**bot 侧**走这个（`generate_summary()` 末尾）。
+
+    ⚠ `DIARY_ENABLE=False` ⇒ 直接返回 False（要停就改 config 常量，**别去删调用点** ——
+      那样开关就只剩半个，跟 AUTO_GREET 那批同一个口径）。
+    ⚠ 长度只卡 `DIARY_HARD_LEN`（疯话闸），**不卡** `DIARY_MAX_LEN`（那是我给她手写定的额度）：
+      摘要正常 ≤200 字，模型偶尔跑偏也不该**静默少一条**。
+    ⚠ 调用方**仍然要包 try**（见上面规矩 3）：这里尽量不抛，但外层那个 except
+      一旦接走异常就会重排 `pending_summary` ⇒ 重复摘要。
+    """
+    if not DIARY_ENABLE:
+        return False
+    text = (text or "").strip()
+    if not text or len(text) > DIARY_HARD_LEN:
+        return False
+    ts = float(ts if ts is not None else time.time())
+    ent = {"id": _diary_id(ts), "ts": ts,
+           "src": src if src in ("he", "her") else "he", "text": text}
+    if day:
+        ent["day"] = str(day)
+    if legacy:
+        ent["legacy"] = True
+
+    def _do(entries):
+        while any(e["id"] == ent["id"] for e in entries):     # 同毫秒撞了 ⇒ 换个 id
+            ent["id"] += "x"
+        entries.append(ent)
+        _diary_trim(entries)
+        return True
+
+    return _diary_edit(user_id, _do)
+
+
+def add_diary_by_her(user_id: str, text: str) -> bool:
+    """
+    🌐 她**自己在网页上写一条**。⚠ 卡 `DIARY_MAX_LEN`（500）—— 她手写有额度，模型没有。
+
+    ⚠ 这里**不查** `DIARY_ENABLE`：那个开关管的是「他会不会自动往日记里写」，
+      不该顺手把她手写的入口也关掉（否则她只会在页面上看到「存不进去」而不知道为啥）。
+    """
+    text = (text or "").strip()
+    if not text or len(text) > DIARY_MAX_LEN:
+        return False
+    return add_diary(user_id, text, src="her", ts=time.time())
+
+
+def edit_diary_by_her(user_id: str, eid: str, text: str) -> bool:
+    """
+    ✏️ 改一条的**正文**（`ts` / `src` / `day` 一个都不动 —— 改文字不是改时间）。
+
+    ⚠ 她**能改他写的那几条**（2026-09-30 她选的「都能改都能删」），
+      改完 `src` **仍保持 `he`**：那依然是他当时总结的那段，她只是顺手修个字。
+      （跟画像那边「改一条自动项 ⇒ 撤下并转挂 `manual`」**不一样** ——
+        那边涉及好感度计分，改过就不算他观察出来的了；这边没有分数，不用搞那套。）
+    """
+    eid = str(eid or "").strip()
+    text = (text or "").strip()
+    if not eid or not text or len(text) > DIARY_MAX_LEN:
+        return False
+
+    def _do(entries):
+        for e in entries:
+            if e["id"] == eid:
+                if e["text"] == text:
+                    return False          # 原样保存不算改动（别骗她「改好了」）
+                e["text"] = text
+                return True
+        return False
+
+    return _diary_edit(user_id, _do)
+
+
+def delete_diary_by_her(user_id: str, eid: str) -> bool:
+    """
+    🗑 删一条。
+
+    ⭐ **不留抑制名单**（跟「他记住的事」一致、跟画像标签相反）：
+      日记没有后台自动轨会把它「写回来」—— 下一次摘要总结的是**新的对话**、是新内容，
+      留痕反而会把将来那条新日记误挡在门外。
+    """
+    eid = str(eid or "").strip()
+    if not eid:
+        return False
+
+    def _do(entries):
+        rest = [e for e in entries if e["id"] != eid]
+        if len(rest) == len(entries):
+            return False
+        entries[:] = rest
+        return True
+
+    return _diary_edit(user_id, _do)
+
+
+def group_diary(entries, today_key: str = ""):
+    """
+    按天分组，给页面用：**天与天倒序**（最新的一天在最上面）、**天内正序**（早上在前）。
+
+    返回 `[(day_key, day_label, [(hm, entry), ...]), ...]`
+
+    ⚠ 日期 label **只有这一份实现**（走现成的 `_rel_day_label`）—— 页面不许自己算，
+      不然「今天 / 昨天」这种相对说法会在两处漂。
+    ⚠ 分组用的「天」优先取条目里显式存的 `day`（老数据导入那种），否则用 `_day_key(ts)` 推。
+    """
+    today_key = today_key or _day_key(time.time())
+    buckets = {}
+    for e in entries:
+        day = str(e.get("day") or "").strip() or _day_key(_diary_ts(e))
+        buckets.setdefault(day, []).append(e)
+    out = []
+    for day in sorted(buckets, reverse=True):
+        items = sorted(buckets[day], key=_diary_ts)
+        out.append((day, _rel_day_label(day, today_key),
+                    [(_hm(_diary_ts(e)), e) for e in items]))
+    return out

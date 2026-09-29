@@ -23,6 +23,7 @@
    / chat(对话窗口)。
 """
 
+import datetime
 import hashlib
 import hmac
 import html
@@ -39,6 +40,12 @@ BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # ⚠ 这一行必须在**任何** `import Rafayel_*` 之前生效 —— 每个页面模块都先 import base，
 #    所以搁这儿最稳（原来在 app.py 里，搬过来位置等价）。
 sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
+
+# 🔢 「认识第 N 天」要用引擎那条 `days_since()`（`YYYY-MM-DD` ⇒ 第几天，含首尾）。
+#    ⚠ 位置**必须在**上面那句 `sys.path.insert` 之后（那行就是给它铺路的）。
+#    ⚠ `Rafayel_affinity` 在 `check_static.py` 的 `WEB_WHITELIST` 里（只读引擎）
+#      ⇒ 网页端 import 它**不算**破 ADR-22，不用去 `WEB_WRITE_EXCEPTION` 开口子。
+from Rafayel_affinity import days_since  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -119,6 +126,56 @@ def _save_users(users):
     os.replace(tmp, USERS_PATH)
 
 
+# ------------------------------------------------------------ 相遇日 / 认识天数
+# ⭐⭐ 这两件东西**全站只认一个口径**（2026-09-30 她定）：
+#     · 相遇日 = 她自己填的那一天，存 `web/users.json` 的 `met_day`
+#       （**不进 memory** —— 那份是 bot 的记忆，只读）。
+#     · 认识第 N 天 = **从相遇日算出来的**；相遇日空着就**是空**。
+#     ⚠ 原来还有一条回落：「她没填 ⇒ 拿日志回填的 `first_day` 顶一下」。
+#       现在**故意去掉** —— 那个 first_day 是从聊天日志倒推的，
+#       在她眼里就是「系统替她瞎猜了一个相识纪念日」，不该由我们先开这个口。
+#       （`compute()` 返回值里的 `first_day` / `known_days` **字段保留**，
+#         `/affinity` 的日志类信息还能用；改的只是**界面口径**。）
+#     ⚠ 三个页面共用（`home` 主页面 / `affinity` 后台 / `menu` 目录页）——
+#       所以下沉到这里，别在页面里各抄一份（抄三份必然漂）。
+def _check_met_day(day):
+    """
+    校验「你们相遇的那天」。返回错误文案（人话），没问题返回空串。
+
+    ⭐ 只校验**格式与常识**，**不替她决定是哪天** —— 这是她自己说了算的事。
+    ⚠ 错误文案会进 URL ⇒ 别写引号、别写换行；也**不许出现后台词**。
+    ⚠ 2026-09-30 从 `page/settings.py` 搬过来：主页的「相遇」那一行现在也能改了，
+      两个入口（`/settings` 与 `/home/edit/met_day`）必须走**同一个**校验，
+      不然会出现「设置页拒的日子、主页收下了」。
+    """
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", day or "")
+    if not m:
+        return "日期写得不对，照年-月-日那样填"
+    try:
+        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return "这个日期不存在，再看看"
+    today = datetime.date.today()
+    if d > today:
+        return "那天还没到呢"
+    if d.year < 2000:
+        return "太早了，换一个近点的日子"
+    return ""
+
+
+def met_known(uid, a=None):
+    """
+    取「你们相遇」+「认识第 N 天」。返回 `(met_day, known)`：
+    `met_day` 空 ⇒ `known` 必为 **0**（页面按「—」/「还没填」显示）。
+
+    ⚠ `a` 传 `compute()` 的结果只是**为了少读一次文件**（顺带留个口子给将来），
+      本函数**不再拿它对认识天数做任何回落**。
+    """
+    rec = (_load_users().get(str(uid)) or {})
+    met_day = str(rec.get("met_day") or "").strip()
+    return met_day, (days_since(met_day) if met_day else 0)
+
+
 def _known_uids():
     """
     ⭐ memory 里出现过的人 = **真的跟他说过话的人**（`memory/{QQ}.json` 等）。
@@ -189,25 +246,38 @@ def _current_uid(request: Request):
 
 app = FastAPI()
 
-CSS = """
-body{margin:0;padding:2rem 1rem;background:#FAFAF8;color:#222;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
+CSS = """/* 🎨 主题变量层（2026-09-30 预留，等「自定义美化」那批才真正用上）
+   ⚠ 现在每一项的值 = 接线前那些硬编码色值，**一字未改** ⇒ 渲染结果零变化。
+   ⚠ 已接线：这份全站 CSS + `page/home.py` 的 HOME_CSS。
+     还没接的：chat / menu / messages 那几份页面专用串 —— 等各自那批顺手换。 */
+:root{
+  --c-bg:#FAFAF8;--c-card:#fff;--c-ink:#222;--c-muted:#777;--c-hint:#999;
+  --c-line:rgba(0,0,0,.12);--c-line-2:rgba(0,0,0,.2);
+  --c-hair:rgba(0,0,0,.08);--c-hair-2:rgba(0,0,0,.1);
+  --c-brand:#D4537E;--c-brand-ink:#8E3556;--c-brand-soft:#EEF4FB;--c-brand-deep:#33506E;
+  --c-brand-halo:rgba(212,83,126,.18);--c-veil:rgba(0,0,0,.34);
+  --c-chip:#F3F1EC;--c-sunk:#EEE;--c-sunk-soft:#F2F2F2;
+  --c-danger:#B03030;--c-ok:#4CAF7D;--c-off:#B4B2A9;
+  --r-card:12px;--r-ctl:8px
+}
+body{margin:0;padding:2rem 1rem;background:var(--c-bg);color:var(--c-ink);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
 .wrap{max-width:560px;margin:0 auto}
-.card{background:#fff;border:0.5px solid rgba(0,0,0,.12);border-radius:12px;padding:1rem 1.25rem;margin-bottom:12px}
-.muted{color:#777} .hint{color:#999;font-size:12px}
+.card{background:var(--c-card);border:0.5px solid var(--c-line);border-radius:var(--r-card);padding:1rem 1.25rem;margin-bottom:12px}
+.muted{color:var(--c-muted)} .hint{color:var(--c-hint);font-size:12px}
 h1{font-size:16px;font-weight:500;margin:0 0 2px}
 h2{font-size:13px;font-weight:500;margin:0 0 10px}
 .big{font-size:26px;font-weight:500;margin:6px 0 10px}
-.bar{height:6px;background:#EEE;border-radius:3px;overflow:hidden}
-.bar>div{height:100%;background:#D4537E;border-radius:3px}
+.bar{height:6px;background:var(--c-sunk);border-radius:3px;overflow:hidden}
+.bar>div{height:100%;background:var(--c-brand);border-radius:3px}
 .grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-bottom:12px}
 .grid .card{margin:0;padding:1rem;text-align:center}
 .grid .n{font-size:20px;font-weight:500;margin-top:4px}
-.chip{display:inline-block;background:#F3F1EC;border-radius:999px;padding:4px 10px;font-size:12px;margin:0 8px 8px 0}
-.note{background:#EEF4FB;border-radius:8px;padding:1rem;margin-bottom:12px;font-size:12px;color:#33506E}
+.chip{display:inline-block;background:var(--c-chip);border-radius:999px;padding:4px 10px;font-size:12px;margin:0 8px 8px 0}
+.note{background:var(--c-brand-soft);border-radius:8px;padding:1rem;margin-bottom:12px;font-size:12px;color:var(--c-brand-deep)}
 .note ul{margin:6px 0 0;padding-left:18px}
-input,button{font:inherit;padding:8px 10px;border-radius:8px;border:0.5px solid rgba(0,0,0,.2);background:#fff}
-button{cursor:pointer;background:#222;color:#fff;border-color:#222;width:100%;margin-top:10px}
-.err{color:#B03030;font-size:12px}
+input,button{font:inherit;padding:8px 10px;border-radius:var(--r-ctl);border:0.5px solid var(--c-line-2);background:var(--c-card)}
+button{cursor:pointer;background:var(--c-ink);color:var(--c-card);border-color:var(--c-ink);width:100%;margin-top:10px}
+.err{color:var(--c-danger);font-size:12px}
 /* ⚠⭐ 2026-09-21 修过一次：这条原来只写在 CHAT_CSS（**详情页专用**）里，
    可**列表页 `/messages` 也在用** `class="plain"` ⇒ 那一页拿不到它，
    整块卡片就掉回浏览器默认的**蓝色下划线链接**（她一眼看出来的那个）。
@@ -220,13 +290,13 @@ a.plain{color:inherit;text-decoration:none;display:block}
    ⇒ 规矩复述：**共用的样式就放这份共用 CSS**，别塞进某一页的专用串里。
    ⚠ 只管「小部件级」的样式；`.footnav` / `.bar-bottom` 那种「必须是 `.wrap` 里
      那层 `.main` 的直接子元素」的布局件，继续留在各页 / 底座原处。 */
-.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#4CAF7D;
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--c-ok);
      margin-left:6px;vertical-align:middle}
 /* 卡片里**唯一**那个入口「展开查看 →」（她 2026-09-21 定的：
    别再拿 `<a>` 把整张卡包起来 —— 卡里除它以外都该是普通的字） */
-a.cta{color:#8E3556;text-decoration:none;font-size:12px}
-button.ghost{background:#fff;color:#777;border-color:rgba(0,0,0,.2)}
-img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:block;background:#EEF4FB}
+a.cta{color:var(--c-brand-ink);text-decoration:none;font-size:12px}
+button.ghost{background:var(--c-card);color:var(--c-muted);border-color:var(--c-line-2)}
+img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:block;background:var(--c-brand-soft)}
 /* ⭐ 2026-09-21 她定：**底部那一条钉在屏幕底部**（原话「让它一直保持在界面里」）——
    原本是每页各自一行居中的灰字链接，页面一长就跟着滚走。
    ⚠ 内容**一个字都没加**（还是各页原来那几个链接）—— 她之前定的「底部只留设置 / 退出」没动。
@@ -237,7 +307,7 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
      底下 `-2rem` 抵消 body 的 `padding:2rem`（滚到底时那条贴着屏幕最底下，不再悬空 2rem）。
    ⇒ 改 body 的左右/底部 padding，**必须同步改这三个 margin**。*/
 .footnav{position:sticky;bottom:0;z-index:10;
-         background:#FAFAF8;border-top:0.5px solid rgba(0,0,0,.1);
+         background:var(--c-bg);border-top:0.5px solid var(--c-hair-2);
          padding:10px 1rem;text-align:center;font-size:12px;
          margin:0 -1rem -2rem}
 /* 🧭 目录页那几行入口（2026-09-29 新增）—— 由 `_nav_list()` 渲染，
@@ -246,13 +316,13 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
    ⚠ `.navgap` 是「设置 / 退出」上面那道分隔：一个高度 12px 的空行。 */
 .who{display:flex;align-items:center;gap:11px;margin-bottom:18px}
 .who-n{font-size:16px;font-weight:500;margin:0;line-height:1.35}
-.who-s{font-size:12px;color:#999;margin:0;line-height:1.35}
+.who-s{font-size:12px;color:var(--c-hint);margin:0;line-height:1.35}
 .nav{display:flex;flex-direction:column}
 .nav>*{display:flex;justify-content:space-between;align-items:center;gap:8px;
-       padding:11px 2px;font-size:14px;color:#222;text-decoration:none;
-       border-bottom:0.5px solid rgba(0,0,0,.08)}
-.nav>a.on{font-weight:500;color:#8E3556}
-.nav>.off{color:#B4B2A9}
+       padding:11px 2px;font-size:14px;color:var(--c-ink);text-decoration:none;
+       border-bottom:0.5px solid var(--c-hair)}
+.nav>a.on{font-weight:500;color:var(--c-brand-ink)}
+.nav>.off{color:var(--c-off)}
 .nav>.navgap{height:12px;padding:0;display:block}
 .nav>*:last-child{border-bottom:none}
 
@@ -267,6 +337,8 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
      ⇒ 899 就会挤，900 刚好放得下。改任何一个数都要把这条重算。 */
 .side{display:none}
 @media(min-width:900px){
+  .main:has(> .footnav:not(.backonly)){align-self:stretch;display:flex;flex-direction:column}
+  .main:has(> .footnav:not(.backonly))>.footnav{margin:14px 0 -2rem;margin-top:auto}
   /* 整体靠左（不平分剩余空间）—— 照她看的那版 mockup */
   .wrap{max-width:none;margin:0;display:grid;
         grid-template-columns:172px minmax(0,660px);
@@ -282,8 +354,7 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
   /* 底栏那套「左右通栏 + 底下抵消 body padding」是给手机通栏设计的；桌面上它挂在
      660px 的内容列下面，通栏会横着溢出去 ⇒ 归零，紧贴内容列。 */
   .footnav{margin:14px 0 0}
-}
-"""
+}"""
 
 # 📱 模拟手机聊天那套外壳 —— `page/messages.py` 的详情页 + `page/chat.py` 的对话窗口**共用**。
 #    ⚠ 原文案是「只给那一页，别塞进全站 CSS 让每页都背一遍」，2026-09-29 拆文件时
@@ -379,6 +450,73 @@ def _avatar_url(uid):
     return "/avatar?v=%d" % v
 
 
+# 🖼 头像的**写入**三件套（2026-09-30 从 `page/avatar.py` 搬到这儿）。
+#    ⚠ 搬家的原因：现在**两个页面**都要传头像了 —— `/settings`（老地方）+ `/home/edit/profile`
+#      （主页新开的更改页，她 2026-09-30 要的）。原封不动复制一份 = 「按字节认图」这道
+#      安全逻辑出现两个副本，早晚只修一份。
+#    ⚠ 跟「QQ 端 / 网页端各写各的」那条**不冲突**：那说的是两端输入形态不同；
+#      这里是**同一个浏览器表单**被两个页面复用，形态一模一样。
+#    ⚠ 路由没搬（`/settings/avatar*` 还在 `page/avatar.py`）—— 搬的只是工具函数。
+def sniff_image(raw):
+    """
+    按**文件头**认图，返回 `png` / `jpg` / `webp` / `gif`；认不出来返回 `""`。
+
+    ⚠ 为什么不信 `content_type` 和文件名：那两个都是**客户端说了算的字符串**。
+      我们只信字节 —— 顺手把「传个脚本改名叫 .png」那条也堵掉。
+    """
+    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if raw.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if raw[:6] in (b"GIF87a", b"GIF89a"):
+        return "gif"
+    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
+        return "webp"
+    return ""
+
+
+def drop_avatar(uid):
+    """删掉这个用户已有的头像（换扩展名时别留垃圾）。返回删掉了几个。"""
+    safe = _safe_uid(uid)
+    if not safe:
+        return 0
+    n = 0
+    for ext in AVATAR_EXTS:
+        p = os.path.join(AVATAR_DIR, "%s.%s" % (safe, ext))
+        if os.path.isfile(p):
+            try:
+                os.remove(p)
+                n += 1
+            except OSError:
+                pass
+    return n
+
+
+def save_avatar(uid, raw):
+    """
+    校验并落盘头像。返回 `""` = 成功；否则返回**给她看的**错误文案（人话，不带后台词）。
+
+    校验一律看**字节**：① 空 => 没选到；② 超 `AVATAR_MAX` => 太大；
+    ③ `sniff_image()` 不认 => 不是真图。
+    ⚠ 落盘名 = `{洗过的 uid}.{嗅探出来的扩展名}` ⇒ 文件名完全由我们定，路径穿越无从谈起。
+    """
+    if not raw:
+        return "没选到图片，再试一次"
+    if len(raw) > AVATAR_MAX:
+        return "图太大了，换一张 2 MB 以内的"
+    ext = sniff_image(raw)
+    if not ext:
+        return "只认 png / jpg / webp / gif 这几种图"
+    safe = _safe_uid(uid)
+    if not safe:
+        return "账号信息不对，重新登录一下"
+    os.makedirs(AVATAR_DIR, exist_ok=True)
+    drop_avatar(uid)                       # 换了格式时别把旧的那张留成垃圾
+    with open(os.path.join(AVATAR_DIR, "%s.%s" % (safe, ext)), "wb") as f:
+        f.write(raw)
+    return ""
+
+
 def _esc(t):
     """素材 / 标题进页面前一律先转义 —— 是我们自己的文件，但别赌它永远没有尖括号。"""
     return html.escape(str(t or ""), quote=False)
@@ -410,21 +548,28 @@ def _lock_row(level, right=""):
 # ⚠ `state` 三档（决定渲染成 `<a>` 还是灰 `<span>`）：
 #     ""          正常，可点（必须有 href）
 #     "reserved"  预留位 —— 灰 + 右侧标「预留」
-#     "todo"      还没做 —— 灰 + 右侧标「待填」（「主页」现在就是这个状态）
+#     "todo"      还没做 —— 灰 + 右侧标「待填」（现在这一档已经清空了）
 #   ⚠ 灰项**一律 href 留空、渲染成 `<span>`** —— 点不动的东西不该是链接。
 # ⚠ 她 2026-09-29 定的两条：**「设置」沉到最下**（她原话「设置一般放在最下面哦」）；
 #   预留位**要显示出来**，不是藏起来。
 NAV_STATE_TAG = {"reserved": "预留", "todo": "待填"}
 
 NAV = [
-    {"label": "主页",       "href": "",          "state": "todo"},
+    # ⭐ 2026-09-30 点亮：主页（她自己的那一页）真的有了，见 `page/home.py`。
+    {"label": "主页",       "href": "/home",     "state": ""},
     {"label": "跟他说话",   "href": "/chat",     "state": ""},
     {"label": "牵绊短信",   "href": "/messages", "state": ""},
     {"label": "好感度后台", "href": "/affinity", "state": ""},
     {"label": "小游戏",     "href": "",          "state": "reserved"},
     {"label": "未来信件",   "href": "",          "state": "reserved"},
-    {"label": "纪念日",     "href": "",          "state": "reserved"},
-    {"label": "预留",       "href": "",          "state": "reserved"},
+    # ⭐ 2026-09-30 点亮：日记（`page/diary.py`）—— 他每几轮写下的那段话。
+    #    她定的：**「纪念日」这一格改成「日记」**（原先是没名字的预留位）。
+    #    ⚠ 位置不动：它本来就在「未来信件」和「美化主题」中间，改的只有名字和 href。
+    {"label": "日记",       "href": "/diary",    "state": ""},
+    # ⭐ 2026-09-30 她按截图定的：**「美化主题」就占这一格**（原先是没名字的「预留」）。
+    #    仍留 `reserved` —— 功能页还没做，**点不动的东西不该是链接**（等做了再把 href 填上）。
+    #    ⚠ 所以「自定义美化」那批的入口**在目录页这儿，不在 `/settings`**。
+    {"label": "美化主题",   "href": "",          "state": "reserved"},
     {"label": "预留",       "href": "",          "state": "reserved"},
 ]
 

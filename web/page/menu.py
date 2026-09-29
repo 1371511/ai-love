@@ -16,9 +16,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from base import (
     app, _page, _esc, _avatar_url, _current_uid, _load_users,
-    _nav_list, _who_block, MEMORY_DIR,
+    _nav_list, _who_block, MEMORY_DIR, met_known,
 )
-from Rafayel_affinity import compute, days_since
+from Rafayel_affinity import compute
 
 
 # 🖥 桌面（2026-09-29 第 3 步）：桌面上**左栏常驻**，而左栏渲染的就是这份入口列
@@ -45,12 +45,19 @@ async def menu_page(request: Request):
     # 显示名：网页自己存的优先，没有就用他记住的称呼（画像 name，来自 memory，只读）
     shown = (rec.get("display_name") or "").strip() or a["name"]
 
-    # ⭐ 「认识第 N 天」跟她自己填的那天走（`met_day` 优先于日志回填的 first_day）——
-    #    ⚠ 口径与 `page/affinity.py` 的头部完全一致；**这段只有两处用**，
-    #      将来出现第三处就把它下沉到 `base.py`（别再抄第三遍）。
-    met_day = (rec.get("met_day") or "").strip()
-    known = days_since(met_day) if met_day else (a.get("known_days") or 0)
-    sub = ("认识第 %d 天" % known) if known else "还没聊过"
+    # ⭐ 「认识第 N 天」跟她自己填的那天走。⚠⭐ 2026-09-30 她定的口径：
+    #    **没填相遇日就是空**（不再回落到日志回填的 first_day —— 见 `base.met_known()`）。
+    #    ⚠ 出现第三处用了 ⇒ 已经按当初的约定**下沉到 `base.met_known()`**，
+    #      三处（主页 / 好感度后台 / 这里）共用一份，别再抄。
+    met_day, known = met_known(uid, a)
+    if known:
+        sub = "认识第 %d 天" % known
+    elif met_day:
+        # 填了相遇日但算出来是 0（几乎不会走到）→ 当作确实还没说过话
+        sub = "还没聊过"
+    else:
+        # ⚠ 这里**不能写「还没聊过」** —— 她可能已经聊了很多，只是没填相遇日。
+        sub = "相遇那天还没填"
 
     # 🖼 头像：传了图就出图，没传退回「名字首字」小圆片（与 `/affinity` 同一口径）
     _av = _avatar_url(uid)

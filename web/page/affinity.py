@@ -17,8 +17,9 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from base import (
     app, _page, _esc, _load_users, _avatar_url, _current_uid, _backbar, MEMORY_DIR,
+    met_known,
 )
-from Rafayel_affinity import compute, days_since, cum_at, MAX_LEVEL, load_sms_nodes
+from Rafayel_affinity import compute, cum_at, MAX_LEVEL, load_sms_nodes
 
 
 @app.get("/affinity", response_class=HTMLResponse)
@@ -143,15 +144,13 @@ async def affinity(request: Request):
 
     # ⭐⭐ 「认识第 N 天」—— **她说哪天就是哪天**（2026-09-21 她的原话：
     #   「我给的是一个祁煜的载体，用户真正相遇的那天，由她们自己决定」）。
-    #   ⇒ 用户在 /settings 自己填 `met_day`；**她填的优先于日志回填的 first_day**
-    #     （bot 自己不记第一次是哪天，所以默认值只能来自她）。
+    #   ⇒ 用户在 /settings 或主页自己填 `met_day`。
+    # ⚠⭐ 2026-09-30 她补了一条口径：「认识多少天默认为空，直到补上相遇日再开始计算」
+    #   ⇒ **去掉了**原来那句「没填就拿日志回填的 first_day 顶一下」的回落
+    #     （那个 first_day 是从聊天日志倒推的，等于系统替她宣布了一个相识纪念日）。
+    #   ⇒ 逻辑统一在 `base.met_known()`，主页 / 目录页都走它，**别再在这儿写一份**。
     #   ⚠ 只写 `web/users.json`，**绝不写回 memory**（那份只读）。
-    met_day = (rec.get("met_day") or "").strip()
-    known = 0
-    if met_day:
-        known = days_since(met_day)
-    elif a.get("known_days"):
-        known = a["known_days"]
+    met_day, known = met_known(uid, a)
 
     if known:
         known_txt = "认识第 %d 天 · " % known
@@ -164,8 +163,10 @@ async def affinity(request: Request):
         sub = known_txt.rstrip(" · ") or "还没聊过"
 
     # 没填「相遇那天」⇒ 给一句引导（不然她根本不知道这个能自己定）
+    # ⚠ 2026-09-30 起指到**主页里那个编辑页**（跟「关于你」卡上那行是同一个入口）——
+    #   原来是 `/settings`，两处入口教两遍反而乱。
     if not met_day:
-        sub += ('　<a href="/settings" class="hint">你们是哪天相遇的？</a>')
+        sub += ('　<a href="/home/edit/met_day" class="hint">你们是哪天相遇的？</a>')
 
     # 🖼 头像：传了图就显示图；没传就退回「名字首字」那个小圆片（老样子）。
     #    ⚠ 尺寸保持 36px 没动 —— 换图的收益是「那是张真脸」，不是顺手把版式改一遍。

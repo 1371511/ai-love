@@ -558,8 +558,18 @@ def compute(user_id, memory_dir):
     missing = []
 
     turns = int(mem.get("turn_count") or 0)
-    facts = mem.get("key_facts") or []
-    prof_n = sum(len(prof.get(k) or []) for k in ("likes", "dislikes", "traits"))
+    # ⚠⚠ **不是列表就当没有**（2026-09-30 加）：它是 int / str 时，下面这行
+    #    `len(facts)` 会抛 TypeError ⇒ `/home` `/affinity` `/menu` **整页 500**
+    #    （这三个页面第一步都是 `compute()`，一个脏值躺谁都能打挂她）。
+    #    ⇒ 好感度只扣这一条分（按 0 条算），比整页打不开强得多。
+    #    ⚠ 同一道闸在 `Rafayel_memory.load_memory()` 与 `page/home.py:507` 各有一份，
+    #      三处口径必须一致（写侧 / 读侧 / 计分侧）。
+    _facts = mem.get("key_facts")
+    facts = _facts if isinstance(_facts, list) else []
+    # ⭐ 2026-09-30 删画像**不掉好感度** ⇒ 取「当前条数」与「历史峰值」的较大者。
+    #   老文件没有 prof_seen ⇒ 第二项是 0 ⇒ 结果与改动前完全一致，零迁移风险。
+    prof_n = max(sum(len(prof.get(k) or []) for k in ("likes", "dislikes", "traits")),
+                 int(prof.get("prof_seen") or 0))
 
     score = turns * PT_PER_TURN + len(facts) * PT_PER_FACT + prof_n * PT_PER_PROFILE
 

@@ -58,11 +58,24 @@ WRITER_MODULES = {
 # 网页端允许 import 的（全是只读）
 WEB_WHITELIST = {"Rafayel_affinity", "Rafayel_config"}
 
-# ⚠ 唯一开过口的写盘页（ADR-22）：对话窗口必须写 memory，否则她说的话不进记忆、白聊。
-#   值 = 这个文件**被允许** import 的模块白名单。**别往这里加新页 / 新模块** ——
-#   加一行 = 网页端只读红线又漏一个口子。命中后降级成 ⚪「已知开口」，不计入退出码。
-WEB_CHAT_EXCEPTION = {
+# ⚠ **唯三**开过口的写盘页（ADR-22）。值 = 这个文件**被允许** import 的模块白名单。
+#   **别随手往这里加新页 / 新模块** —— 加一行 = 网页端只读红线又漏一个口子。
+#   命中后降级成 ⚪「已知开口」，不计入退出码。
+#   · `chat.py`：对话窗口必须写 memory，否则她说的话不进记忆、白聊。
+#   · `home.py`：主页（2026-09-30 她定的「个人信息要能自己改」）—— 生日 / 称呼走画像，
+#     后面「他记住的你」「他记住的事」的增删改也归这一页，届时 `Rafayel_memory` 再加进来。
+WEB_WRITE_EXCEPTION = {
     "web/page/chat.py": {"Rafayel_chat", "Rafayel_daily"},
+    # ⭐ 第 4 批（2026-09-30）：主页「他记住的事」（key_facts）要能增删改
+    #   ⇒ 得写 `memory/{uid}.json` ⇒ 开了 `Rafayel_memory`。
+    #   ⚠ 这是本批**唯一**一次破 ADR-22 的例，别顺手再加别的模块。
+    "web/page/home.py": {"Rafayel_profile", "Rafayel_memory"},
+    # ⭐ 2026-09-30 日记页：她要在网页上增删改日记 ⇒ 得写 `memory/{uid}_diary.json`。
+    #   ⚠ **这里只重复用了 `Rafayel_memory` 这个模块**（不是新模块）—— 那一套
+    #     `*_diary_by_her()` 就住在里面（写钩子 `generate_summary()` 也在那文件里）。
+    #   ⚠ 为什么不再拆一个 `Rafayel_diary.py`：**每多一个模块，红线就多开一个口子**；
+    #     放 `Rafayel_memory` 里，这个开口只是**在已有的那条上再加一个文件名**。
+    "web/page/diary.py": {"Rafayel_memory"},
 }
 
 
@@ -183,7 +196,7 @@ def main():
         in_engine = any(("%s/" % d) in rel or rel.startswith("%s/" % d) for d in ENGINE_DIRS)
         is_web = rel.startswith("web/")
         # 这一页被允许 import 的写盘/引擎模块（默认空 = 什么都不许）
-        opened = WEB_CHAT_EXCEPTION.get(rel, ()) if is_web else ()
+        opened = WEB_WRITE_EXCEPTION.get(rel, ()) if is_web else ()
 
         for m, name, ln in imported(t):
             if m not in mods:
@@ -204,18 +217,18 @@ def main():
             if me == "Rafayel_config":
                 red.append((rel, ln, "Rafayel_config 依赖了本项目模块 %s（会循环导入）" % m))
 
-            # ④ 网页端只读红线（唯一开口见 WEB_CHAT_EXCEPTION）
+            # ④ 网页端只读红线（唯二开口见 WEB_WRITE_EXCEPTION）
             if is_web and m in WRITER_MODULES:
                 if m in opened:
                     known.append((rel, ln,
-                                  "对话窗口按 ADR-22 开口：用了写盘模块 %s（开口只限本页）" % m))
+                                  "按 ADR-22 开口：本页用了写盘模块 %s（开口只限本页）" % m))
                 else:
                     red.append((rel, ln,
                                 "网页端 import 了写盘模块 %s（红线：web 只读 memory）" % m))
             if is_web and m in LAYER and m not in WEB_WHITELIST:
                 if m in opened:
                     known.append((rel, ln,
-                                  "对话窗口按 ADR-22 开口：用了引擎模块 %s（开口只限本页）" % m))
+                                  "按 ADR-22 开口：本页用了引擎模块 %s（开口只限本页）" % m))
                 else:
                     yellow.append((rel, ln, "网页端 import 了引擎模块 %s（确认它只读？）" % m))
 

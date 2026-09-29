@@ -89,6 +89,22 @@ BDAY_PATTERNS = [
 BDAY_OTHER_RE = re.compile(r"(祁煜|他|她|它|别人|人家)")
 
 
+def _bday_canon(value: str) -> str:
+    """
+    🎂 「3月6号」/「3/6」/「03-06」 ⇒ 一律收成 `MM-DD`；认不出来返回 ""。
+
+    ⭐ 2026-09-30 加（主页第 2 批「清除生日」逼出来的坑）：
+      抑制名单里存的是**存储格式**（`03-06`），而两条自动轨喂进来的永远是**原话**
+      （「我生日是3月6号」里抓出来的是 `3月6号`）—— 拿 `_norm()` 比字面，这两样
+      八辈子对不上 ⇒ 她刚点掉的生日，下一句就自己长回来了，等于「清除」白点。
+      ⇒ 生日这一档**必须先规范到 MM-DD 再比**。
+    """
+    m = _BDAY_VALUE_RE.search(value or "")
+    if not m:
+        return ""
+    return _parse_birthday(m.group(1), m.group(2))
+
+
 def _parse_birthday(month, day):
     """
     (月, 日) ⇒ 规范成 `MM-DD`；不合法返回 ""。
@@ -156,6 +172,10 @@ class UserProfile:
             "traits": [],
             "birthday": None,
             "updated_at": None,
+            # 👇 2026-09-30 主页「可改可删」配套；三个都是新增字段 ⇒ 现有数据零迁移
+            "suppressed": {},   # {kind: [原话...]} 她删掉的 —— 两条轨都不许再写回来
+            "manual": {},       # {kind: 值 或 [原话...]} 她手写的 —— 只进 prompt，不计好感度
+            "prof_seen": 0,     # 自动项条数的历史峰值（只涨不跌）⇒ 删一条不掉好感度
         }
         self.load()
 
@@ -171,6 +191,10 @@ class UserProfile:
                 else:
                     self.data[k] = list(saved.get(k) or [])
             self.data["updated_at"] = saved.get("updated_at")
+            self.data["suppressed"] = dict(saved.get("suppressed") or {})
+            self.data["manual"] = dict(saved.get("manual") or {})
+            # 老文件没有 prof_seen ⇒ 用「现在的条数」补齐（一次性迁移）
+            self.data["prof_seen"] = int(saved.get("prof_seen") or 0) or self._auto_n()
         except Exception as e:
             print(f"⚠️ 读取用户画像失败（{self.user_id}）：{e}，将从空画像开始")
 
@@ -193,6 +217,9 @@ class UserProfile:
         loose=True （LLM 轨）       ：先归一化再比，能收「吃甜的」/「甜食」这类语义重复。
         """
         value = (value or "").strip()
+        # 她删过的东西不许再长回来（比归一化后的值 —— 双轨写进来的都是原话）
+        if self._is_suppressed(kind, value):
+            return False
         if kind == "birthday":
             return self._set_birthday(value, loose=loose)
         if kind == "name":
@@ -218,7 +245,74 @@ class UserProfile:
         bucket.append(value)                   # 存原话，不存归一化结果
         if len(bucket) > MAX_PROFILE_ITEMS:
             self.data[kind] = bucket[-MAX_PROFILE_ITEMS:]
+        self._bump_seen()                      # 峰值只涨不跌 ⇒ 她删一条好感度不掉
         return True
+
+    def _is_suppressed(self, kind: str, value: str) -> bool:
+        """她删过的东西 ⇒ 两条轨（规则实时 / LLM 每 8 轮）都不许再写回来。"""
+        bucket = (self.data.get("suppressed") or {}).get(kind) or []
+        # 🎂 生日比**规范后的 MM-DD**（原话 vs 存储格式对不上，见 `_bday_canon`）
+        if kind == "birthday":
+            cand = _bday_canon(value)
+            return bool(cand) and any(_bday_canon(old) == cand for old in bucket)
+        cand = _norm(value)
+        return any(_norm(old) == cand for old in bucket if _norm(old))
+
+    def _auto_n(self) -> int:
+        """自动抽取到的条数（**不含** manual） —— 好感度计的就是这个。"""
+        return sum(len(self.data.get(k) or []) for k in ("likes", "dislikes", "traits"))
+
+    def _bump_seen(self) -> None:
+        """历史峰值只涨不跌 ⇒ 她删一条，好感度不掉（2026-09-30 她定）。"""
+        n = self._auto_n()
+        if n > int(self.data.get("prof_seen") or 0):
+            self.data["prof_seen"] = n
+
+    def suppress(self, kind: str, value: str) -> bool:
+        """
+        删一条（她在主页点「删」）。返回是否有变化。
+
+        ⭐ 不只是从列表里拿掉 —— 必须**留痕**，否则规则轨 / LLM 轨下一轮就写回来
+        （LLM 轨还是宽松去重，模型换个说法直接算新的一条）。
+        ⚠ 好感度**不掉**（`prof_seen` 只涨不跌；计分方见 `Rafayel_affinity.compute`）。
+        """
+        if kind not in self.KINDS:
+            return False
+        changed = False
+        if kind in self.SCALAR_KINDS:                     # name / birthday 是单值
+            if self.data.get(kind):
+                self.data[kind] = None
+                changed = True
+        else:
+            bucket = self.data.get(kind) or []
+            rest = [v for v in bucket if _norm(v) != _norm(value)]
+            if len(rest) != len(bucket):
+                self.data[kind] = rest
+                changed = True
+        sup = self.data.setdefault("suppressed", {})
+        lst = sup.setdefault(kind, [])
+        nv = _norm(value)
+        if nv and not any(_norm(x) == nv for x in lst):
+            lst.append(value)                             # 存原话，比对时再归一化
+            changed = True
+        return changed
+
+    def unsuppress(self, kind: str, value: str) -> bool:
+        """恢复 —— 把一条从抑制名单里放出来，允许自动轨重新学到。"""
+        sup = self.data.get("suppressed") or {}
+        lst = sup.get(kind) or []
+        # 🎂 同一条规矩：生日按 MM-DD 比（否则她用「3月6号」设回来时，名单里那条清不掉）
+        if kind == "birthday":
+            cand = _bday_canon(value)
+            rest = [x for x in lst if not (cand and _bday_canon(x) == cand)]
+        else:
+            nv = _norm(value)
+            rest = [x for x in lst if _norm(x) != nv]
+        if len(rest) == len(lst):
+            return False
+        sup[kind] = rest
+        return True
+
 
     def _set_birthday(self, value: str, loose: bool = False) -> bool:
         """
@@ -243,6 +337,136 @@ class UserProfile:
             return False
         self.data["birthday"] = mmdd
         return True
+
+    def set_by_her(self, kind: str, value: str) -> bool:
+        """
+        🌐 她**自己在网页上设的**（2026-09-30 主页第 2 批）。返回是否有变化。
+
+        ⭐ 跟两条自动轨的区别：自动轨怕记错，所以堆了一堆闸门（就近否定 / 别人主语 /
+          宽松去重 / LLM 轨不覆盖生日）；**她自己填的就是标准答案**，所以这里
+            · **一律允许覆盖** —— 她说改就改（生日走 `_set_birthday(loose=False)`，本来就允许改）
+            · **先 `unsuppress` 再写** —— 否则她删过一次、又想设回来时会被 `_is_suppressed`
+              挡住；那道闸是防自动轨的，**不该防她本人**。
+        ⚠ `value` 为空 = 她想**清掉** ⇒ 走 `suppress()`（留痕），自动轨才不会转头又写回来。
+        ⚠ 只收 `name` / `birthday` 这两个**单值**项（`SCALAR_KINDS`）；
+          三类数组项（likes/dislikes/traits）走下面那三个 `*_by_her`（要区分「自动 / 手写」）。
+        """
+        if kind not in self.KINDS:
+            return False
+        value = (value or "").strip()
+        if not value:
+            # ⚠ `suppress()` 只改内存、**不落盘**（它的调用方各自决定何时写）
+            #   ⇒ 这里必须自己 save，否则「清除」在页面上看着生效了，一刷新又回来了。
+            changed = self.suppress(kind, self.data.get(kind) or "")
+            if changed:
+                self.save()
+            return changed
+        if kind not in self.SCALAR_KINDS:
+            return False
+        self.unsuppress(kind, value)
+        changed = False
+        if kind == "birthday":
+            changed = self._set_birthday(value)     # loose=False ⇒ 允许改（她自己设的）
+        else:                                       # name
+            v = NAME_PARTICLE_RE.sub("", value).strip()
+            # ⚠ 代词/语气助词那两道闸**照样拦**（她填「你」「我」这种，填了也白填）
+            if v and not NAME_PRONOUN_RE.search(v) and len(v) <= 30 \
+                    and self.data.get("name") != v:
+                self.data["name"] = v
+                changed = True
+        if changed:
+            self.save()
+        return changed
+
+    def add_by_her(self, kind: str, value: str) -> bool:
+        """
+        🌐 她**自己在网页上加一条**（2026-09-30 主页第 3 批）。返回是否有变化。
+
+        ⭐ 写进 `manual[kind]`，**不写**自动项（`likes` / `dislikes` / `traits`）：
+          那三个是「他**自己观察**出来的」，好感度照它们算（`_auto_n()`）；
+          她手写的混进去 ⇒ 好感度能自己刷上去，系统就假了。
+        ⭐ 先 `unsuppress`：她删过一次又想加回来时，不该被那道闸挡住 ——
+          那道闸是防**自动轨**的，**不该防她本人**（跟 `set_by_her` 同一个道理）。
+        ⚠ 自动项里已经有了 ⇒ 不重复写（界面上已经摆着一条了，再写一条是同义重复）。
+        """
+        if kind not in self.KINDS or kind in self.SCALAR_KINDS:
+            return False
+        value = (value or "").strip()
+        if not value or len(value) > 30:
+            return False
+        if any(_norm(x) == _norm(value) for x in (self.data.get(kind) or [])):
+            return False                       # 他已经记过了，界面上有
+        self.unsuppress(kind, value)
+        man = self.data.setdefault("manual", {}).setdefault(kind, [])
+        if any(_norm(x) == _norm(value) for x in man):
+            return False
+        man.append(value)
+        if len(man) > MAX_PROFILE_ITEMS:
+            self.data["manual"][kind] = man[-MAX_PROFILE_ITEMS:]
+        self.save()
+        return True
+
+    def edit_by_her(self, kind: str, old: str, new: str) -> bool:
+        """
+        🌐 她**自己在网页上改一条**（2026-09-30 主页第 3 批）。返回是否有变化。
+
+        ⭐ 改过的那条**已经不是他观察出来的了**，是她定的 ⇒
+          · 旧值在**自动项** ⇒ `suppress()` 撤下（留痕，防自动轨写回）+ 新值写进 `manual`
+          · 旧值本来就在 **`manual`** ⇒ 就地替换
+        ⚠ 一律 `save()`（`suppress()` 只改内存，第 2 批踩过的 P0）。
+        """
+        if kind not in self.KINDS or kind in self.SCALAR_KINDS:
+            return False
+        old = (old or "").strip()
+        new = (new or "").strip()
+        if not old or not new or len(new) > 30 or _norm(old) == _norm(new):
+            return False
+        man = self.data.setdefault("manual", {}).setdefault(kind, [])
+        in_man = any(_norm(x) == _norm(old) for x in man)
+        in_auto = any(_norm(x) == _norm(old) for x in (self.data.get(kind) or []))
+        if not in_man and not in_auto:
+            return False                       # 这条根本不存在，改不了
+        changed = False
+        if in_man:
+            self.data["manual"][kind] = [new if _norm(x) == _norm(old) else x
+                                         for x in man]
+            changed = True
+        else:
+            if self.suppress(kind, old):        # 从自动项撤下 + 留痕
+                changed = True
+            self.unsuppress(kind, new)          # 新值不许被旧值的抑制名单误伤
+            man = self.data.setdefault("manual", {}).setdefault(kind, [])
+            if not any(_norm(x) == _norm(new) for x in man):
+                man.append(new)
+                changed = True
+        if changed:
+            self.save()
+        return changed
+
+    def delete_by_her(self, kind: str, value: str) -> bool:
+        """
+        🌐 她**自己在网页上删一条**（2026-09-30 主页第 3 批）。返回是否有变化。
+
+        ⭐ 跟直接调 `suppress()` 的区别：`suppress()` 只管**自动项**，
+          可她要删的也可能是**她自己填的**（在 `manual` 里）—— 那条同样要留痕，
+          否则她删了自己填的「甜的」，转头规则轨从对话里又学回一个「甜的」，白删。
+        ⚠ **必须 `save()`** —— `suppress()` 只改内存（第 2 批踩过的 P0）。
+        ⚠ 好感度**不掉**（`prof_seen` 只涨不跌）。
+        """
+        if kind not in self.KINDS or kind in self.SCALAR_KINDS:
+            return False
+        value = (value or "").strip()
+        if not value:
+            return False
+        changed = self.suppress(kind, value)     # 自动项（有就撤）+ 留痕
+        man = self.data.setdefault("manual", {}).setdefault(kind, [])
+        rest = [v for v in man if _norm(v) != _norm(value)]
+        if len(rest) != len(man):
+            self.data["manual"][kind] = rest
+            changed = True
+        if changed:
+            self.save()
+        return changed
 
     def merge(self, patch: dict) -> bool:
         """合并一组提取结果（规则命中 或 LLM 总结）。返回是否有变化。"""
@@ -311,7 +535,13 @@ class UserProfile:
         if self.data.get("name"):
             lines.append(f"- 她让你这样叫她：{self.data['name']}")
         for kind, label in (("likes", "喜欢"), ("dislikes", "不吃/不喜欢"), ("traits", "其他")):
-            items = self.data.get(kind) or []
+            # ⭐ 2026-09-30 第 3 批：**她自己填的（`manual`）也要进 prompt** ——
+            #   不然她在网页上添了一条，他压根不知道，等于「填了没用」。
+            #   ⚠ 自动项在前、她填的在后 ⇒ 跟界面上的顺序一致，好排查。
+            items = list(self.data.get(kind) or [])
+            for v in ((self.data.get("manual") or {}).get(kind) or []):
+                if not any(_norm(x) == _norm(v) for x in items):
+                    items.append(v)
             if items:
                 lines.append(f"- {label}：{'、'.join(items)}")
         # 🎂 生日照常注入：他得知道，不然她生日当天他只会发那条朋友圈、聊天里却不会说一句。

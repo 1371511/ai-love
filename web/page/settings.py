@@ -1,14 +1,19 @@
 # -*- coding: utf-8 -*-
 """
-⚙️ 设置（`/settings`）—— 显示名 / 「你们相遇的那天」/ 改密码。
+⚙️ 设置（`/settings`）—— 显示名 / 改密码 / 头像。
 
 路由：
   GET  `/settings`   设置页
-  POST `/settings`   保存
+  POST `/settings`   保存（显示名 + 改密码）
 
 ⭐ 2026-09-21 她提的：原来是「没有改密码的地方」。
 ⚠ 只写 `web/users.json` —— **绝不碰 bot 的 memory**（那份只读，写坏他人设就崩）。
   ⇒ 所以「他怎么叫她」不在这里改，那得在 QQ 里跟他说。
+
+⚠⭐ 2026-09-30 她提：「/settings 里『你们相遇的那天』，不要了」
+  ⇒ 那一格**已从本页移除**，相遇日现在**只有一处**能改：
+     主页「关于你」卡里那一行 → `/home/edit/met_day`。
+  ⇒ 数据字段（users.json 的 `met_day`）**保留不动**，只是本页不再展示/不再写入。
 """
 import hmac
 
@@ -20,29 +25,10 @@ from base import (
     _backbar,
 )
 
-
-def _check_met_day(day, uid=""):
-    """
-    校验「你们相遇的那天」。返回错误文案（人话），没问题返回空串。
-
-    ⭐ 只校验**格式与常识**，**不替她决定是哪天** —— 这是她自己说了算的事。
-    ⚠ 错误文案会进 URL ⇒ 别写引号、别写换行；也**不许出现后台词**。
-    """
-    import re
-    import datetime
-    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", day or "")
-    if not m:
-        return "日期写得不对，照年-月-日那样填"
-    try:
-        d = datetime.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    except ValueError:
-        return "这个日期不存在，再看看"
-    today = datetime.date.today()
-    if d > today:
-        return "那天还没到呢"
-    if d.year < 2000:
-        return "太早了，换一个近点的日子"
-    return ""
+# ⚠⭐ `met_day`（你们相遇那天）2026-09-30 **已移出本页** —— 唯一入口是主页
+#    `/home/edit/met_day`。原先在本页并用到的 `_check_met_day()` 也随之搬到
+#    `web/base.py`（`page/home.py` 从那里 import）。
+#    ⚠ 别在本页再加一个日期框 —— 她明确说过「不要了」。
 
 
 @app.get("/settings", response_class=HTMLResponse)
@@ -58,7 +44,6 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         return RedirectResponse("/")
     rec = (_load_users().get(uid) or {})
     name = (rec.get("display_name") or "").strip()
-    met_day = (rec.get("met_day") or "").strip()
 
     # ⚠ `ok` / `err` 都是从 **URL** 来的 ⇒ 一律**转义**再进 HTML。
     #    不然 `?err=<script>…` 这种链接发给别人点，就是一个反射型 XSS。
@@ -104,10 +89,6 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
         <div><input name="display_name" value="%s" placeholder="留空就用他记住的称呼"
                     style="width:100%%;box-sizing:border-box"></div>
 
-        <h2 style="margin-top:18px">你们相遇的那天</h2>
-        <div><input name="met_day" type="date" value="%s"
-                    style="width:100%%;box-sizing:border-box"></div>
-
         <h2 style="margin-top:18px">改密码</h2>
         <div><input name="old_pwd" type="password" placeholder="现在的密码"
                     style="width:100%%;box-sizing:border-box"></div>
@@ -132,16 +113,21 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
       </form>
       %s
     </div>
-    %s""" % (_mask_uid(uid), msg, name, met_day, av_preview, av_state, av_remove, _backbar())
+    %s""" % (_mask_uid(uid), msg, name, av_preview, av_state, av_remove, _backbar())
     return _page(body, title="设置")
 
 
 @app.post("/settings")
 async def settings_save(request: Request, display_name: str = Form(""),
-                        met_day: str = Form(""),
                         old_pwd: str = Form(""), new_pwd: str = Form(""),
                         new_pwd2: str = Form("")):
-    """保存设置。⭐ 只能改**自己**的那条（uid 来自签名 cookie，不信任前端传的）。"""
+    """
+    保存设置。⭐ 只能改**自己**的那条（uid 来自签名 cookie，不信任前端传的）。
+
+    ⚠⭐ 2026-09-30 起本页**不再管 `met_day`**（她：「/settings 里『你们相遇的那天』不要了」）。
+      ⇒ 这里**绝不能**再出现 `rec["met_day"] = ...`：字段删掉后它会被写成空，
+        等于把她在主页填的日子抹掉。数据留给 `/home/edit/met_day` 那一条路。
+    """
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
@@ -154,13 +140,6 @@ async def settings_save(request: Request, display_name: str = Form(""),
     name = (display_name or "").strip()
     new_pwd = (new_pwd or "").strip()
 
-    # ⭐ 「相遇那天」—— 她自己填的，我们只做**格式与常识**校验，不替她决定是哪天。
-    day = (met_day or "").strip()
-    if day:
-        err = _check_met_day(day, uid)
-        if err:
-            return RedirectResponse("/settings?err=" + err, status_code=303)
-
     if new_pwd:
         if not old_pwd or not hmac.compare_digest(rec.get("pwd", ""), _hash(old_pwd)):
             return RedirectResponse("/settings?err=" + "现在的密码不对", status_code=303)
@@ -170,8 +149,9 @@ async def settings_save(request: Request, display_name: str = Form(""),
             return RedirectResponse("/settings?err=" + "两次输入的新密码不一样", status_code=303)
         rec["pwd"] = _hash(new_pwd)
 
+    # ⭐ **只写这两个字段**。别顺手 `rec[k] = v` 遍历整个 form ——
+    #   那样会把没在本表单里的字段（比如 `met_day`）写成空/null。
     rec["display_name"] = name
-    rec["met_day"] = day
     users[uid] = rec
     _save_users(users)
     return RedirectResponse("/settings?ok=" + "已保存", status_code=303)

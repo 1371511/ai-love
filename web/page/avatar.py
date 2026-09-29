@@ -15,6 +15,9 @@
 
 🗂 读头像的小工具（`_avatar_file` / `_avatar_url`）在 `base.py`：
    它们被「我的页 / 设置 / 对话窗口」三处共用，不属于这一条路由。
+⭐ 2026-09-30：**写头像**那三件套（`sniff_image` / `drop_avatar` / `save_avatar`）也搬去了
+   `base.py` —— 主页新开的 `/home/edit/profile` 要用同一份「按字节认图」的逻辑。
+   ⚠ 本文件的路由名**没变**（还是 `/settings/avatar*`），设置页照旧能用。
 """
 import os
 
@@ -22,7 +25,9 @@ from fastapi import File, Request, UploadFile
 from fastapi.responses import FileResponse, RedirectResponse
 
 from base import (
-    app, _current_uid, _safe_uid, _avatar_file, AVATAR_DIR, AVATAR_EXTS, AVATAR_MAX, BASE,
+    app, _current_uid, _avatar_file, AVATAR_MAX, BASE,
+    # 🖼 写入三件套 2026-09-30 搬去了 `base.py`（`/home/edit/profile` 也要用同一份）
+    save_avatar, drop_avatar,
 )
 
 # 🖼 祁煜**自己的**头像（2026-09-21 她给的那张蓝海油画 —— 用在短信详情页的聊天气泡上）
@@ -33,79 +38,27 @@ ASSET_DIR = os.path.join(BASE, "web", "assets")
 ASSET_FILES = {"qiyu": "qiyu.jpg"}
 
 
-def _sniff_image(raw):
-    """
-    按**文件头**认图，返回 `png` / `jpg` / `webp` / `gif`；认不出来返回 `""`。
-
-    ⚠ 为什么不信 `content_type` 和文件名：那两个都是**客户端说了算的字符串**。
-      我们只信字节 —— 顺手把「传个脚本改名叫 .png」那条也堵掉。
-    """
-    if raw.startswith(b"\x89PNG\r\n\x1a\n"):
-        return "png"
-    if raw.startswith(b"\xff\xd8\xff"):
-        return "jpg"
-    if raw[:6] in (b"GIF87a", b"GIF89a"):
-        return "gif"
-    if len(raw) >= 12 and raw[:4] == b"RIFF" and raw[8:12] == b"WEBP":
-        return "webp"
-    return ""
-
-
-def _drop_avatar(uid):
-    """删掉这个用户已有的头像（换扩展名时别留垃圾）。返回删掉了几个。"""
-    safe = _safe_uid(uid)
-    if not safe:
-        return 0
-    n = 0
-    for ext in AVATAR_EXTS:
-        p = os.path.join(AVATAR_DIR, "%s.%s" % (safe, ext))
-        if os.path.isfile(p):
-            try:
-                os.remove(p)
-                n += 1
-            except OSError:
-                pass
-    return n
-
-
 @app.post("/settings/avatar")
 async def avatar_upload(request: Request, pic: UploadFile = File(None)):
     """
     上传头像。**零 JS**：就是一个普通 multipart 表单，提交完 303 回设置页。
 
-    ⚠ 校验一律看**字节**，不信客户端报的 `content_type` / 文件名：
-      ① 只读 `AVATAR_MAX + 1` 字节 ⇒ 超大文件不会先把内存吃掉；
-      ② `_sniff_image()` 认**文件头** ⇒ 不是真图就拒（改名的假图也拦得住）；
-      ③ 落盘名 = `{洗过的 uid}.{嗅探出来的扩展名}` ⇒ 文件名完全由我们定，路径穿越无从谈起。
+    ⚠ 校验 / 落盘全在 `base.save_avatar()` 里（2026-09-30 搬过去的）——
+      本路由只管「收字节 + 回哪一页」。那儿不放心的话去看那一份，别在这儿再写一遍。
+    ⚠ 只读 `AVATAR_MAX + 1` 字节 ⇒ 超大文件不会先把内存吃掉。
     """
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
-    if not _safe_uid(uid):
-        return RedirectResponse("/settings?err=" + "账号信息不对，重新登录一下", status_code=303)
-
     raw = b""
     if pic is not None:
         try:
             raw = await pic.read(AVATAR_MAX + 1)
         except Exception:
             raw = b""
-
-    if not raw:
-        return RedirectResponse("/settings?err=" + "没选到图片，再试一次", status_code=303)
-    if len(raw) > AVATAR_MAX:
-        return RedirectResponse("/settings?err=" + "图太大了，换一张 2 MB 以内的", status_code=303)
-
-    ext = _sniff_image(raw)
-    if not ext:
-        return RedirectResponse("/settings?err=" + "只认 png / jpg / webp / gif 这几种图",
-                                status_code=303)
-
-    os.makedirs(AVATAR_DIR, exist_ok=True)
-    _drop_avatar(uid)                      # 换了格式时别把旧的那张留成垃圾
-    dst = os.path.join(AVATAR_DIR, "%s.%s" % (_safe_uid(uid), ext))
-    with open(dst, "wb") as f:
-        f.write(raw)
+    err = save_avatar(uid, raw)
+    if err:
+        return RedirectResponse("/settings?err=" + err, status_code=303)
     return RedirectResponse("/settings?ok=avatar", status_code=303)
 
 
@@ -115,7 +68,7 @@ async def avatar_remove(request: Request):
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
-    _drop_avatar(uid)
+    drop_avatar(uid)
     return RedirectResponse("/settings?ok=avatar_off", status_code=303)
 
 
