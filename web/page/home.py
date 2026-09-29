@@ -47,9 +47,15 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 
 from base import (
     app, _page, _esc, _safe_uid, _avatar_url, _load_users, _save_users, _current_uid,
-    _backbar, MEMORY_DIR, MENU_PATH, AVATAR_MAX, drop_avatar, save_avatar,
+    _backbar, _two_way_footer, MEMORY_DIR, MENU_PATH, AVATAR_MAX,
+    drop_avatar, save_avatar,
     _check_met_day, met_known,
 )
+# ⚠ `_two_way_footer` 原本**定义**在本文件里（2026-09-30 加的），**当天就下沉到 `base.py`** ——
+#   因为她要求「日记功能页的底栏也一样」，日记那两个页也要同款底栏。
+#   再留在这儿，`page/diary.py` 就只能反向 import 本页（方向脏）或抄一份（口径迟早漂）。
+#   ⇒ 跟 `met_known()` / `_check_met_day()` 一样处理：**唯一实现放共用底座**。
+#   本文件里所有调用点**一个字没改**，只是来源从本模块变成了 `base`。
 from Rafayel_affinity import compute
 # ⚠ 这两个是本页**仅有的**写盘入口（ADR-22 开口，见 `tools/check_static.py` 的
 #   `WEB_WRITE_EXCEPTION`）。别再往下加第三个写盘模块 —— 加一个就得再开口子一次。
@@ -89,26 +95,6 @@ _EDITABLE_USERJSON = {
                 "填你们认识的那一天（带年份）。填上之后，「认识」才开始算。",
                 "2026-09-22"),
 }
-
-
-def _two_way_footer(href, label):
-    """
-    底部那一条**带两个动作**的导航 —— 她 2026-09-30 定的：`‹ 回主页 · ‹ 返回目录`。
-    （位置跟别页的底栏**一致**：还是 `.footnav` 那条贴底的通栏。）
-
-    ⚠ **不能用 `base._backbar()`**：那个只渲染「‹ 返回目录」一个，而且带 `backonly` 类
-      （桌面版按它把整条藏掉）。底栏里**但凡还有别的动作就不能带那个类** —— 这是底座里
-      写死的规矩。⇒ 所以这一页自己拼一条，桌面也照显示。
-    ⚠ 必须是内容列 `.main` 的**直接子元素**，`position:sticky` 才贴得住（跟别页同一个道理）。
-
-    ⭐ 2026-09-30 她提：「两个位置不要靠太近，容易误按」⇒ 改成 **左右各占一半**
-      （`.twobar`），点击区是整半条，中间空 12px。原来那种「A · B」中间只隔一个点，
-      手指一点就戳错。
-    """
-    return ('<p class="footnav"><span class="twobar">'
-            '<a href="%s" class="hint">%s</a>'
-            '<a href="%s" class="hint">‹ 返回目录</a>'
-            '</span></p>' % (href, label, MENU_PATH))
 
 
 # 🏠 本页专用样式（走 `_page(..., css=...)`，**不动全站那份 CSS**）
@@ -1030,6 +1016,12 @@ async def home_edit(request: Request, kind: str, err: str = ""):
                    % (_esc(cur), _esc(ph)))
 
     msg = '<p class="err">%s</p>' % _esc(err) if err else ""
+    # 🗑 「清除」对相遇日是有意义的：删掉之后就回到「还没填 / 认识 —」。
+    #    ⚠ 名字 / 生日没有这句 ⇒ **整段不渲染**（原来拼的是一个空 `<p>`，
+    #      会卡在卡片最底部留一段 10px 的空白，那个位置现在归底栏了）。
+    hint = ('<p class="hint" style="margin:10px 0 0">'
+            '清除相遇日之后，「认识」会回到空白，直到你重新填上。</p>'
+            if is_userjson else "")
     body = """
     <div class="card">
       <h2>%s</h2>
@@ -1040,14 +1032,18 @@ async def home_edit(request: Request, kind: str, err: str = ""):
         <button type="submit" name="act" value="save">保存</button>
         <button type="submit" name="act" value="clear" class="ghost">清除</button>
       </form>
-      <p class="hint" style="margin:10px 0 0">%s</p>
-      <p style="margin:6px 0 0"><a href="/home" class="hint">‹ 取消</a></p>
+      %s
     </div>
     %s
-    """ % (_esc(title), _esc(note), msg, control,
-           # 🗑 「清除」对相识日是有意义的：删掉之后就回到「还没填 / 认识 —」。
-           "清除相遇日之后，「认识」会回到空白，直到你重新填上。" if is_userjson else "",
-           _backbar())
+    """ % (_esc(title), _esc(note), msg, control, hint,
+           # ⭐ 2026-09-30 她按截图定的：卡片里那个「‹ 取消」**去掉**，
+           #   统一走底部栏 —— 跟「更改」页（`/home/edit/profile`）同款
+           #   `‹ 回主页 · ‹ 返回目录`。
+           #   ⚠ 为什么该去：那个「取消」的去向就是 `/home`，跟「回主页」**重复**，
+           #     挂在卡片里还多占一行、多一个误按点。
+           #   ⚠ 底部栏**不能**用 `_backbar()`：那个只渲染一个动作，而且带 `backonly`
+           #     类 —— 桌面版按它把整条藏掉（底座里写死的规矩）。
+           _two_way_footer("/home", "‹ 回主页"))
     return _page(body)
 
 

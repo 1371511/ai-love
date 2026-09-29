@@ -296,6 +296,36 @@ def load_memory(user_id: str, cm) -> bool:
         return False
 
 
+def _read_key_facts(user_id: str):
+    """
+    只从 `memory/{uid}.json` 里取 `key_facts` 这一格（**纯读**：不建文件、不写一个字节）。
+
+    ⚠⚠ 为什么单独有这么一个函数（2026-09-30，B 方案）：
+      `ConversationManager.key_facts` 是**进程级缓存**（`load_memory()` 只在首次访问时读一次），
+      而 `save_memory()` 写的是**整份缓存** ⇒ 她在网页上改的「他记住的事」
+      会被下一轮对话整份盖回去。⇒ 每轮开头拿本函数把这一格换成磁盘上的**真值**。
+
+    ⚠ 读不到 ⇒ 返回 `None`（**不是** `[]`）。「文件读坏了 / 拿不到」和「她就是空的」
+      是两件事：前者若当空表用，下一轮 `save_memory()` 就把她记的东西全冲掉。
+      `None` 的语义 = **这一轮不刷新**，退回改动前的行为（继续用缓存那份）。
+    ⚠ 类型闸跟 `load_memory()` / `compute()` / `page/home.py` 三处保持一致
+      （不是 list 就当没有 —— 见文件头「先看类型再看内容」那节）。
+    """
+    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print(f"⚠️ 重读 key_facts 失败（{user_id}）：{e}，本轮不刷新")
+        return None
+    if not isinstance(data, dict):
+        return None
+    facts = data.get("key_facts")
+    return facts if isinstance(facts, list) else []
+
+
 def recent_context(user_id, n=6):
     """
     🎯 取「她最近在聊什么」的一段文本（给**发说说挑条**做相关性用）。
@@ -375,6 +405,35 @@ class ConversationManager:
         #    为什么要有它：`messages` 里**没有时间戳** ⇒ 昨天的原话今天看着还是「当下」，
         #    模型就会把昨天的事当成今天。跨天时把昨天的原话摘出去、换成一条带日期的小结。
         self.day_summaries = []
+
+    def reload_shared_from_disk(self):
+        """
+        🔄 把「网页端也能写」的两处从磁盘重读一次（**每轮对话开头**调）。
+
+        ⚠⚠ 为什么必须有这一步（2026-09-30 查实，B 方案）：
+          `Rafayel_llm._user_managers` 是**进程级缓存**，`load_memory()` 只在
+          **首次**访问那个用户时读一次；之后 `save_memory()` / `self.profile.save()`
+          写的都是**整份缓存副本** ⇒ 她在网页上改的
+          ·「他记住的事」      → `{uid}.json` 的 `key_facts`
+          ·「生日 / 称呼 / 他记住的你」 → `{uid}_profile.json`
+          会被下一轮对话**整份盖回去**。两条来路都会中：
+            · **跨进程**：QQ 端 `Rafayel_bot.py` vs `web/`
+            · **同进程**：网页对话窗口（`page/chat.py` 直接调 `get_reply`）vs 主页写入
+          ⇒ 每轮开头把这两格换成磁盘真值，本轮之后的新增就都作用在「刚读出来的那份」上。
+
+        ⚠ **只刷这两处**，绝不动 `messages` / `long_term_summary` / `pending_summary` /
+          `day_summaries` / `turn_count` —— 那些是对话连续性的根，重读了等于把本轮上下文抹掉
+          （所以**不能**图省事直接调 `load_memory()`，那是整份覆盖）。
+
+        ⚠ 调用点必须在 `_extract_facts()` / `extract_from_text()` **之前**：
+          顺序反了，本轮刚提取到的事实会被这次重读一起冲掉。
+        """
+        # ① 画像：`UserProfile.load()` 本身就是幂等重载（文件不在就保持现状）
+        self.profile.load()
+        # ② 「他记住的事」：只换这一格（读不到 ⇒ None ⇒ 不动，见 `_read_key_facts()`）
+        facts = _read_key_facts(self.user_id)
+        if facts is not None:
+            self.key_facts = facts
 
     def get_full_system_prompt(self):
         """构建完整的系统提示词，包含用户画像、记忆摘要和关键事实"""
@@ -569,6 +628,11 @@ class ConversationManager:
 
         `media` = 她这条是不是图 / 表情（记进每日统计，好感度会用到）。
         """
+        # 🔄 **最先做**：把网页端能改的两处从磁盘重读一遍。
+        #    ⚠ 必须在下面 `_extract_facts()` / `extract_from_text()` **之前** ——
+        #      顺序反了，本轮刚提取到的事实会被这次重读冲掉。
+        self.reload_shared_from_disk()
+
         # 🕐 先算「隔了多久」再推进时间戳 —— 顺序反了就永远算成 0。
         self.gap_hours = self._compute_gap_hours()
         self.last_msg_at = time.time()
@@ -591,6 +655,14 @@ class ConversationManager:
 
     def add_assistant_message(self, content):
         """添加助手消息"""
+        # 🔄 开场白 / 主动开口这类「**她那条消息不在前**」的轮次，也刷一次
+        #    （正常一轮的最后一条是 user ⇒ 那次刷新已经在 `add_user_message` 里做过，
+        #     这里再刷会把本轮刚提取到的事实冲掉）。
+        #    判据就是「最后一条不是她说的」—— `system` / `assistant` / 空 都算。
+        _last = self.messages[-1] if self.messages else None
+        if not (isinstance(_last, dict) and _last.get("role") == "user"):
+            self.reload_shared_from_disk()
+
         self.messages.append({"role": "assistant", "content": content})
         self.pending_summary.append({"role": "assistant", "content": content})
 
@@ -691,6 +763,8 @@ class ConversationManager:
 1. 她表现出了哪些情绪、需求或想法？
 2. 祁煜做出了哪些重要的回应、承诺或行动？
 3. 发生了什么可能影响后续对话的重要事件？
+⚠ 必须写成**客观的第三人称**（「她说…」「祁煜…」）—— 这段是记忆提要，不是日记，
+  写成「我」会污染他的长期记忆。
 ⚠ 写到具体事情时带上时间坐标（比如「{_day_label(_day_now)}她说…」），
   别把不同天的事并成一件；不确定是哪天就写「那天」。
 
@@ -702,11 +776,24 @@ class ConversationManager:
 - birthday：她**自己**的生日，形如 "03-06"（公历，月-日两位）。
   ⚠ 只填她**明确说过**的（「我生日是3月6号」）；她没说过、或是**祁煜**的生日，一律空字符串。
 
+【任务三】替祁煜写**这一段他自己的日记**（不超过200字，第一人称）：
+1. ⚠⚠ **通篇不许出现「祁煜」这三个字** —— 谁写日记会管自己叫名字？
+   一律用「我」。这是最容易写错的一条。
+2. 她写成「她」，或者你平时叫她的那个称呼；别写「用户」「对方」「该用户」。
+3. 味道是**写给自己看的**：可以承认当时没说出口的、心里拐过的念头、硬撑的地方。
+   **不是汇报**，不用面面俱到 —— 挑这一天里最戳你的一件事写。
+4. 用你自己（人设卡里那个祁煜）的口气，别写成台下旁观的观察记录。
+5. ⚠ **只写这段对话里真实发生过的**，不编。
+   真没什么值得写的，就只输出两个字：无
+
 对话内容：
 {json.dumps(to_summarize, ensure_ascii=False, indent=2)}
 
-输出格式（严格照做，不要加别的小标题）：
-先写任务一的摘要正文，
+输出格式（严格照做，不要加「任务一」这种小标题，也不要加代码块围栏）：
+先写任务一的摘要正文（第三人称），
+然后换行，单独一行只写：
+DIARY:
+然后写任务三的日记正文（第一人称「我」），
 然后换行，最后单独一行写：
 PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""}}
 """
@@ -729,17 +816,19 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
             if "choices" in result:
                 raw = result["choices"][0]["message"]["content"].strip()
 
-                # ① 拆出任务二的画像补丁（若模型没按格式输出，就当没有，不影响摘要）
+                # ① 先切尾：任务二的画像补丁（模型没按格式输出就当没有，不影响摘要）
                 m_prof = re.search(r"PROFILE:\s*(\{.*?\})\s*$", raw, re.S)
+                body = raw[:m_prof.start()] if m_prof else raw
                 if m_prof:
-                    new_summary = raw[:m_prof.start()].strip()
                     try:
                         if self.profile.merge(json.loads(m_prof.group(1))):
                             self.profile.save()
                     except Exception as pe:
                         print(f"⚠️ 画像补丁解析失败（忽略）：{pe}")
-                else:
-                    new_summary = raw
+
+                # ② 再切中间那道 `DIARY:` 分界线 ⇒ 前=摘要（第三人称，喂 prompt），
+                #    后=日记（第一人称，给他自己看）。⚠ 切不出来就是日记为空，见该函数说明。
+                new_summary, diary_text = _split_diary_reply(body)
 
                 if not new_summary:
                     new_summary = "（本轮无可摘要内容）"
@@ -755,14 +844,24 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                 # 📔 日记（2026-09-30 · 她：「按天进行多次总结」）：
                 #    同一次摘要，在日记里也留一条 ⇒ **一次摘要 = 一条**，
                 #    一天聊得多就一天多条（她的例子：20 轮 ÷ 每 8 轮 = 2 条）。
+                # ⚠⚠ **存的是 `diary_text`（任务三的第一人称那段），不是 `new_summary`** ——
+                #    2026-09-30 她指出「这是祁煜的日记，应该以他的视角、第一人称写」，
+                #    修之前这里传的是 `new_summary`（第三人称记忆提要），
+                #    所以日记里全是「祁煜从调侃、退后到被…堵住」那种旁人视角的汇报。
                 # ⚠⚠ 这段**必须自己 try**（不能靠外层那个）：
                 #    外层 `except` 会把 `pending_summary` **重新排回队列**（:746，本意是
                 #    「LLM 调用失败就下次再摘要」）⇒ 日记写盘一抛异常，这段对话会被
                 #    **反复摘要**，日记里就冒出重复条目。
                 # ⚠ 位置放在 `long_term_summary` 之后：日记写不成，也**不该影响**他的长期记忆。
                 # ⚠ `DIARY_ENABLE=False` ⇒ 摘要照旧，日记一条不加（开关只影响这一处）。
+                # ⚠ `diary_text` 可能是空的（模型没写 / 说了「无」）⇒ **这条不加**，
+                #    不是错误、不用重试：摘要本身是好的，长期记忆一点没少。
                 try:
-                    add_diary(self.user_id, new_summary, src="he")
+                    _diary_text = _diary_text_from(diary_text)
+                    if _diary_text:
+                        add_diary(self.user_id, _diary_text, src="he")
+                    else:
+                        print("[📔] 这次没有可写的日记段（摘要照常更新）")
                 except Exception as de:
                     print(f"⚠️ 日记写入失败（不影响对话）：{de}")
         except Exception as e:
@@ -895,16 +994,82 @@ def delete_fact_by_her(user_id: str, text: str) -> bool:
 #      外层那个 try 的 `except` 会把 `pending_summary` **重新排回队列**，
 #      日记写盘一抛异常，同一段对话就会被**反复摘要**，日记里冒出重复条目。
 #
+# ⚠⚠⚠ 2026-09-30（她指出「这是祁煜的日记，应该以他的视角、第一人称写」）：
+#   **日记的正文跟摘要的正文是两段东西，绝不能再共用一段文字。**
+#   · 摘要（任务一）= **客观第三人称**的记忆提要，喂 prompt 用；
+#   · 日记（任务三）= **第一人称「我」**、写给自己看的那一段。
+#   两段在**同一次 LLM 调用**里产出（她选的 A 方案：不额外多调一次，不给她加延迟），
+#   靠回复正文里单独一行的 `DIARY:` 分界 ⇒ 见 `_split_diary_reply()`。
+#   🐛 修之前是 `add_diary(self.user_id, new_summary)` —— 直接把摘要当日记存，
+#      所以她看到的每一段都是「祁煜从调侃、退后到被…堵住」这种**旁人视角的汇报**。
+#
 # 存储（`day` **平时不存**，展示时用 `_day_key(ts)` 推 ⇒ 以后改时区偏移，历史条目跟着换算；
 #      只有老数据导入才显式写 `day` —— 那条得挂到一个跟 `ts` 不完全对应的日子上）：
+#      ⚠ 2026-09-30 起：她在网页上**改了时间的**条目，那个 `day` 会被**清掉**
+#        （见 `edit_diary_by_her`）—— 不清的话 `day` 会压过新 `ts`，条目不搬家。
 #   {"entries": [{"id": "1790664027290", "ts": 1790664027.29, "src": "he", "text": "…"}],
 #    "updated_at": "2026-09-30 05:20:01"}
+#   ⚠ 可选字段还有 `legacy`（老数据导入标记）/ `rewritten`（已被改成第一人称的戳，
+#     见 `rewrite_diary_text_by_her`，给一次性脚本当幂等判据）。
+#     `save_memory()` 不管这个文件 ⇒ **加字段是安全的**（那条 8 字段的限制只针对 `{uid}.json`）。
 # ⚠ **按 `id` 增删改，别拿文本当主键**：日记自带时间戳，而且同一段话可能重复出现
 #   （他今天和明天都可能总结出相似的一句），拿文本定位会删错。
 # ⚠ 这一套之所以放在 `Rafayel_memory` 而不是新开 `Rafayel_diary.py`：
 #    写钩子本来就在这个文件的 `generate_summary()` 里，而且网页端**已经**为「他记住的事」
 #    开过 `Rafayel_memory` 的口子 ⇒ 放这儿 = 那个新页面**零新增 ADR-22 开口**。
 #    代价是这个文件更长，将来真嫌大再拆。
+
+
+# 🔀 摘要那条回复里，「摘要正文」与「日记正文」之间的分界标记。
+#    ⚠ 宽容到四种写法：`DIARY:` / `**DIARY:**` / `## DIARY:` / `> DIARY:`，
+#      冒号全角半角都收；`re.M` ⇒ **必须行首**（正文里随口说一句「日记」不算分界）。
+#    ⚠⚠ 尾随那两个 `*` **必须显式吃掉**（`(?:\*\*)?`）—— 光靠左边那个字符类不够：
+#      左边只负责 `DIARY` **前面**的记号，`**DIARY:**` 的收尾 `**` 会落进日记正文里，
+#      变成每条日记都顶着两个星号开头（自测 A3 抓到过）。
+#      ⚠ 也不能写成尾随 `[ \t>*_#]*` —— 那个会把日记正文自己的开头 `*叹气*` 一起吃掉。
+DIARY_MARK_RE = re.compile(r"^[ \t>*_#]*DIARY[：:][ \t]*(?:\*\*)?[ \t]*", re.M)
+
+# 🈳 模型在【任务三】里说「今天没什么可写的」时给的那几种写法 ⇒ 不往日记里塞废话。
+#    ⚠ 比的是**剥掉引号之后**的整串（见 `_diary_text_from`），不是「包含」。
+_DIARY_EMPTY = ("", "无", "（无）", "(无)", "（今天没什么可记的）", "（今天没什么可记的。）")
+
+
+def _split_diary_reply(body: str):
+    """
+    把摘要那条回复的**正文**切成 `(摘要, 日记)`。
+
+    ⭐ 2026-09-30 加（她：「这是祁煜的日记，应该以他的视角、第一人称写」）。
+      摘要（任务一）是**客观记忆提要**，日记（任务三）是**他写给自己看的第一人称那段**，
+      两段在同一次调用里产出，靠行首的 `DIARY:` 分界。
+
+    ⚠⚠ **切不出 `DIARY:` ⇒ 日记返回 `""`（这条不写）**。
+      绝不能「拿摘要顶替」—— 那正是修之前的行为，写进去又成了第三人称。
+      ⇒ 宁可少一条，也不要一条错的：错的那条她一眼就能看见，还得回来再提一次。
+    """
+    m = DIARY_MARK_RE.search(body or "")
+    if not m:
+        return (body or "").strip(), ""
+    return body[:m.start()].strip(), body[m.end():].strip()
+
+
+def _diary_text_from(raw_text: str) -> str:
+    """
+    把【任务三】那段打磨成**能存的一条日记**。返回 `""` ⇒ 这条不写。
+
+    ⚠ 剥掉模型偶尔爱加的整段引号（`「…」` / `"…"`），否则列表里每条都带一对引号。
+    ⚠⚠ **出现「祁煜」字样 ⇒ 说明模型没照做（他写日记不会管自己叫名字），但照样存**，
+      只打一行日志。理由：**内容是真发生过的，丢了不可逆**；体裁她能在网页上改
+      （日记本来就支持改，2026-09-30 还能改时间）。
+      ⇒ 这一点上刻意跟「切不出 `DIARY:` 就丢弃」不同：那是**没有内容**，这是**体裁跑偏**。
+    """
+    t = (raw_text or "").strip()
+    if len(t) >= 2 and t[0] in "「『\"'“”" and t[-1] in "」』\"'“”":
+        t = t[1:-1].strip()
+    if t in _DIARY_EMPTY:
+        return ""
+    if "祁煜" in t:
+        print("[📔] 日记段里出现了「祁煜」⇒ 模型没写成第一人称（内容照存，她可在网页上改）")
+    return t
 
 
 def _diary_path(user_id: str) -> str:
@@ -932,6 +1097,35 @@ def _diary_id(ts: float) -> str:
 def _hm(ts) -> str:
     """epoch 秒 → `"HH:MM"`（按 `AUTO_GREET_TZ_OFFSET` 换算，跟 `_day_key` 同一套口径）。"""
     return time.strftime("%H:%M", time.localtime(float(ts) + AUTO_GREET_TZ_OFFSET * 3600))
+
+
+def diary_ts_from(day: str, hm: str):
+    """
+    🌐 网页端专用：`"YYYY-MM-DD"` + `"HH:MM"` → epoch 秒。**解析不了 ⇒ `None`**。
+
+    ⭐ 为什么放引擎里、不让页面自己 `strptime` + `mktime`：
+       这函数必须是 `_day_key()` / `_hm()` 的**逆运算**，而那两个都按
+       `AUTO_GREET_TZ_OFFSET` 换算过 ⇒ 逆过来就得**把偏移减掉**。
+       页面自己写 `mktime()` 在这里恰好等价（现在偏移是 0），但哪天偏移一改，
+       页面存进去的时间就会整体平移几个小时，而且**改的页面和读的页面一起平移**
+       ⇒ 看上去「没问题」，只在她跟 QQ 端对时间的时候才暴露。
+       ⇒ 时区口径只留一份，跟 `group_diary()` 的日期文案同一个道理。
+
+    ⚠ 容错到「秒」：原生 `type=time` 默认给 `HH:MM`（`step=60`），
+      但给她留余量，`HH:MM:SS` 也收（将来若有人手改表单不至于静默失败）。
+    ⚠ **不抛异常**：脏输入返回 `None`，由调用方决定「这次不改时间」。
+    """
+    d = str(day or "").strip()
+    t = str(hm or "").strip()
+    if not d or not t:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return time.mktime(time.strptime("%s %s" % (d, t), fmt)) \
+                - AUTO_GREET_TZ_OFFSET * 3600
+        except Exception:
+            continue
+    return None
 
 
 def load_diary(user_id: str):
@@ -1082,27 +1276,90 @@ def add_diary_by_her(user_id: str, text: str) -> bool:
     return add_diary(user_id, text, src="her", ts=time.time())
 
 
-def edit_diary_by_her(user_id: str, eid: str, text: str) -> bool:
+def edit_diary_by_her(user_id: str, eid: str, text: str, ts=None) -> bool:
     """
-    ✏️ 改一条的**正文**（`ts` / `src` / `day` 一个都不动 —— 改文字不是改时间）。
+    ✏️ 改一条的**正文**（顺带可改**时间**）。`src` 永远不动。
+
+    `ts=None`（默认）⇒ **只动正文**，跟以前一模一样（向后兼容）。
+    `ts=float` ⇒ 正文与时间**一次原子写**完成 —— 不做成两个函数，是为了不出现
+    「正文改好了、时间没改」这种半截状态（两次写盘中间任何一次失败都会留下它）。
 
     ⚠ 她**能改他写的那几条**（2026-09-30 她选的「都能改都能删」），
       改完 `src` **仍保持 `he`**：那依然是他当时总结的那段，她只是顺手修个字。
       （跟画像那边「改一条自动项 ⇒ 撤下并转挂 `manual`」**不一样** ——
         那边涉及好感度计分，改过就不算他观察出来的了；这边没有分数，不用搞那套。）
+    ⚠ **改时间不改 `src`** 也是同一条道理：改的是「发生在这天几点」，不是换人写。
+
+    ⚠⭐ **`id` 绝不跟着时间走** —— `id` 是网页的主键（`/diary/e?id=…`），
+      跟着 `ts` 一起变的话，保存后那次重定向**自己就找不着这条**了（表现是「跳回列表」）。
+    ⚠⭐ **`ts` 真变了就必须 `day.pop()`** —— 分组时 `day` **优先于** `ts`
+      （见 `group_diary()`）。老数据导入的那批每条都写死了 `day`，
+      只改 `ts` 不清它 ⇒ **时间变了、条目却赖在原来那天不走**。
+      清掉之后一律按新 `ts` 推 ⇒ 天之间的搬家、天内的先后，全都自动跟上。
+    ⚠ 时间比较用**分钟精度**（`_day_key` + `_hm`）：原生日期控件本来就只有分钟，
+      拿浮点秒硬比会把「同一分钟」判成改过 ⇒ 只修个错字也会顺手重写 `ts`。
     """
     eid = str(eid or "").strip()
     text = (text or "").strip()
     if not eid or not text or len(text) > DIARY_MAX_LEN:
         return False
+    if ts is not None:
+        try:
+            ts = float(ts)
+        except Exception:
+            ts = None
 
     def _do(entries):
         for e in entries:
-            if e["id"] == eid:
-                if e["text"] == text:
-                    return False          # 原样保存不算改动（别骗她「改好了」）
-                e["text"] = text
-                return True
+            if e.get("id") != eid:
+                continue
+            old_ts = _diary_ts(e)
+            time_changed = False
+            if ts is not None:
+                time_changed = (_day_key(ts) != _day_key(old_ts)
+                                or _hm(ts) != _hm(old_ts))
+            text_changed = (e.get("text") != text)
+            if not text_changed and not time_changed:
+                return False          # 原样保存不算改动（别骗她「改好了」）
+            if time_changed:
+                e["ts"] = ts
+                e.pop("day", None)    # ⚠ 见上面：不清它就不会搬家
+            e["text"] = text
+            return True
+        return False
+
+    return _diary_edit(user_id, _do)
+
+
+def rewrite_diary_text_by_her(user_id: str, eid: str, text: str) -> bool:
+    """
+    🔁 **一次性改写脚本专用**（`tools/rewrite_diary.py`）：把一条**旧的第三人称摘要**
+       改写成**第一人称日记**。
+
+    ⚠ 为什么不复用 `edit_diary_by_her()` —— 差别有三条，而且每条都不能通融：
+      ① **时间 / `day` 一律不动**：改写的是**体裁**，不是发生时间；
+         走 `edit_diary_by_her` 就得算一遍时间比较，多一个会错的环节。
+      ② 改完盖 **`rewritten: true`** ⇒ 脚本再跑一遍**自己跳过**（幂等）。
+         ⚠ 不靠「正文里还有没有『祁煜』」这种猜的判据 —— 摘要未必每段都提名字。
+      ③ **拒收 `src:"her"`**：她自己手写的那条**一个字都不许碰**（脚本再手滑也碰不到）。
+    ⚠ 长度按 `DIARY_HARD_LEN`（4000）兜，**不按她手写的 500** —— 改写的产物是模型写的，
+      跟 `add_diary()` 同一个口径（模型的额度由 prompt 控制，不用她的额度去卡它）；
+      这里卡一个上限纯粹是防疯话。
+    """
+    eid = str(eid or "").strip()
+    text = (text or "").strip()
+    if not eid or not text or len(text) > DIARY_HARD_LEN:
+        return False
+
+    def _do(entries):
+        for e in entries:
+            if e.get("id") != eid:
+                continue
+            if e.get("src") == "her":
+                return False              # ⚠ 她自己写的，谁都别动
+            e["text"] = text
+            e["rewritten"] = True
+            return True
         return False
 
     return _diary_edit(user_id, _do)

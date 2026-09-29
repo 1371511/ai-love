@@ -624,6 +624,31 @@ def _backbar():
     return '<p class="footnav backonly"><a href="%s" class="hint">‹ 返回目录</a></p>' % MENU_PATH
 
 
+def _two_way_footer(href, label):
+    """
+    底部那一条**带两个动作**的导航 —— `‹ 回XX · ‹ 返回目录`。
+
+    ⭐ 2026-09-30 从 `page/home.py` **下沉到这里**（她要求「日记功能页的底栏也一样」）：
+      原来只有 `/home/edit/*` 家族在用。日记的「写一条 / 改一条」也要同款
+      ⇒ 不回主页，而是回 `/diary`；再放一个网页页里就会变成
+      `page/diary.py` **反向 import `page.home`**，方向是脏的 ⇒ 下沉到共用底座。
+
+    ⚠ **不能用 `_backbar()`**：那个只渲染一个动作，而且带 `backonly` 类 ——
+      类名一挂上，桌面版就把**整条**藏掉（见上面 `_backbar()` 的说明）。
+      底栏里但凡有第二个动作就不能带它，**这是底座里写死的规矩**。
+    ⚠ 必须是内容列 `.main` 的**直接子元素**，`position:sticky` 才贴得住
+      （跟 `_backbar()` / `.footnav` 同一个道理）。
+
+    ⭐ 拿 2026-09-30 她提的：「两个位置不要靠太近，容易误按」⇒ **左右各占一半**
+      （`.twobar`），点击区是整半条，中间空 12px。原来那种「A · B」中间只隔一个点，
+      手指一点就戳错。
+    """
+    return ('<p class="footnav"><span class="twobar">'
+            '<a href="%s" class="hint">%s</a>'
+            '<a href="%s" class="hint">‹ 返回目录</a>'
+            '</span></p>' % (href, label, MENU_PATH))
+
+
 def _who_block(name, sub, avatar_html):
     """👤 头像 + 名字 + 一行小字。目录页用；第 3 步的桌面左栏也复用它（同一份 HTML）。"""
     return ('<div class="who"><div>%s</div>'
