@@ -246,7 +246,7 @@ TEMPERATURE = 0.8
 # ============================================================
 # 他想不想先开口。关掉就改 AUTO_GREET = False，其余参数不用动。
 
-AUTO_GREET = True               # 总开关
+AUTO_GREET = False               # 总开关
 # ⚠ 这个门槛必须**比一晚睡眠长**（小辞定 16 小时）。以前设 6 小时时，
 #   睡一觉 8~10 小时就算「冷场」⇒ 等于每天早上都满足条件，他会在你刚醒时冒出来。
 #   16 小时的含义：睡一觉不算冷场，要真的「一整天没怎么说话」才会开口。
@@ -329,7 +329,7 @@ QZONE_RECEIPT_TIMEOUT = 20      # 等发说说回执的秒数（超时 = 该版�
 #   语料池 = `card/qzone_pool.json`（生成器 `card/_work/md2qzone.py`，本机跑一次）
 #   选条 + 排期 = `Rafayel_qzone_auto.py`（对标 Rafayel_greet.py）
 
-QZONE_AUTO = True               # 总开关。关掉就改 False，其余参数不用动
+QZONE_AUTO = False               # 总开关。关掉就改 False，其余参数不用动
 QZONE_AUTO_MAX_PER_DAY = 1      # 每人每天最多几条（保险丝；主判据是下面的排期）
 # 🎲 排期：发完就随机约好「下次最早什么时候」——从本次算起隔 48~72 小时（2~3 天，按**实际时长**算），
 #    时刻在 8:00~22:59 之间**独立随机抽**（别绑死在「上次同一钟点」，那样很机器）。
@@ -361,7 +361,7 @@ QZONE_BDAY_RAFAYEL = "03-06"    # 祁煜生日（MM-DD，人设 3.6）
 # **评论内容依然读不到**（详情 1502、列表只有 cmtnum 计数、tid 还会漂）⇒
 # 退一步：用「评论条数涨了」当信号，他不知道她写了什么，但知道她留了话 ⇒
 # 跑来私聊问，她回什么他接什么。**真人也常这么干**，比 AI 味的楼层回复自然。
-QZONE_CMT_ENABLE = True
+QZONE_CMT_ENABLE = False
 # ⭐ 事件订阅（2026-09-20 深夜实测）：bridge 的 WS 事件流里**带评论内容**（qzone_comment 通知，
 #   含 user_id / comment_content / post_tid）⇒ 真·双向：他直接在空间回复她那条评论。
 #   REST 那边读不到内容（tid 会漂 + 评论区不嵌），只有计数 ⇒ 计数轮询留作**降级**。
@@ -452,7 +452,7 @@ WEATHER_COLD_MIN = 3            # 今天最低温 ≤ 这个 ⇒ 算「严寒」
 #   带 written 标记）/ **原句+编写**（素材打底 + 我补收尾，带 adapted + based_on）。
 #   选条逻辑三类一视同仁 —— 挑的是"哪句话"，不看它是怎么来的。
 
-EVENT = True                    # 总开关
+EVENT = False                    # 总开关
 EVENT_POOL = os.path.join(ROOT, "card", "event_pool.json")
 EVENT_SCAN_SECONDS = 1800       # 每 30 分钟扫一遍（节日一年就一次，别扫太稀）
 EVENT_HOUR_START = 9            # 只在 9:00–22:00 之间开口（别大半夜发「兰夜节快乐」）
