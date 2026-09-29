@@ -11,6 +11,7 @@
    再加一套库就得双写或同步，两份数据打架是最难查的 bug。十几人的量，文件够。
 """
 
+import asyncio
 import hashlib
 import hmac
 import html
@@ -18,6 +19,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -28,7 +30,17 @@ sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
 from Rafayel_affinity import (  # noqa: E402
     compute, days_since, cum_at, MAX_LEVEL,
     load_sms_nodes, sms_full,
+    # 💬 2026-09-29 对话窗口用：跨级解锁的记账（见 `_unlock_tick`）
+    current_level, init_unlocked, pending_unlock,
 )
+
+# 💬 2026-09-29 QQ 冻结期加的对话窗口 —— 复用 QQ 那套引擎，零 QQ 依赖。
+#    ⚠ 这三条 import 是新增的耦合：`Rafayel_chat` 会连带读人设卡
+#      （`card/Rafayel.character.json`）⇒ 那个文件坏了 / 缺了，**web 会起不来**。
+#      以前网页面只读 memory，没这层依赖。
+from Rafayel_chat import get_reply, take_opening  # noqa: E402
+from Rafayel_config import AFFINITY_UNLOCK  # noqa: E402
+from Rafayel_daily import load_unlocked, save_unlocked  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -298,6 +310,111 @@ SMS_JS = r"""
 })();
 </script>"""
 
+# ============================================================
+# 💬 对话窗口的专用样式 / 脚本（2026-09-29 · QQ 号被冻结期间的替代入口）
+# ------------------------------------------------------------
+# ⭐ 气泡那部分（`.phone` / `.chat` / `.row` / `.av` / `.bub` / `.sys`）**直接复用
+#    `CHAT_CSS`** —— 她已经在「牵绊短信」详情页见过那套观感，别另做一套。
+#    这里只补「底部输入栏」和右上角那个在线点。
+# ⚠⭐ `.bar-bottom` 跟 `.footnav` 一个道理：**必须是 `.wrap` 的直接子元素**，
+#    而且用 `position:sticky`（不是 `fixed`）⇒ 内容不可能跑到它下面；
+#    三个 margin 是「左右通栏 + 底部抵消 body 的 padding:2rem」，
+#    ⚠ 改 body 的 padding 必须同步改这三个 margin。
+# ⚠ `.phone.talk` 给个最小高度 —— 不然刚开聊时内容很短，输入栏会浮在屏幕中间。
+# ============================================================
+TALK_CSS = """
+.phone.talk{min-height:calc(100vh - 232px)}
+.dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#4CAF7D;
+     margin-left:6px;vertical-align:middle}
+.bar-bottom{position:sticky;bottom:0;z-index:10;background:#FAFAF8;
+            border-top:0.5px solid rgba(0,0,0,.1);padding:10px 1rem;
+            margin:0 -1rem -2rem}
+.bar-bottom form{display:flex;gap:8px;align-items:flex-end;max-width:560px;margin:0 auto}
+.bar-bottom textarea{flex:1;min-height:38px;max-height:120px;resize:none;font:inherit;
+            padding:8px 10px;border-radius:10px;border:0.5px solid rgba(0,0,0,.2);
+            background:#fff;box-sizing:border-box;line-height:1.4}
+.bar-bottom button{width:auto;flex:0 0 auto;margin:0;padding:9px 16px}
+.bar-bottom button:disabled{opacity:.45;cursor:default}
+"""
+
+# ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
+#    （跟短信详情页 `SMS_JS` 同一个口径：只在「能不能更顺」上让步，
+#     不在「离了 JS 就废」上让步）。
+TALK_JS = r"""
+<script>
+(function () {
+  var box = document.getElementById('chat');
+  var form = document.getElementById('say');
+  var ta = document.getElementById('t');
+  var btn = form ? form.querySelector('button') : null;
+  if (!box || !form || !ta) { return; }
+
+  var sending = false;
+
+  function toBottom() {
+    try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
+  }
+  function grow() {
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(120, ta.scrollHeight) + 'px';
+  }
+  function unlock() {
+    sending = false;
+    if (btn) { btn.disabled = false; }
+    ta.focus();
+  }
+
+  ta.addEventListener('input', grow);
+  // 回车发送、Shift+回车换行（手机上回车就是换行，靠「发送」按钮）
+  ta.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      if (form.requestSubmit) { form.requestSubmit(); } else { form.submit(); }
+    }
+  });
+
+  if (!window.fetch) { toBottom(); return; }
+
+  form.addEventListener('submit', function (e) {
+    var t = ta.value.replace(/^\s+|\s+$/g, '');
+    if (!t) { e.preventDefault(); return; }
+    e.preventDefault();
+    if (sending) { return; }
+    sending = true;
+    if (btn) { btn.disabled = true; }
+    // ⭐ 立刻清空 —— 她能在等回复的时候接着打字（但按钮锁着，保证一次只跑一轮，
+    //    不然两条 get_reply 并发会把 `memory/*.json` 互相覆盖，直接丢话）。
+    ta.value = '';
+    grow();
+
+    var body = new URLSearchParams();
+    body.set('text', t);
+    fetch('/chat/send', {
+      method: 'POST',
+      headers: { 'X-Requested-With': 'fetch' },
+      body: body
+    }).then(function (r) {
+      if (!r.ok) { throw new Error(r.status); }
+      return r.text();
+    }).then(function (frag) {
+      box.insertAdjacentHTML('beforeend', frag);
+      var n = document.getElementById('new');
+      if (n) { n.removeAttribute('id'); }
+      unlock();
+      toBottom();
+    }).catch(function () {
+      // 拿不到片段 ⇒ 退回整页提交（她那句话别丢）
+      ta.value = t;
+      grow();
+      unlock();
+      form.submit();
+    });
+  });
+
+  toBottom();
+})();
+</script>"""
+
 
 def _page(body, title="他眼里的你", css="", script=""):
     # ⭐ `script` 只给**短信详情页**用（2026-09-22 的局部刷新）；其余各页照旧零 JS。
@@ -538,6 +655,19 @@ async def me(request: Request):
     #    ⚠ 同理，`a["missing"]`（后台口径：memory/xxx.json、落盘、bot 侧）**绝不显示给用户**。
     missing = ""
 
+    # 💬 2026-09-29：对话窗口入口（QQ 号被冻结期间的替代入口）。
+    #    ⭐ 摆在**头像卡之下、好感度之上** —— 这是现在最常用的那张卡，
+    #      藏到底下她会找不到。⚠ 它**不是**底部导航（底部只留「设置 / 退出」，那条老规矩没动）。
+    talk_card = ('<div class="card">'
+                 '<div style="display:flex;justify-content:space-between;align-items:baseline">'
+                 '<h2 style="margin:0">跟他说话</h2>'
+                 '<span class="hint">在<span class="dot" style="margin-left:0"></span></span>'
+                 '</div>'
+                 '<p class="muted" style="font-size:12px;margin:6px 0 0">'
+                 '在这儿说的话，他也记得 —— 跟 QQ 上是同一份记忆。</p>'
+                 '<p style="margin:10px 0 0"><a href="/chat" class="hint">进去聊 →</a></p>'
+                 '</div>')
+
     # 💰 token 消耗：她明确说「后台有人机感没关系」，这格就直给。
     #    ⭐ 口径写清楚：这是**累计请求量**，历史每轮都会重复计入，不是「聊了多少字」。
     def _fmt_tokens(n):
@@ -596,6 +726,7 @@ async def me(request: Request):
       <div style="width:36px;height:36px">%s</div>
     </div>
     %s
+    %s
     <div class="card">
       <div style="display:flex;justify-content:space-between">
         <span class="muted" style="font-size:13px">好感度</span>
@@ -619,6 +750,7 @@ async def me(request: Request):
            sub,
            _av_html,
            missing,
+           talk_card,
            a["tier"], a["level"], a["score"], pct, next_hint,
            tier_block,
            a["turns"], tokens_txt, tokens_unit,
@@ -1124,6 +1256,274 @@ async def asset_get(request: Request, name: str):
     if not os.path.isfile(p):
         return RedirectResponse("/")
     return FileResponse(p, headers={"Cache-Control": "private, max-age=86400"})
+
+
+# ============================================================
+# 💬 对话窗口（2026-09-29 · QQ 号被冻结期间的替代入口）
+# ------------------------------------------------------------
+# ⚠⭐ 这一节**主动破了一条老红线**：原规矩是「网页端只读 memory，一个字都不写」。
+#    对话功能绕不过去 —— 不写盘 = 她说的话不进记忆 = 白聊。
+#    ⇒ 收窄后的口径：**只有本节这两条路由写 memory**
+#      （`/chat` 的开场白、`/chat/send` 的每轮对话 + 跨级记账）；
+#      `/me`、`/messages`、`/settings` **照旧一个字不写**。
+#
+# ⭐ 引擎直接复用 QQ 那套 `Rafayel_chat.get_reply` —— 它自己管记忆读取、
+#    跨天小结、世界书注入、牵绊度语气、token 记账。`Rafayel_bot.py` 里
+#    跟 QQ 有关的只有「收消息 → 拆气泡 → 发出去」最后一米，这儿只换掉那一米。
+#    ⇒ 于是两边**共用同一份 `memory/{uid}.json`**：冻结期在这儿说的话，
+#      解冻后他在 QQ 里照样记得 —— 不是「第二个他」。
+#    ⇒ token 与牵绊度也照常涨（记账在 `get_reply` 里面，白捡）。
+#
+# ⚠⚠ **两个进程别同时写**：`Rafayel_bot.py` 和本文件都会写 `memory/`，
+#    而文件锁跨不了进程。冻结期**只跑 web、别跑 bot**（号都冻了，bot 也收不到事件）。
+#    将来要两边同时开，得改成「web 把消息转发给 bot 那个进程」，别指望文件锁。
+#
+# ⚠ 同一进程内也**必须按 uid 串行**：她连点两次 / 开两个标签页 ⇒ 两条
+#    `get_reply` 并发跑，各自持一份 `cm` 内存副本，后写的那份把先写的整个覆盖掉，
+#    直接丢话。锁在 `_chat_lock`，前端再补一道「发送中禁用按钮」。
+# ============================================================
+
+CHAT_MAX_INPUT = 800            # 她一条最多多少字（防手滑粘长文烧 token）
+_CHAT_LOCKS = {}
+_CHAT_LOCKS_GUARD = threading.Lock()
+
+
+def _chat_lock(uid):
+    """拿到某个 uid 的对话锁（没有就现造一个）。"""
+    with _CHAT_LOCKS_GUARD:
+        lk = _CHAT_LOCKS.get(uid)
+        if lk is None:
+            lk = threading.Lock()
+            _CHAT_LOCKS[uid] = lk
+        return lk
+
+
+def _memory_path(uid):
+    return os.path.join(MEMORY_DIR, "%s.json" % _safe_uid(uid))
+
+
+def _read_talk(uid):
+    """读 `memory/{uid}.json` 的对话历史（**只读**），返回 [(role, text), …]。"""
+    p = _memory_path(uid)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[💬] 读记忆失败（%s）：%s" % (uid, e))
+        return []
+    out = []
+    for m in (data.get("messages") or []):
+        if not isinstance(m, dict):
+            continue
+        role, txt = m.get("role"), m.get("content")
+        if role in ("user", "assistant") and isinstance(txt, str) and txt.strip():
+            out.append((role, txt))
+    return out
+
+
+def _segs(text):
+    """
+    一条消息 ⇒ 几条气泡。
+
+    ⭐ 跟 QQ 侧同一个口径（2026-09-22 她拍板）：「分段」就是**一条气泡一段**，
+      不是一条气泡里换行（换行她看着还是一大坨）。
+    ⚠ QQ 那边还会按字数再细切（`_split_bubble`，在 `Rafayel_bot.py` 里）——
+      网页端气泡没有长度上限，不用切。
+    """
+    return [x.strip() for x in str(text or "").replace("\r\n", "\n").split("\n")
+            if x.strip()]
+
+
+def _him_av():
+    """他那侧的头像 —— 项目素材，走白名单路由 `/asset/qiyu`。"""
+    return '<img src="/asset/qiyu" alt="祁煜">'
+
+
+def _her_av(uid, name):
+    """她那侧：传过头像就用真图，没传就退回「名字首字」小圆片。"""
+    u = _avatar_url(uid)
+    if u:
+        return '<img src="%s" alt="">' % u
+    return _esc((name or "你")[0])
+
+
+def _bubble(who, text, her_av):
+    """一个气泡。`who` 取 `"her"`（右边）或 `"him"`（左边）。"""
+    if who == "her":
+        return ('<div class="row me"><div class="av">%s</div>'
+                '<div class="bub">%s</div></div>' % (her_av, _rich(text)))
+    return ('<div class="row"><div class="av">%s</div>'
+            '<div class="bub">%s</div></div>' % (_him_av(), _rich(text)))
+
+
+def _shown_name(uid):
+    """网页里存的名字优先，没有就用他记住的称呼（画像 name，只读）。"""
+    rec = (_load_users().get(uid) or {})
+    return (rec.get("display_name") or "").strip() or (compute(uid, MEMORY_DIR)["name"] or "")
+
+
+def _open_once(uid):
+    """
+    他先开口 —— **只在真的第一次聊时**（`take_opening` 自己判断，老朋友返回 ""）。
+
+    ⭐ 贴的是原作设定：游戏里她打开主页，他就会主动说一句（README 里那条）。
+    ⚠ 这是本节**唯一「读页面就写盘」**的地方：开场白必须进历史，
+      不然他下一轮不记得自己刚说过什么。
+    ⚠ 同步函数（里面 `save_memory` 写文件）⇒ 调用处丢 `asyncio.to_thread`。
+    ⚠ 先判 `exists` 再拿锁 —— 顺序反了的话，她正聊着（文件已存在）时
+      开个新标签页，那个 GET 会卡在锁上等上一轮跑完（十几秒）。
+    """
+    if os.path.exists(_memory_path(uid)):
+        return ""
+    with _chat_lock(uid):
+        try:
+            return take_opening(uid) or ""
+        except Exception as e:
+            print("[💬] 开场白失败（不影响后面）：%s" % e)
+            return ""
+
+
+def _unlock_tick(uid):
+    """
+    跨级解锁记账 —— `Rafayel_bot.maybe_send_unlock` **去掉「发送」那一半**。
+
+    ⚠ 为什么 web 侧也得做：`unlocked` 原来**只在收到 QQ 私聊时**才写 ⇒
+      冻结期在网页上聊到升级，`/me` 的「他说过的那句话」和 `/messages`
+      的解锁条数会停在那儿不动，看着像坏了。
+    ⚠ 只记账、**一个字都不发**（QQ 侧本来就是 `AFFINITY_UNLOCK_SEND = False`）。
+    ⚠ 写的是 `memory/{uid}_daily.json` —— 属于本节开门的那条口子，别再扩散。
+    """
+    if not AFFINITY_UNLOCK:
+        return
+    try:
+        rec = load_unlocked(uid)
+        if rec is None:
+            # 第一次接入：只记「现在几级」，**不补发历史**（跟 bot 侧同口径）
+            save_unlocked(uid, init_unlocked(current_level(uid, MEMORY_DIR)))
+            return
+        item = pending_unlock(uid, MEMORY_DIR)
+        if not item:
+            return
+        got_sms = [int(x) for x in (rec.get("sms") or [])]
+        for lv in (item.get("mark_sms") or []):
+            if lv not in got_sms:
+                got_sms.append(int(lv))
+        rec["sms"] = sorted(got_sms)
+        send = item.get("send")
+        if send:
+            got = list(rec.get("eggs") or [])
+            if send.get("key") not in got:
+                got.append(send["key"])
+            rec["eggs"] = got
+        rec["level"] = max(int(rec.get("level") or 0), int(item.get("level_now") or 0))
+        save_unlocked(uid, rec)
+    except Exception as e:
+        print("[💞] 跨级记账失败（不影响对话）：%s" % e)
+
+
+def _one_turn(uid, text):
+    """跑一轮对话（同步、**持锁**）⇒ 调用处丢 `asyncio.to_thread`。"""
+    with _chat_lock(uid):
+        reply = get_reply(text, uid) or ""
+        _unlock_tick(uid)
+    return reply
+
+
+def _talk_body(uid, msgs, shown, tail=""):
+    """气泡区 HTML（`<div class="chat">` 里面那一段）；`tail` 追加在最后。"""
+    her = _her_av(uid, shown)
+    rows = []
+    for role, txt in msgs:
+        for seg in _segs(txt):
+            rows.append(_bubble("her" if role == "user" else "him", seg, her))
+    if tail:
+        rows.append(tail)
+    if not rows:
+        rows.append('<div class="sys">还没聊过 —— 说点什么吧</div>')
+    return "".join(rows)
+
+
+@app.get("/chat", response_class=HTMLResponse)
+async def chat_page(request: Request):
+    """
+    💬 对话窗口 —— QQ 号被冻结期间的替代入口。
+
+    ⚠⚠ 破红线的两条路之一（另一条是 `POST /chat/send`）：
+      本页**会写 memory**，但只在「他还没开过场」时写那一句开场白，其余全只读。
+    ⚠ 等级**不显示**：README 铁律 2 是「好感度那一面绝不进对话」——
+      聊天气泡上头挂个「第 N 级」，她一眼就跳戏了。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+
+    try:
+        await asyncio.to_thread(_open_once, uid)
+    except Exception as e:
+        print("[💬] 开场检查失败：%s" % e)
+
+    shown = _shown_name(uid)
+    chat = _talk_body(uid, _read_talk(uid), shown)
+    head = ('<div class="ph-top"><a href="/me" class="hint">‹ 我的页</a>'
+            '<b>祁煜</b><span class="hint">在<span class="dot"></span></span></div>')
+    body = ('<div class="phone talk">%s<div class="chat" id="chat">%s</div></div>'
+            '<div class="bar-bottom">'
+            '<form id="say" method="post" action="/chat/send">'
+            '<textarea id="t" name="text" rows="1" placeholder="跟他说点什么…" '
+            'autocomplete="off" enterkeyhint="send"></textarea>'
+            '<button type="submit">发送</button>'
+            '</form></div>' % (head, chat))
+    return _page(body, title="祁煜", css=CHAT_CSS + TALK_CSS, script=TALK_JS)
+
+
+@app.post("/chat/send")
+async def chat_send(request: Request, text: str = Form("")):
+    """
+    收她一句话 ⇒ 拿他的回复。
+
+    ⭐ 两种返回：
+      · 普通表单 POST ⇒ **303 回 `/chat`**（零 JS 也能用，这是保底那条路）
+      · 带 `X-Requested-With: fetch`（脚本在跑）⇒ 只回**这一轮的气泡片段**，
+        前端 append 上去，不整页刷
+    ⚠ 两条路都**只回这一轮的片段** —— 别把整页渲进去，
+      不然 fetch 那条会在聊天区里再套一个手机壳。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        # ⚠ 这里必须是 **303**（不是默认的 307）：307 会**保留 POST 方法**重发到 `/`，
+        #    而 `/` 只收 GET ⇒ 未登录的人看到的是「405 Method Not Allowed」，
+        #    而不是登录页。303 一律转成 GET，才会把人领到登录页去。
+        return RedirectResponse("/", status_code=303)
+
+    text = (text or "").strip()
+    if not text:
+        return RedirectResponse("/chat", status_code=303)
+    if len(text) > CHAT_MAX_INPUT:
+        text = text[:CHAT_MAX_INPUT]
+
+    reply = ""
+    try:
+        reply = await asyncio.to_thread(_one_turn, uid, text)
+    except Exception as e:
+        print("[💬] 这一轮失败（%s）：%s" % (uid, e))
+
+    shown = _shown_name(uid)
+    her = _her_av(uid, shown)
+    frag = [_bubble("her", text, her)]
+    got = _segs(reply)
+    if got:
+        for seg in got:
+            frag.append(_bubble("him", seg, her))
+    else:
+        # ⚠ 兜底：模型一个字都没回（或接口报错）⇒ 说清楚，别让她以为界面坏了。
+        #    **不进记忆**（本来就没这句话）—— 绝不能留下「他说过」的假记忆。
+        frag.append('<div class="sys">他没接上话，再说一句试试</div>')
+
+    if request.headers.get("x-requested-with") == "fetch":
+        return HTMLResponse("".join(frag), headers={"Cache-Control": "no-store"})
+    return RedirectResponse("/chat", status_code=303)
 
 
 if __name__ == "__main__":
