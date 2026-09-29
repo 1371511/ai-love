@@ -7,6 +7,9 @@
   ② 依赖方向    —— 单向 config ← profile ← memory ← llm ← chat；引擎层不许反向依赖入口层
   ③ 导入名存在  —— `from X import a` 里 a 在 X 顶层真的有（抓「改了 A 忘了 B」）
   ④ 网页端红线  —— web/ 只能 import 只读模块，不许碰写盘模块
+                   ⚠ 唯一开口：web/page/chat.py 允许 import Rafayel_chat / Rafayel_daily
+                     （ADR-22：对话窗口不写盘 = 她说的话不进记忆）。这种降级成
+                     ⚪「已知开口」打印，【不计入退出码】；其余任何 web 文件照旧 🔴 / 🟡。
   ⑤ pyflakes    —— 可选增强：未定义名 / 未使用导入 / 重复定义。没装就自动跳过
                    （装：pip install pyflakes）
 
@@ -14,12 +17,15 @@
     python tools/check_static.py                      # 全项目
     python tools/check_static.py --only a.py b.py     # 高亮这几个文件（其余照查）
 
-退出码：0 = 没发现问题；1 = 有 🔴/🟡/🔵 问题（⚪ 不计入）。
+退出码：0 = 没发现问题；1 = 有 🔴/🟡/🔵 问题（⚪「已知开口」与 pyflakes 都不计入）。
 ⚠ 它是**体检**，不是法官：报出来的每一条都要人看一眼再定 —— 有些是刻意的设计，
   比如 `Rafayel_chat.py` 里故意 import 又没用的 `requests`：那是给回归脚本打桩用的，别删。
 
 ✅ 自测过（2026-09-25 故障注入）：语法错 / 反向依赖 / 导入名不存在 / 网页端写盘 /
    引擎层依赖入口层 / 循环导入 —— 六类都抓得到。
+   2026-09-29 补：④ 加「已知开口」例外（`chat.py` 只认 `Rafayel_chat` / `Rafayel_daily`
+   两个名字，换成别的写盘模块仍红灯），并修掉同一 (文件,行,原因) 报两遍的重复
+   （`from X import a, b` 以前记两条）。
 """
 import ast
 import os
@@ -51,6 +57,13 @@ WRITER_MODULES = {
 }
 # 网页端允许 import 的（全是只读）
 WEB_WHITELIST = {"Rafayel_affinity", "Rafayel_config"}
+
+# ⚠ 唯一开过口的写盘页（ADR-22）：对话窗口必须写 memory，否则她说的话不进记忆、白聊。
+#   值 = 这个文件**被允许** import 的模块白名单。**别往这里加新页 / 新模块** ——
+#   加一行 = 网页端只读红线又漏一个口子。命中后降级成 ⚪「已知开口」，不计入退出码。
+WEB_CHAT_EXCEPTION = {
+    "web/page/chat.py": {"Rafayel_chat", "Rafayel_daily"},
+}
 
 
 # ---------------------------------------------------------------- 收集
@@ -162,13 +175,15 @@ def main():
         # 同名冲突时保留先出现的（本项目内不应有重名）
         mods.setdefault(n, (p, top_names(t)))
 
-    red, yellow, blue = [], [], []
+    red, yellow, blue, known = [], [], [], []
 
     for p, t in trees.items():
         rel = os.path.relpath(p, ROOT).replace("\\", "/")
         me = mod_name(p)
         in_engine = any(("%s/" % d) in rel or rel.startswith("%s/" % d) for d in ENGINE_DIRS)
         is_web = rel.startswith("web/")
+        # 这一页被允许 import 的写盘/引擎模块（默认空 = 什么都不许）
+        opened = WEB_CHAT_EXCEPTION.get(rel, ()) if is_web else ()
 
         for m, name, ln in imported(t):
             if m not in mods:
@@ -189,12 +204,20 @@ def main():
             if me == "Rafayel_config":
                 red.append((rel, ln, "Rafayel_config 依赖了本项目模块 %s（会循环导入）" % m))
 
-            # ④ 网页端只读红线
+            # ④ 网页端只读红线（唯一开口见 WEB_CHAT_EXCEPTION）
             if is_web and m in WRITER_MODULES:
-                red.append((rel, ln,
-                            "网页端 import 了写盘模块 %s（红线：web 只读 memory）" % m))
+                if m in opened:
+                    known.append((rel, ln,
+                                  "对话窗口按 ADR-22 开口：用了写盘模块 %s（开口只限本页）" % m))
+                else:
+                    red.append((rel, ln,
+                                "网页端 import 了写盘模块 %s（红线：web 只读 memory）" % m))
             if is_web and m in LAYER and m not in WEB_WHITELIST:
-                yellow.append((rel, ln, "网页端 import 了引擎模块 %s（确认它只读？）" % m))
+                if m in opened:
+                    known.append((rel, ln,
+                                  "对话窗口按 ADR-22 开口：用了引擎模块 %s（开口只限本页）" % m))
+                else:
+                    yellow.append((rel, ln, "网页端 import 了引擎模块 %s（确认它只读？）" % m))
 
             # ③ 导入的名字在目标模块顶层真的存在
             if name:
@@ -229,19 +252,30 @@ def main():
             print("   %s:%s  %s" % (os.path.relpath(p, ROOT).replace("\\", "/"), ln, msg))
         n += len(syntax_err)
 
-    def dump(title, items, mark):
+    def dump(title, items, mark, count=True):
         nonlocal n
+        # 去重：同一 (文件, 行, 原因) 只报一次。
+        # 以前按「导入的每个名字」各记一条 ⇒ `from X import a, b` 会报两遍。
+        seen, uniq = set(), []
+        for it in items:
+            k = (it[0], it[1], it[2])
+            if k not in seen:
+                seen.add(k)
+                uniq.append(it)
+        items = uniq
         if not items:
             return
         print("\n%s %s（%d）" % (mark, title, len(items)))
         for rel, ln, msg in items:
             flag = " ⭐" if only and os.path.basename(rel) in only else ""
             print("   %s:%s  %s%s" % (rel, ln, msg, flag))
-        n += len(items)
+        if count:
+            n += len(items)
 
     dump("会崩", red, "🔴")
     dump("要注意", yellow, "🟡")
     dump("契约", blue, "🔵")
+    dump("已知开口（ADR-22，刻意开的，不计入退出码）", known, "⚪", count=False)
 
     # ⑤ pyflakes（可选；⚪ 级，不计入退出码）
     _pyflakes([p for p in py_files
