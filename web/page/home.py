@@ -114,11 +114,10 @@ HOME_CSS = """/* 头部：头像左，右侧上=用户名、下=各种信息+更
 .hero .meta{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
 .hero .meta .txt{color:var(--c-muted);font-size:12px;min-width:0;overflow-wrap:anywhere}
 .hero .meta a{white-space:nowrap}
-/* 底栏两个动作：**左右各占一半**（2026-09-30 她提「不要靠太近，容易误按」）
-   ⇒ 点击区是整个半条，中间空 12px；原来「A · B」只隔一个点，手指一点就戳错。
-   ⚠ 每格上下也给了 8px padding ⇒ 触摸区约 36px 高，比光文字那条大一圈。 */
-.twobar{display:flex;gap:12px}
-.twobar a{flex:1 1 0;padding:8px 0;text-align:center}
+/* 底栏两个动作的样式（`.twobar`）**已搬到 `base.py` 的全站 CSS**（2026-09-30）：
+   `_two_way_footer()` 是共用部件，样式不能寄存在本页的 `HOME_CSS` 里 ——
+   不带 `css=HOME_CSS` 的页面（`/home/edit/{kind}`、`/diary/*`）会拿不到，两个链接挤成一团。
+   ⚠ 别在这儿写回一份。详见 `base.py` 里 `.twobar` 那段说明。 */
 /* 更改页那张大头像 —— 它同时是**上传按钮**（2026-09-30 她定的：上传口藏在头像里） */
 .bigav{width:80px;height:80px;border-radius:50%;background:var(--c-brand-soft);color:var(--c-brand-deep);
        display:flex;align-items:center;justify-content:center;font-size:20px;overflow:hidden;

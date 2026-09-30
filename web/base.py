@@ -310,6 +310,19 @@ img.avatar{width:36px;height:36px;border-radius:50%;object-fit:cover;display:blo
          background:var(--c-bg);border-top:0.5px solid var(--c-hair-2);
          padding:10px 1rem;text-align:center;font-size:12px;
          margin:0 -1rem -2rem}
+/* 🔀 底栏里那两个动作：**左右各占一半**（2026-09-30 她提「不要靠太近，容易误按」）
+   ⇒ 点击区是整个半条，中间空 12px；原来「A · B」只隔一个点，手指一点就戳错。
+   ⚠ 每格上下也给 8px padding ⇒ 触摸区约 36px 高，比光文字那条大一圈。
+   ⚠⭐ **2026-09-30 从 `page/home.py` 的 `HOME_CSS` 搬到这里**（她截图：底栏两个链接挤成一团）：
+      `_two_way_footer()` 早就下沉到本文件了，**样式却没跟着走** —— 于是
+      ① `/home/edit/{kind}`（称呼/生日/相遇日）调的是 `_page(body)`，**没带 `css=HOME_CSS`**；
+      ② `/diary/new`、`/diary/e` 只带 `DIARY_CSS`；
+      两处的 `.twobar` 都落空 ⇒ 退化成两个行内链接贴着排。
+      ⇒ **规矩**：`.footnav` 这个部件的样式一律留在本文件（全站 CSS），
+        用它的页面**不需要也不该**再自己写一遍 —— 否则新页面又会漏。
+      ⚠ 别再往 `HOME_CSS` 里放回一份：重复的规则改起来必然只改一处，迟早打架。 */
+.twobar{display:flex;gap:12px}
+.twobar a{flex:1 1 0;padding:8px 0;text-align:center}
 /* 🧭 目录页那几行入口（2026-09-29 新增）—— 由 `_nav_list()` 渲染，
    手机渲染成一整页（`page/menu.py`）、桌面渲染成左侧栏（纯 CSS，同一份 HTML）。
    ⚠ 灰项（预留 / 待填）渲染成 `<span class="off">` 而不是 `<a>` —— 点不动的东西不该是链接。
