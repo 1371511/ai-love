@@ -32,7 +32,7 @@ from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_GAP_DAYS_MAX, AUTO_GREET_GAP_DAYS_MIN,
     AUTO_GREET_HOUR_END, AUTO_GREET_HOUR_START,
     AUTO_GREET_IDLE_HOURS, AUTO_GREET_MAX_PER_DAY, AUTO_GREET_MIN_GAP_HOURS,
-    AUTO_GREET_TZ_OFFSET, MEMORY_DIR,
+    AUTO_GREET_TZ_OFFSET, DEFAULT_USER_NAME, MEMORY_DIR,
 )
 from Rafayel_profile import get_user_profile
 
@@ -55,7 +55,9 @@ REUNION_IDLE_HOURS = 72     # 冷场超过这么久才算「重逢」（3 天）
 # ⚠ 别把这个值降到 16h 门槛附近：那样冷场一满足就直接进重逢档，时段池会全废。
 #   也别再回到「6 小时门槛」那种配置 —— 门槛比一晚睡眠短，等于每天早上都触发。
 
-_DEFAULT_NAME = "保镖小姐"
+# ⭐ 唯一真相源在 `Rafayel_config.DEFAULT_USER_NAME`（2026-09-30 收拢，原来三处各写一份）。
+#    这里保留局部别名只是为了不动调用点。
+_DEFAULT_NAME = DEFAULT_USER_NAME
 
 
 def load_pools():

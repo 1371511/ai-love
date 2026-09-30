@@ -57,6 +57,10 @@ from base import (
 #   ⇒ 跟 `met_known()` / `_check_met_day()` 一样处理：**唯一实现放共用底座**。
 #   本文件里所有调用点**一个字没改**，只是来源从本模块变成了 `base`。
 from Rafayel_affinity import compute
+# ⭐ 她的**默认称呼**（画像里没记的时候他就这么叫）—— 唯一真相源在 `Rafayel_config`。
+#   ⚠ `Rafayel_config` 是网页端的**白名单模块**（见 `tools/check_static.py` 的
+#     `WEB_WHITELIST`）⇒ 这一行**不需要**开 ADR-22 的口子。
+from Rafayel_config import DEFAULT_USER_NAME
 # ⚠ 这两个是本页**仅有的**写盘入口（ADR-22 开口，见 `tools/check_static.py` 的
 #   `WEB_WRITE_EXCEPTION`）。别再往下加第三个写盘模块 —— 加一个就得再开口子一次。
 # ⭐ `Rafayel_memory` 是第 4 批（2026-09-30「他记住的事」可增删改）才开的第 5 条口子。
@@ -78,14 +82,20 @@ _TAG_LABEL = {"likes": "喜欢", "dislikes": "不吃 / 不喜欢", "traits": "�
 _EDITABLE = {
     "name": ("他怎么称呼你",
              "填一个你希望他叫你的名字。改完他下一句就这么叫你。",
-             "小辞"),
+             # ⭐ 空框里的提示 = **他实际会叫的那个**（不是随便一个举例）。
+             #   2026-09-30 她截图：这儿原来写的是「小辞」（她的名字），
+             #   而她画像里没记称呼 ⇒ 他叫的其实是「保镖小姐」⇒ 提示跟实际不一致。
+             DEFAULT_USER_NAME),
     "birthday": ("你的生日",
                  "填月和日就行，比如 03-06、3月6号。他记得住，到那天也会自己提。",
                  "03-06"),
 }
 
 # ⭐ 占位提示**跟着当前值走**的那几项（2026-09-30 她提的：把「保镖小姐」从框里删掉之后，
-#   空框里要提示「保镖小姐」，而不是表里那个举例「小辞」）。
+#   空框里要提示「保镖小姐」）。
+#   ⚠ 那种「空着时提示什么」由表里第三项决定，而**称呼**那一项现在指向
+#     `Rafayel_config.DEFAULT_USER_NAME`（= 画像没记时他真会叫的那个）——
+#     不是随便一个举例，见上面 `_EDITABLE` 的说明。
 #   ⚠ **只有「称呼」这么办**：它的当前值本身就是一个有意义的示范（他现在就这么叫她），
 #     擦掉之后拿它当提示，等于「提醒你原来填的是什么、改回也是一个选择」。
 #   ⚠ 而「生日」的占位是**格式样例**（`03-06`）—— 换成当前值就把「怎么写」的提示弄丢了，
@@ -434,12 +444,19 @@ async def home(request: Request):
     #      变的只是**界面口径**：她不填，我们就当不知道。）
     met_day, known = met_known(uid, a)
 
-    def _row(label, value, hint_link="", edit_href="", edit_label="改"):
+    def _row(label, value, hint_link="", edit_href="", edit_label="改", suffix=""):
         """
         一行「标签 · 值」（值空 ⇒ 显示一句引导，不空着）。`edit_href` ⇒ 右侧挂一个入口。
 
         ⚠ `edit_label` 是给「相遇」那行用的：**空着的时候写「填一下」、填过就写「改」**
           —— 空表填是「补」，已有值才是「改」，两个词对用户不是一回事。
+
+        ⚠ `suffix` 是给「兜底默认值」用的（2026-09-30 她选 A）：**没填过的值别冒充是他记住的**。
+          称呼没填 ⇒ `保镖小姐（默认）`，跟 `/home/edit/name` 空框里的提示同一口径。
+          为什么后缀走 `.hint`（小灰字）而不是把整值置灰：
+          ① 这一行的**标签本来就是灰的**，值再灰就整行糊掉了；
+          ② 同一张卡里别的空值（「还没记住 / 还没填」）是深色的，只灰这一行像渲染 bug；
+          ③ `.hint` 是本页既有的「旁注」样式（右边的「改」就是它），借用不造新类名。
         """
         tail = ""
         if edit_href:
@@ -450,11 +467,17 @@ async def home(request: Request):
                 'padding:7px 0;border-bottom:0.5px solid rgba(0,0,0,.06)">'
                 '<span class="muted" style="font-size:13px">%s</span>'
                 '<span style="font-size:13px">%s%s</span></div>'
-                % (_esc(label), _esc(value), tail))
+                % (_esc(label),
+                   _esc(value) + (('<span class="hint">%s</span>' % _esc(suffix)) if suffix else ""),
+                   tail))
 
     rows = []
-    rows.append(_row("他怎么称呼你", a["name"] or "还没记住",
-                     edit_href="/home/edit/name"))
+    # ⭐ 空的不是「还没记住」—— 他其实**正在用** `DEFAULT_USER_NAME` 叫她，
+    #    所以写清楚它是兜底默认（跟输入框里的提示一个口径），并置灰表示「她没改过」。
+    rows.append(_row("他怎么称呼你",
+                     a["name"] or DEFAULT_USER_NAME,
+                     edit_href="/home/edit/name",
+                     suffix="" if a["name"] else "（默认）"))
     rows.append(_row("你的生日", birthday or "还没记住",
                      edit_href="/home/edit/birthday"))
     # 🌟 「相遇」现在跟「生日」一个待遇：本卡里就地能改（不再跳 `/settings`）。

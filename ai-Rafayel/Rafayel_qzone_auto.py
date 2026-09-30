@@ -31,6 +31,7 @@ from datetime import datetime, timedelta
 
 from Rafayel_config import (
     AUTO_GREET_TZ_OFFSET,               # ⏱ 时区沿用打招呼那一份：整条链上只该有一个「现在几点」
+    DEFAULT_USER_NAME,
     MEMORY_DIR, QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
     QZONE_AUTO_HOUR_END, QZONE_AUTO_HOUR_START, QZONE_AUTO_MAX_PER_DAY,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL, QZONE_RELEVANT,
@@ -42,7 +43,8 @@ ROOT = os.path.dirname(_HERE)                            # 项目根
 POOL_JSON = os.path.join(ROOT, "card", "qzone_pool.json")
 REMINDS_MD = os.path.join(ROOT, "card", "qzone_reminds.md")
 
-_DEFAULT_NAME = "保镖小姐"
+# ⭐ 唯一真相源在 `Rafayel_config.DEFAULT_USER_NAME`（2026-09-30 收拢）。
+_DEFAULT_NAME = DEFAULT_USER_NAME
 
 # 池子只在进程内缓存一次（30 KB，读一次就够；生成器改动需重启进程才生效）
 _POOL_CACHE = None

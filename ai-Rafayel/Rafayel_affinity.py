@@ -23,6 +23,8 @@ import os
 import re
 import time
 
+from Rafayel_config import DEFAULT_USER_NAME      # 她的默认称呼（唯一真相源在 config）
+
 # ---------------------------------------------------------------- 评分参数
 # ⚠ 这些数字是初版，**等真机跑一段时间再调**。改这里就够了。
 PT_PER_TURN = 1          # 每一轮对话
@@ -147,7 +149,8 @@ def level_of(score):
 #    正文在 `card/affinity/`。**要改一律改 md**，代码不写死任何等级。
 # ⚠ 本模块**只读**：这里只负责「读素材 + 算该发哪一条」，写盘一律交给 `Rafayel_daily`。
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # E:\ai-love
-_DEFAULT_NAME = "保镖小姐"          # 画像里没记称呼时的兜底（跟主动打招呼同一个口径）
+_DEFAULT_NAME = DEFAULT_USER_NAME   # 画像里没记称呼时的兜底（跟主动打招呼同一个口径）
+                                    # ⭐ 2026-09-30 起不再各写一份 —— 唯一真相源在 `Rafayel_config`
 MILESTONE_MAX = 5                   # 网页端「他说过的那句话」最多显示几条（她 2026-09-21 定成 5）
 
 # 素材里的表情标记是全角 + 二级名：`[表情：涂鸦叽：生气]`
