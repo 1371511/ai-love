@@ -34,7 +34,7 @@ from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
     AFFINITY_TONE, API_URL, DAILY_QA, LLM_EXTRA, MAX_TOKENS, MEMORY_DIR, MODEL,
-    QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
+    MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
     REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS,
     WB_MAX_ENTRIES, api_key,
 )
@@ -43,6 +43,10 @@ from Rafayel_config import (
 from Rafayel_dailyq import hint_for as dailyq_hint
 from Rafayel_event import fest_today as event_fest_today
 from Rafayel_memory import ConversationManager, load_memory, save_memory
+# 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）
+#   ⭐ 只调 `spawn_update` —— 它**起后台线程**判情绪，一秒都不占她等待的时间。
+#   ⚠ 绝不能在 `get_reply` 里**同步**判：那会直接 +1~2s 加到她等待的时间上。
+from Rafayel_mood import block_for, spawn_update
 from Rafayel_sticker import apply_cooldown, sticker_instructions
 from Rafayel_weather import nudge as weather_nudge
 from Rafayel_worldbook import get_worldbook
@@ -483,6 +487,23 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     if _now:
         request_messages.append({"role": "system", "content": _now})
 
+    # 4e. 💗 情绪（2026-10-01）：**追加到最后一条**，绝不塞进 system 头部。
+    #    ⚠ 位置跟时间感同一个理由：情绪**每轮都可能变**，放头部会把 DeepSeek 的
+    #       **前缀缓存**拦腰截断 ⇒ 后面的整段聊天历史永远按「未命中」计费。
+    #    ⭐ **并入牵绊度**：这里只给「此刻是什么心情」；「该闹到什么分寸」由
+    #       `Rafayel_affinity.level_prompt()` 里的**档位调制句**给（刚谈 vs 老夫老妻，
+    #       同一份心情不是一个样子）⇒ 两段是一套，不是两条互相打架的命令。
+    #    ⚠ 平静 / 没判出来 ⇒ `block_for` 返回空串 ⇒ **一条都不追加**（多数时候就是这样）。
+    #    ⚠ 只进 request_messages，**绝不写回 cm.messages**：写回就会被 save_memory 落盘，
+    #       每轮累积一份，最后固化成常驻人设（跟世界书 / 时间感同一个坑）。
+    if MOOD_ENABLE:
+        try:
+            _mood = block_for(cm.user_id)
+            if _mood:
+                request_messages.append({"role": "system", "content": _mood})
+        except Exception as e:
+            print("⚠️ 情绪注入失败（不影响对话）：%s" % e)
+
     # 5. 调用 DeepSeek API
     headers = {
         "Authorization": f"Bearer {effective_api_key}",
@@ -542,6 +563,22 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
                 cm.trim_facts()
 
             save_memory(user_id, cm)   # 每次对话后保存
+
+            # 8. 💗 情绪判定（**后台线程**，零延迟）
+            #    ⚠ 位置：`save_memory` 之后、`return` 之前 —— 判的是「这一轮结束时他的心情」，
+            #       那时本轮的话已经落盘了，后台线程读到的历史才是对的。
+            #    ⭐ 只起线程、**不等结果** ⇒ 她一秒都不用多等（这就是方案 B 的全部意义）。
+            #       ⚠ 方案 A（让模型在正文里带一行 MOOD 标记）省一次请求，但会把风险
+            #          放进**她看得见的正文**里 —— 那是她最不能接受的那种出戏，不换。
+            #    ⚠ 起在引擎层 ⇒ QQ 端与网页端**自动都生效**，两端各改一处的版本不做。
+            #    ⚠ 自己吞异常：情绪挂了顶多是「他今天没脾气」，绝不能拖累这一轮。
+            if MOOD_ENABLE:
+                try:
+                    spawn_update(cm.user_id, cm.get_recent_messages(),
+                                 effective_api_key)
+                except Exception as e:
+                    print("⚠️ 情绪判定起线程失败（不影响对话）：%s" % e)
+
             return reply
         else:
             error_msg = result.get("error", {}).get("message", str(result))

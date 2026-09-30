@@ -25,6 +25,12 @@ from Rafayel_config import (
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
 )
 from Rafayel_daily import record as daily_record
+# 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
+#   ⚠ 只给**事实**、不加指令 —— 让他自己带着这个心情写，不替他规定写什么。
+#   ⚠ 依赖方向合法：memory(2) → mood(1)；mood 只依赖 config，**不反向 import memory**。
+#   ⚠ `MOOD_ENABLE=False` 或心情是「平静」⇒ `mood_current()` 返回 None ⇒ 零变化。
+from Rafayel_mood import MOOD_TAGS as _MOOD_TAGS
+from Rafayel_mood import current as mood_current
 from Rafayel_profile import UserProfile
 
 # ============================================================
@@ -772,6 +778,19 @@ class ConversationManager:
         #    原来不带日期 ⇒ 摘要是**无时间坐标**的一段话，昨天的和今天的混在一起，
         #    这正是「把昨天当成今天」的另一个来源（她反馈的那个症状）。
         _day_now = _day_key(time.time())
+        # 💗 他**写这段日记时**的心情（2026-10-01，主档 2.7）
+        #   ⚠ 取的是「此刻」，不是这 8 轮的平均 —— 谁写日记不是写当下那一刻的心情。
+        #   ⚠ 情绪是后台线程判的 ⇒ 这里拿到的是**上一轮**判定的，差一轮，无感。
+        #   ⚠ 开关关着 / 心情是平静 ⇒ None ⇒ prompt 不加、日记也不记（零变化）。
+        _mood_now = None
+        try:
+            _mood_now = mood_current(self.user_id)
+        except Exception as _me:
+            print(f"⚠️ 取心情失败（日记照常写）：{_me}")
+        _mood_line = ("6. ⭐ 你写这段日记时的心情是：%s（强度 %d）。"
+                      "照着这个心情写，但**别把心情当题目** —— 该写那天那件事还是写那件事，"
+                      "心情只是你落笔时的口气。\n"
+                      % (_mood_now["mood"], _mood_now["level"])) if _mood_now else ""
         summary_prompt = f"""你正在为祁煜整理对话记忆。
 
 【这段对话发生在】{_day_label(_day_now)}
@@ -802,6 +821,7 @@ class ConversationManager:
 4. 用你自己（人设卡里那个祁煜）的口气，别写成台下旁观的观察记录。
 5. ⚠ **只写这段对话里真实发生过的**，不编。
    真没什么值得写的，就只输出两个字：无
+{_mood_line}
 
 对话内容：
 {json.dumps(to_summarize, ensure_ascii=False, indent=2)}
@@ -876,7 +896,10 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                 try:
                     _diary_text = _diary_text_from(diary_text)
                     if _diary_text:
-                        add_diary(self.user_id, _diary_text, src="he")
+                        # 💗 顺手把「写这条时他的心情」存进条目（主档 2.7）。
+                        #    ⚠ 只存**标签**、不存强度 —— 强度是瞬时的，跨天没意义（会衰减）。
+                        add_diary(self.user_id, _diary_text, src="he",
+                                  mood=(_mood_now or {}).get("mood") or "")
                     else:
                         print("[📔] 这次没有可写的日记段（摘要照常更新）")
                 except Exception as de:
@@ -1246,9 +1269,14 @@ def _diary_edit(user_id: str, fn) -> bool:
 
 
 def add_diary(user_id: str, text: str, src: str = "he", ts=None,
-              day: str = "", legacy: bool = False) -> bool:
+              day: str = "", legacy: bool = False, mood: str = "") -> bool:
     """
     追加一条日记。返回是否写入。**bot 侧**走这个（`generate_summary()` 末尾）。
+
+    💗 `mood`（2026-10-01）：写这条时他的心情**标签**（如「闷气」）。空 = 不记。
+       ⚠ 只存**标签、不存强度** —— 强度是瞬时的，隔天就衰减了，存下来是假数据。
+       ⚠ 老日记没有这个字段 ⇒ 读侧当「没记」，零迁移（`group_diary` 原样带出）。
+       ⚠ 她手写的（`src="her"`）不传 ⇒ 没有这一项（她写的时候不需要他的心情标签）。
 
     ⚠ `DIARY_ENABLE=False` ⇒ 直接返回 False（要停就改 config 常量，**别去删调用点** ——
       那样开关就只剩半个，跟 AUTO_GREET 那批同一个口径）。
@@ -1269,6 +1297,10 @@ def add_diary(user_id: str, text: str, src: str = "he", ts=None,
         ent["day"] = str(day)
     if legacy:
         ent["legacy"] = True
+    # 💗 心情标签：空 / 不是合法标签 ⇒ **不写这个字段**（老日记长什么样，新日记还是什么样）
+    #    ⚠ 宁可这条没有心情，也不往里塞脏数据（跟 key_facts 那个「先看类型再看内容」同理）
+    if mood and str(mood).strip() in _MOOD_TAGS:
+        ent["mood"] = str(mood).strip()
 
     def _do(entries):
         while any(e["id"] == ent["id"] for e in entries):     # 同毫秒撞了 ⇒ 换个 id

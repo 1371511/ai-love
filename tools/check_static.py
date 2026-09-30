@@ -39,6 +39,7 @@ ROOT = os.path.dirname(HERE)
 LAYER = {
     "Rafayel_config": 0,
     "Rafayel_profile": 1,
+    "Rafayel_mood": 1,        # ⭐ 2026-10-01 新模块：只依赖 config ⇒ 与 profile 同层
     "Rafayel_memory": 2,
     "Rafayel_llm": 3,
     "Rafayel_chat": 4,
@@ -54,6 +55,11 @@ WRITER_MODULES = {
     "Rafayel_memory", "Rafayel_profile", "Rafayel_daily", "Rafayel_dailyq",
     "Rafayel_greet", "Rafayel_qzone_auto", "Rafayel_qzone_comment",
     "Rafayel_event", "Rafayel_weather",
+    # ⭐ 2026-10-01 情绪（memory/{uid}_mood.json）。
+    #   ⚠⚠ **新模块必须登记在这里** —— 漏登记 = 网页端 import 它不红灯 = 红线白加一道锁。
+    #   （「每多一个模块，红线就多一个口子」说的就是这个，登记是补回去的那一步。）
+    #   ⇒ 网页端要情绪，走 `Rafayel_chat` 门面重新导出，别直接 import。
+    "Rafayel_mood",
 }
 # 网页端允许 import 的（全是只读）
 WEB_WHITELIST = {"Rafayel_affinity", "Rafayel_config"}
