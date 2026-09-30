@@ -43,7 +43,7 @@ from base import app, _page, _backbar, _two_way_footer, _esc, _current_uid
 #   ⚠ 这一处就把「网页端写 memory」的开口从 5 条变成 6 条 ——
 #     再要加别的写盘模块，得重新过一遍 ADR-22。
 from Rafayel_memory import (
-    load_diary, group_diary, diary_ts_from,
+    load_diary, group_diary, diary_ts_from, day_label,
     add_diary_by_her, edit_diary_by_her, delete_diary_by_her,
 )
 from Rafayel_config import DIARY_MAX_ITEMS, DIARY_MAX_LEN
@@ -176,10 +176,16 @@ def _dayqs(day, first=False):
 def _day_filter(groups, sel, total):
     """
     🔎 下拉：**「全部」+ 按月份分组的每一天**，每一项后面缀条数
-       （她要的形状：`前天（9月28日 星期一） · 2 条`）。
+       （她要的形状：`9月28日 星期一 · 2 条`）。
 
-    ⚠⭐ 每一天的文案**只用 `group_diary()` 给的那个 label** —— 本页一个字都不重算。
-      （本文件开头那条「日期文案只有一份实现」在这儿同样生效。自己拼 ⇒ 早晚跟列表打架。）
+    ⚠⭐ **选项里用的是 `day_label(day)`（绝对日期），不是 `group_diary()` 那个
+      「前天（9月28日 星期一）」** —— 2026-09-30 她截图：安卓那个原生下拉被折成两行
+      （可用宽度只有 200 出头：内边距 + 右边那个单选圈 + optgroup 缩进全在吃宽度）。
+      ⇒ 两个文案**各自取**，但**都来自引擎**：
+        · 下拉选项 = `day_label(day)`（短，`Rafayel_memory` 里的公共函数）
+        · 卡片标题 = `group_diary()` 给的相对说法（地方宽，「前天」更有温度）
+      ⚠ 页面**一个字都不重算日期** —— 这条是红线 6 的下延，别改成在这儿拼字符串。
+      ⚠ 挑日子时绝对日期本来就比「9 天前」好认（相对说法每过一天就变）。
     ⚠ `optgroup` 的年份：只有**不是**最新那组的年份才补「2025年」前缀，其余只写「9月」。
       基准取 `groups[0]`（最新那天）的年份 —— 日记里没写过东西的年份不会出现在下拉里，
       无所谓它是不是「今年」。
@@ -190,7 +196,9 @@ def _day_filter(groups, sel, total):
             % (" selected" if not sel else "", total)]
     cur_year = str(groups[0][0])[:4]
     cur_m = ""
-    for d, label, items in groups:
+    # ⚠ 元组第二项（相对说法）在这儿**故意不用** ⇒ 变量名leading `_` 标出来，
+    #   免得下次看的人以为漏用了。
+    for d, _rel_label, items in groups:
         d = str(d)
         if d[:7] != cur_m:                      # 换月了 ⇒ 收口上一个 optgroup，开新的
             if cur_m:
@@ -199,12 +207,16 @@ def _day_filter(groups, sel, total):
                 mon = int(d[5:7])
                 lab = "%d月" % mon if d[:4] == cur_year else "%s年%d月" % (d[:4], mon)
             except Exception:
-                lab = d[:7]                     # 脏数据：原様显示，别让整页 500
+                # 脏 day_key（比如 `2026-9-5` 这种没补零的）⇒ **整条当分组名**。
+                # ⚠ 别图省事写 `d[:7]` —— 那是机械截断，会截出「2026-9-」这种半截东西，
+                #   比原样显示更难懂。（`_day_key()` 和导入脚本给的都是补零的，
+                #   正常数据不会走到这儿；这一支纯粹是"万一"。）
+                lab = d
             opts.append('<optgroup label="%s">' % _esc(lab))
             cur_m = d[:7]
         opts.append('<option value="%s"%s>%s · %d 条</option>'
                     % (_esc(d), " selected" if d == sel else "",
-                       _esc(label), len(items)))
+                       _esc(day_label(d)), len(items)))
     opts.append("</optgroup>")
     # ⭐ `onchange` 提交只是**更顺**（渐进增强）：没有 JS 时旁边那个「筛」按钮照样能用。
     return """

@@ -84,6 +84,15 @@ _EDITABLE = {
                  "03-06"),
 }
 
+# ⭐ 占位提示**跟着当前值走**的那几项（2026-09-30 她提的：把「保镖小姐」从框里删掉之后，
+#   空框里要提示「保镖小姐」，而不是表里那个举例「小辞」）。
+#   ⚠ **只有「称呼」这么办**：它的当前值本身就是一个有意义的示范（他现在就这么叫她），
+#     擦掉之后拿它当提示，等于「提醒你原来填的是什么、改回也是一个选择」。
+#   ⚠ 而「生日」的占位是**格式样例**（`03-06`）—— 换成当前值就把「怎么写」的提示弄丢了，
+#     何况那一格本来就带着当前值，用户看得见，不需要再提示一遍。
+#   ⚠ 只在当前值**非空**时顶替；空着（刚「清除」过）就回落到表里那个举例。
+_PH_FROM_CUR = {"name"}
+
 # 🌐 落盘位置**不一样**的那一项：相遇日存在 `web/users.json`（跟 /settings 同一格），
 #    **不进 memory** —— 所以不能混进上面那张表（那张表统一走 `UserProfile`）。
 #   ⚠ 两个入口（这里 与 `/settings`）**共用** `base._check_met_day()` 那套校验。
@@ -112,7 +121,13 @@ HOME_CSS = """/* 头部：头像左，右侧上=用户名、下=各种信息+更
 .hero .txtcol{flex:1;min-width:0}
 .hero .txtcol h1{margin:0 0 5px;font-size:17px}
 .hero .meta{display:flex;align-items:baseline;justify-content:space-between;gap:10px}
-.hero .meta .txt{color:var(--c-muted);font-size:12px;min-width:0;overflow-wrap:anywhere}
+/* ⚠⚠ `overflow-wrap:anywhere` 已删（2026-09-30 她截图：日期被从中间劈开）——
+   它允许「放不下就在任意字符断开」，日期里的汉字 / 数字全是断点 ⇒ 必须去掉了。
+   改由下面 `.mi` 的 `nowrap` 保证「一项要么整块换行、要么整块留在这行」。 */
+.hero .meta .txt{color:var(--c-muted);font-size:12px;min-width:0}
+.mi{white-space:nowrap}
+/* 「 · 」分隔符由 CSS 生成 ⇒ HTML 里每一项都是干干净净的一块（也能单独拿来测） */
+.mi+.mi::before{content:" · "}
 .hero .meta a{white-space:nowrap}
 /* 底栏两个动作的样式（`.twobar`）**已搬到 `base.py` 的全站 CSS**（2026-09-30）：
    `_two_way_footer()` 是共用部件，样式不能寄存在本页的 `HOME_CSS` 里 ——
@@ -542,7 +557,16 @@ async def home(request: Request):
         _parts.append("生日 %s" % _mmdd_cn(birthday))
     if met_day:
         _parts.append("相遇 %s" % _ymd_cn(met_day))
-    meta_txt = " · ".join(_parts) or "还没聊过，先跟他说句话吧"
+    # ⭐ 2026-09-30 她截图：「相遇 2024年9月13日」被**从日期中间劈开**（「13日」自己掉到
+    #    第二行，看着很乱）。根因是 `.txt` 那条 `overflow-wrap:anywhere` ——
+    #    它明确允许「一个词放不下就在任意字符间断开」，而日期里的汉字和数字正好都是断点。
+    #    ⇒ 改法：**每一项单独包一个 `.mi`**，`.mi` 上是 `white-space:nowrap`（项内绝不拆），
+    #      分隔用的「 · 」改由 CSS 的 `::before` 生成 ⇒ 换行只可能发生在**项与项之间**。
+    #    ⚠ 别再拼回一个整串（`" · ".join(...)`）—— 那样又回到「随便哪儿都能断」。
+    meta_html = "".join('<span class="mi">%s</span>' % _esc(p) for p in _parts)
+    if not meta_html:
+        # 一句都没有（刚认识、什么都没填）⇒ 仍然是**一个不可断的块**
+        meta_html = '<span class="mi">%s</span>' % _esc("还没聊过，先跟他说句话吧")
 
     _av = _avatar_url(uid)
     if _av:
@@ -575,7 +599,9 @@ async def home(request: Request):
     """ % (saved_note,
            av_html,
            _esc(shown_name),
-           _esc(meta_txt),
+           # ⚠ 这里进的是**已经拼好且已转义**的 `meta_html`（每个 `.mi` 自己 `_esc`），
+           #   别再包一层 `_esc()` —— 那会把标签本身也转义成文字。
+           meta_html,
            "".join(rows),
            prof_chips,
            facts_html,
@@ -1010,6 +1036,11 @@ async def home_edit(request: Request, kind: str, err: str = ""):
                    'style="width:100%%;box-sizing:border-box">' % _esc(cur))
     else:
         cur = (UserProfile(uid).data.get(kind) or "").strip()
+        # ⭐ 占位提示换成「他现在怎么叫你」（见 `_PH_FROM_CUR` 的说明）：
+        #    框里**有值**时 placeholder 根本看不见 ⇒ 这条只在「她擦掉之后」显形，
+        #    正好是她要的那句提示。空着则不动，继续用表里的举例。
+        if kind in _PH_FROM_CUR and cur:
+            ph = cur
         control = ('<input name="value" value="%s" placeholder="%s" maxlength="20" '
                    'style="width:100%%;box-sizing:border-box">'
                    % (_esc(cur), _esc(ph)))
