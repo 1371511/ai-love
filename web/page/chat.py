@@ -39,13 +39,14 @@ import json
 import os
 import re
 import threading
+from urllib.parse import quote   # 🗄 日期拼进 URL 要编码（跟 `_dayqs` 同一条规矩：不裸塞）
 
 from fastapi import Form, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from base import (
     app, _page, _esc, _rich, _safe_uid, _avatar_url, _current_uid, _load_users,
-    MEMORY_DIR, CHAT_CSS, MENU_PATH,
+    MEMORY_DIR, CHAT_CSS, MENU_PATH, _backbar,
     # 🎨 表情标记的正则 —— 跟 `_rich()` 用**同一条**（`_pic_only()` 要判「剥完还剩不剩字」）
     _STICKER_TXT,
 )
@@ -177,7 +178,13 @@ TALK_CSS = """
    ⚠ 这一整套都挂在 `.phone.talk` 下：短信详情页（`/messages/{sid}`）用的是**同一个 `.bub`**
      （在 base.py 的 CHAT_CSS 里），不限定作用域就会把那边也改成 flex。 */
 .phone.talk .bub.him{display:flex;align-items:flex-end;gap:6px}
-.phone.talk .bub.him .tx{flex:1;min-width:0}
+/* 📐 2026-10-01 改：`.tx` 原来是 `flex:1` ⇒ 文字列**主动吃满** `max-width`，
+   于是「爱你。」和「（把布往画架上一搭，慢悠悠地…）」长得一样宽，
+   一屏下来全是同宽的方块（她 10-01 截图反馈「固定了宽度实测下来效果不行」）。
+   ⇒ 改成 `flex:0 1 auto`：**按内容宽度走**，只有超长才被 `max-width` 截住。
+   ⚠ `flex-shrink:1`（中间那个 1）必须留：长句子要能收缩给右侧小喇叭让位，
+     写成 `0 0 auto` 长句会顶破 `max-width`、把喇叭挤出气泡。 */
+.phone.talk .bub.him .tx{flex:0 1 auto;min-width:0}
 /* ⚠ `.spk` 默认 `display:none`，靠下面那条 `.js …` 才显形 ——
    **没 JS 就没有这个按钮**，而不是留一个戳了没反应的死图标。 */
 .spk{display:none}
@@ -238,6 +245,25 @@ TALK_CSS = """
 .phone.talk .ph-top>a,.phone.talk .ph-top>#mood-slot{flex:1;min-width:0;white-space:nowrap}
 .phone.talk .ph-top>b{flex:0 0 auto}
 .phone.talk .ph-top>#mood-slot{text-align:right;transition:color .5s ease,opacity .25s ease}
+/* 🗓 前几天的小结（2026-10-01 加）
+   ⚠⭐ 为什么**不能沿用** `.sys` 原本的居中：`.sys` 是给「已经牵绊到 Lv.N」那种
+     一行短提示用的；小结是**一整段**（实测 60~120 字），居中 + 灰字会读得很累。
+     ⇒ 左对齐、行高放宽、上下各留一截，做成「翻开旧页」的观感。
+   ⚠ 日期用 `<b>` 加粗一点点区分，别上色 —— 这一块整体应该是「退到背景里」的，
+     抢眼了就会跟真正的气泡打架。
+   ⚠ 限定 `.phone.talk`：`.sys` 在短信详情页也在用（base.py 的 CHAT_CSS），
+     那边没有小结，不该被这套样式带跑。 */
+.phone.talk .sys.daysum{text-align:left;max-width:82%;margin:10px 0 14px;
+     line-height:1.65;font-size:12px;color:#8A8880;
+     padding:8px 11px;background:rgba(0,0,0,.03);border-radius:10px}
+.phone.talk .sys.daysum b{font-weight:500;color:#6E6C65}
+/* 🗄 「看那天的原话 ›」（2026-10-01）
+   ⚠ `display:block` + 上边距：小结正文是一整段，链接跟在段落末尾会被当成正文的一部分
+     （而且点在字里行间很难戳中）⇒ 另起一行、独占一条热区。
+   ⚠ 只在**真有存档**的那天才渲染这个 `<a>`（服务端判的，见 `_archived_days`）
+     ⇒ 不存在点进去是空页的死链。 */
+.phone.talk .sys.daysum .arlink{display:block;margin-top:7px;
+     color:var(--c-brand-ink);text-decoration:none;font-size:12px}
 """
 
 # ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
@@ -669,6 +695,150 @@ def _read_talk(uid):
     return out
 
 
+def _read_days(uid):
+    """
+    🗓 读 `memory/{uid}.json` 的**日小结**（`day_summaries`），返回 [(date, text), …]。
+
+    ⭐⭐ 为什么要有这个函数（她 2026-10-01 反馈「三天前的记录不见了」）：
+      `roll_days()` 一跨天就把**那一整天的原话从 `messages` 里摘走**（物理删，
+      不是网页不显示），换成这里的一句小结。而 `/chat` 原来**只渲染 `messages`**
+      ⇒ 前一天说过什么，在网页上连个痕迹都没有，看着就像凭空蒸发。
+      ⇒ 把小结补回气泡区顶部，她往上翻至少能看到「9月24日：……」。
+    ⚠ 只是**补显示**，不恢复原话 —— 原话真的没了，这是 `DAY_ROLL` 的既定设计
+      （想留原话得改 `DAY_ROLL`，那是另一个决定，别在这儿顺手改）。
+    ⚠ 跟 `_read_talk()` 同一个口径：**直接读 json**，不 import `Rafayel_memory`
+      （ADR-22：网页端不许直接引引擎的读写模块）。只读、不写。
+    ⚠ 自己吞异常：小结读挂了顶多是不显示这几天，不能让整页打不开。
+    """
+    p = _memory_path(uid)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[💬] 读日小结失败（%s）：%s" % (uid, e))
+        return []
+    raw = data.get("day_summaries")
+    if not isinstance(raw, list):      # ⚠ 类型是对象/字符串时 `or []` 会迭代 key/字符
+        return []
+    out = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        d = str(item.get("date") or "").strip()
+        t = str(item.get("text") or "").strip()
+        if d and t:
+            out.append((d, t))
+    return out
+
+
+# ⚠ 小结正文**自带日期**（`_summarize_day` 生成的就是「9月24日星期四，她…」开头），
+#   再把 `day` 字段拼一个「9月24日」在前面 ⇒ 屏幕上会出现「9月24日 9月24日星期四…」。
+#   ⇒ 用这条把正文开头的日期**剥出来**单独加粗，而不是另加一份。
+_HEAD_DATE = re.compile(r"^\s*(\d{1,2}月\d{1,2}日(?:星期[一二三四五六日])?)\s*[,，、]?\s*")
+
+
+def _arch_path(uid):
+    """🗄 原话留档文件路径 `memory/{uid}_archive.json`（只读，跟 `_read_days` 一个套路）。"""
+    return os.path.join(MEMORY_DIR, "%s_archive.json" % _safe_uid(uid))
+
+
+def _archived_days(uid):
+    """
+    🗄 哪些天**存了原话**，返回 `set(date)`。
+
+    ⭐ 为什么要有它：小结是**每天都有**的，但原话存档只有 `ARCHIVE_KEEP` 打开之后
+      才写 ⇒ 老数据（她 09-24 / 09-25 那两条）**只有小结、没有原话**（原话早被删了）。
+      ⇒ 只对真有存档的那天挂「看原话」链接，没存档就别挂一个点进去是空页的死链。
+    ⚠ 直接 `json.load`，**不 import** `Rafayel_archive`（ADR-22：网页端不引引擎模块）。
+    ⚠ 读挂了返回空集合 —— 顶多是「链接不出现」，绝不能让整页打不开。
+    """
+    p = _arch_path(uid)
+    if not os.path.isfile(p):
+        return set()
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[💬] 读原话存档失败（%s）：%s" % (uid, e))
+        return set()
+    if not isinstance(data, dict):
+        return set()
+    days = data.get("days")
+    if not isinstance(days, list):
+        return set()
+    out = set()
+    for d in days:
+        if isinstance(d, dict):
+            dt = str(d.get("date") or "").strip()
+            if dt:
+                out.add(dt)
+    return out
+
+
+def _arch_day(uid, date):
+    """
+    🗄 某一天的原话，返回 [(role, text), …]；没有存档 ⇒ 空列表。
+
+    ⚠ 类型闸（全站红线）：`days`/`messages` 都**先 isinstance 再看内容**。
+    ⚠ `date` 来自 URL（她自己能改）⇒ 只做**等值比对**，不拼路径、不 eval
+      ⇒ 改不出越权读别人的档（文件名是登录 uid 定的，跟 `date` 无关）。
+    """
+    p = _arch_path(uid)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[💬] 读原话存档失败（%s）：%s" % (uid, e))
+        return []
+    if not isinstance(data, dict):
+        return []
+    days = data.get("days")
+    if not isinstance(days, list):
+        return []
+    for d in days:
+        if not isinstance(d, dict) or str(d.get("date") or "") != date:
+            continue
+        msgs = d.get("messages")
+        if not isinstance(msgs, list):
+            return []
+        out = []
+        for m in msgs:
+            if not isinstance(m, dict):
+                continue
+            role, txt = m.get("role"), m.get("content")
+            if role in ("user", "assistant") and isinstance(txt, str) and txt.strip():
+                out.append((role, txt))
+        return out
+    return []
+
+
+def _day_head(d):
+    """`2026-09-24` ⇒ `9月24日`。⚠ 只做显示，失败就原样返回（不猜）。"""
+    try:
+        y, m, dd = d.split("-")
+        return "%d月%d日" % (int(m), int(dd))
+    except Exception:
+        return d
+
+
+def _split_day_text(d, t):
+    """
+    把一条小结拆成 (日期, 正文)，**正文里不再重复日期**。
+
+    ⭐ 优先用**正文开头自带的日期**（它连星期都有，比 `date` 字段信息量更大）；
+      正文万一没带（老数据 / 模型没照格式写）⇒ 退回 `date` 字段算一份。
+    ⚠ 剥不干净就整条当正文、日期用兜底 —— 宁可日期朴素，也不能把正文切坏。
+    """
+    m = _HEAD_DATE.match(t or "")
+    if m:
+        return m.group(1), t[m.end():].strip()
+    return _day_head(d), (t or "").strip()
+
+
 def _segs(text):
     """
     一条消息 ⇒ 几条气泡。
@@ -940,9 +1110,27 @@ def _one_turn(uid, text):
 
 
 def _talk_body(uid, msgs, shown, tail=""):
-    """气泡区 HTML（`<div class="chat">` 里面那一段）；`tail` 追加在最后。"""
+    """
+    气泡区 HTML（`<div class="chat">` 里面那一段）；`tail` 追加在最后。
+
+    🗓 顶部那几行「前几天」（2026-10-01 加）：`roll_days()` 把旧原话摘走后换成的
+      日小结，原来**根本不渲染** ⇒ 她往上翻只看到「记录凭空消失」。
+      ⇒ 现在补在最前面，她至少知道那天聊过什么。
+    ⚠ 小结排在**最前**：气泡区是「旧的在上、新的在下」，跟时间顺序一致。
+    ⚠ `rows` 为空但**有小结**时不能落进「还没聊过」那一支 —— 那样小结会被吃掉。
+    """
     her = _her_av(uid, shown)
     rows = []
+    # 🗓 前几天的小结（旧原话被 roll_days 摘走后留下的那句话）
+    #    ⭐ 真存了原话的那天，再挂一个「看那天的原话 →」（她 10-01 定「原话不删，供用户查看」）。
+    #    ⚠ 只对 `_archived_days()` 里有的那天挂 —— 老数据原话早删了，挂了是点进去空页的死链。
+    archived = _archived_days(uid)
+    for d, t in _read_days(uid):
+        head, body = _split_day_text(d, t)
+        link = ('<a class="arlink" href="/chat/history?day=%s">看那天的原话 ›</a>'
+                % quote(d)) if d in archived else ""
+        rows.append('<div class="sys daysum"><b>%s</b> %s%s</div>'
+                    % (_esc(head), _esc(body), link))
     for role, txt in msgs:
         # ⚠ 逐段配 `_says_of()` 的结果（同序同长）—— 格式判定要看**整条** txt
         for seg, say in zip(_segs(txt), _says_of(txt)):
@@ -989,6 +1177,48 @@ async def chat_page(request: Request):
             '<button type="submit">发送</button>'
             '</form></div>' % (head, chat, MENU_PATH))
     return _page(body, title="祁煜", css=CHAT_CSS + TALK_CSS, script=TALK_JS)
+
+
+@app.get("/chat/history", response_class=HTMLResponse)
+async def chat_history(request: Request, day: str = ""):
+    """
+    🗄 某一天的原话（2026-10-01 她定「原话不删，供用户查看，不调用」）。
+
+    ⭐ **只读**：跟 `/chat/voice` 一个口径，一个字节都不写盘。
+    ⚠ `day` 来自 URL（她自己能改）⇒ 只做等值比对、不拼路径
+      ⇒ 改不出越权读别人的档（文件由**登录 uid** 决定，跟 `day` 无关）。
+    ⚠ 没有这天 / 这天没存档 ⇒ **不报错**，给一句「这天还没有存档」——
+      老数据（09-24 / 09-25）的原话在被删掉的年代就真没了，补不回来，
+      如实说比给个空页面好。
+    ⚠⚠ **不调引擎、不喂模型**：这里只是把留档渲出来给她看，
+      归档从头到尾不进 prompt（进了就把 `DAY_ROLL` 白做了）。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    day = (day or "").strip()
+    msgs = _arch_day(uid, day) if day else []
+    shown = _shown_name(uid)
+    if day and msgs:
+        chat = _talk_body(uid, msgs, shown)
+        title = "%s 那天" % _day_head(day)
+    elif day:
+        chat = ('<div class="sys">这天还没有存下原话 —— '
+                '原话是从开启留档之后才开始存的，更早的那些已经不在了。</div>')
+        title = "%s 那天" % _day_head(day)
+    else:
+        chat = '<div class="sys">没指定哪一天</div>'
+        title = "那天"
+    # ⭐ 顶栏左边那格是「‹ 聊天」（回 `/chat`）；右格留空但**必须占位** ——
+    #    `.ph-top` 是 `space-between`，少一格中间的标题就被推偏（见 `TALK_CSS` 那条规矩）。
+    head = ('<div class="ph-top"><a href="/chat" class="hint">‹ 聊天</a>'
+            '<b>%s</b><span class="hint"></span></div>' % _esc(title))
+    # ⭐ 底栏用 `_backbar()`：它就渲染「‹ 返回目录」**一个**动作（带 `backonly`，
+    #    桌面版整条藏掉）。⚠ 别再挂一个「回聊天」—— 顶栏已经有了，
+    #    **同一去向绝不挂两处**；要挂第二个动作就得换 `_two_way_footer()` 且绝不带 backonly。
+    body = ('<div class="phone talk">%s<div class="chat">%s</div></div>%s'
+            % (head, chat, _backbar()))
+    return _page(body, title=title, css=CHAT_CSS + TALK_CSS)
 
 
 @app.post("/chat/send")

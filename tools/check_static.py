@@ -60,6 +60,11 @@ WRITER_MODULES = {
     #   （「每多一个模块，红线就多一个口子」说的就是这个，登记是补回去的那一步。）
     #   ⇒ 网页端要情绪，走 `Rafayel_chat` 门面重新导出，别直接 import。
     "Rafayel_mood",
+    # 🗄 2026-10-01 原话留档（memory/{uid}_archive.json）。
+    #   ⚠ 同理**必须登记**：它写盘，漏登记 = 网页端 import 它不红灯。
+    #   ⭐ 网页端读原话是**自己 json.load** 那份文件（见 `page/chat.py:_arch_day`），
+    #      不 import 本模块 ⇒ 开口数不增。
+    "Rafayel_archive",
 }
 # 网页端允许 import 的（全是只读）
 WEB_WHITELIST = {"Rafayel_affinity", "Rafayel_config"}

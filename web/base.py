@@ -413,7 +413,13 @@ CHAT_CSS = """
     overflow:hidden}
 .av img{width:100%;height:100%;object-fit:cover;display:block;border-radius:50%}
 .row.me .av{background:#F6DDE7;color:#8E3556}
-.bub{max-width:76%;background:#fff;border-radius:12px;padding:8px 11px;font-size:13.5px;
+/* 📐 2026-10-01：`max-width` 76% ⇒ **82%**。
+   她 10-01 反馈气泡「像固定了宽度」—— 76% 时手机壳 356px 里气泡只有 270px，
+   右边空出一大片，跟 QQ 里那种「气泡占大半行」的观感差很远。
+   ⇒ 抬到 82%（≈292px），左右各留一点呼吸，长句也更舒展。
+   ⚠ 这条在**共用** `CHAT_CSS` 里 ⇒ 短信详情页 `/messages/{sid}` 的气泡**跟着一起变宽**，
+     改这里等于两处同时改，另一处要一起看（不是漏，是有意为之）。 */
+.bub{max-width:82%;background:#fff;border-radius:12px;padding:8px 11px;font-size:13.5px;
      box-shadow:0 0 0 .5px rgba(0,0,0,.06);word-break:break-word}
 .row.me .bub{background:#D4537E;color:#fff}
 .bub.tip{background:transparent;border:1px dashed rgba(0,0,0,.22);color:#999;box-shadow:none}

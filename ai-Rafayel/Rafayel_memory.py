@@ -25,6 +25,11 @@ from Rafayel_config import (
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS,
 )
 from Rafayel_daily import record as daily_record
+# 🗄 原话留档（2026-10-01 她定「原话不删，供用户查看，不调用」）。
+#   ⚠ 依赖方向合法：memory(2) → archive(1)；archive **只依赖 config**，不反向 import memory。
+#   ⚠⭐ 这里**只有写入**——本模块从头到尾不读归档，归档也不进任何 prompt
+#      （进了就等于把 DAY_ROLL 白做：旧原话回上下文，他照样把昨天当今天）。
+from Rafayel_archive import append as archive_append
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
 #   ⚠ 只给**事实**、不加指令 —— 让他自己带着这个心情写，不替他规定写什么。
 #   ⚠ 依赖方向合法：memory(2) → mood(1)；mood 只依赖 config，**不反向 import memory**。
@@ -677,6 +682,22 @@ class ConversationManager:
         if not text:
             return False                      # ⚠ 写不出小结就不摘：绝不丢记录
 
+        # 🗄 原话留档（2026-10-01 她定「原话不删，供用户查看，不调用」）
+        #    ⚠⭐ **先存后删**，顺序不能反：下面那一行 `self.messages = [msg[0]]`
+        #       是**物理删除**，原话从这一刻起就没了，存得慢一点也得排在它前面。
+        #    ⚠ 存失败 ⇒ **照样滚**（返回 True），只是那天没存档 ——
+        #       不能因为归档写不动就让历史永不清空、prompt 越滚越长；
+        #       但一定要**打日志**，别让「没存上」变成谁也不知道的静默丢失。
+        #    ⚠ `ARCHIVE_KEEP=False` ⇒ `append()` 自己返回 0，一行都不写。
+        try:
+            n = archive_append(self.user_id, prev, old)
+            if n:
+                print("[🗄] 已留档 %s 的原话 %d 条" % (prev, n))
+            else:
+                print("[🗄] %s 的原话未留档（开关关着 or 无内容）" % prev)
+        except Exception as ae:
+            print("⚠️ 原话留档失败（历史照常滚动）：%s" % ae)
+
         self.messages = [self.messages[0]]
         self.day_summaries.append({"date": prev, "text": text})
         # 只留最近 DAY_KEEP 天（老的自然掉队，文件也不会越长越大）
@@ -828,10 +849,27 @@ class ConversationManager:
         return all_messages
 
     def truncate_history(self):
-        """截断历史，保留最近 N 轮 + system"""
+        """
+        截断历史，保留最近 N 轮 + system。
+
+        🗄 第二个删源（2026-10-01 她定「原话不删」）：被裁掉的那些**先留档**再删。
+           ⚠ 存的是「今天」（`_day_key(now)`）—— 这些消息还没跨天，属于当前这一天；
+              等真跨天时 `roll_days()` 会把**剩下的**再追加进去 ⇒ 两批不重叠、
+              时间顺序也正好（先裁的在前、后摘的在后）。详见 `Rafayel_archive.append`。
+           ⚠ 跟 `roll_days` 同一个口径：**先存后删**；存失败也照裁（不阻塞对话），
+              但要打日志。
+        """
         all_messages = self.messages[1:]  # 去掉 system
         if len(all_messages) > MAX_HISTORY_TURNS * 2:
             recent = all_messages[-(MAX_HISTORY_TURNS * 2):]
+            dropped = all_messages[:len(all_messages) - len(recent)]
+            if dropped:
+                try:
+                    n = archive_append(self.user_id, _day_key(time.time()), dropped)
+                    if n:
+                        print("[🗄] 已留档今天被裁的原话 %d 条" % n)
+                except Exception as ae:
+                    print("⚠️ 原话留档失败（历史照常裁剪）：%s" % ae)
             self.messages = [self.messages[0]] + recent
 
     def generate_summary(self, api_key):
