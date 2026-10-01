@@ -328,6 +328,37 @@ def prompt_block(mood, level, prev=None):
             out += "（刚才你还是「%s」。别跳 —— 情绪转弯要有过程，允许沉默、短句、话说到一半。）\n" % pm
     return out
 
+# ---------------------------------------------------------------- 展示文案
+# ⭐ 顶栏那一行（2026-10-01）：**只给网页端看** —— 不进 prompt、不进模型上下文、不写盘。
+# ⚠ 口径（她 2026-10-01 定）：不加「像是…」这种推测前缀，直接说状态。
+# ⚠ 第二列那串必须和 `web/base.py` 的 `:root` 里 10 个变量名逐个对上。
+MOOD_HINTS = {
+    "愉悦": ("心情不错", "--c-mood-happy"),
+    "惦记": ("在想你", "--c-mood-miss"),
+    "期待": ("在等一件事", "--c-mood-expect"),
+    "得意": ("有点得意", "--c-mood-proud"),
+    "嘴硬": ("还在嘴硬", "--c-mood-stubborn"),
+    "吃醋": ("有点吃醋", "--c-mood-jealous"),
+    "闷气": ("有点闷", "--c-mood-sulky"),
+    "担忧": ("放心不下", "--c-mood-worry"),
+    "低落": ("情绪不高", "--c-mood-down"),
+    "内疚": ("过意不去", "--c-mood-guilt"),
+}
+
+
+def mood_hint(user_id, now=None):
+    """
+    顶栏那一格 ⇒ `(文案, 颜色变量名)`；**平静 / 没数据 / 开关关了 ⇒ None**
+    （调用方拿到 None 就显示原来的「在 ●」）。
+
+    ⚠ 复用 `current()` ⇒ 衰减照旧**读时算**，不另开定时任务、不写盘。
+    ⚠ 这是展示层用的，别拿它去拼 prompt（那是 `block_for` 的活）。
+    """
+    d = current(user_id, now=now)
+    if not d:
+        return None
+    return MOOD_HINTS.get(d["mood"])
+
 
 def block_for(user_id, now=None):
     """`current()` + `prompt_block()` 一步到位（第 3 批调这个）。没有心情 ⇒ 空串。"""

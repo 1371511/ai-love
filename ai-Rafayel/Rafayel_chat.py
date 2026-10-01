@@ -63,6 +63,8 @@ from Rafayel_llm import (
 
 # —— 旁支：主动打招呼（素材原文直发，不经过模型） ——
 from Rafayel_greet import load_pools, try_greet
+from Rafayel_mood import mood_hint   # 💗 顶栏心情（2026-10-01）：门面转出，网页端不许直接 import mood
+
 
 __all__ = [
     # 对外调用

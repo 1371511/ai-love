@@ -41,14 +41,14 @@ import re
 import threading
 
 from fastapi import Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 
 from base import (
     app, _page, _esc, _rich, _safe_uid, _avatar_url, _current_uid, _load_users,
     MEMORY_DIR, CHAT_CSS, MENU_PATH,
 )
 from Rafayel_affinity import compute, current_level, init_unlocked, pending_unlock
-from Rafayel_chat import get_reply, take_opening
+from Rafayel_chat import get_reply, mood_hint, take_opening
 from Rafayel_config import AFFINITY_UNLOCK
 from Rafayel_daily import load_unlocked, save_unlocked
 from Rafayel_voice import strip_actions, synth_wav
@@ -149,6 +149,14 @@ TALK_CSS = """
 .phone.talk .bub .spk.on{background:#8E3556;color:#fff}
 /* 这句拿不到音频（404 已滚出历史 / 503 TTS 挂了）⇒ 闪一下再恢复，别停成死状态 */
 .phone.talk .bub .spk.bad{background:rgba(0,0,0,.05);color:#B4B2A9}
+/* 💗 顶栏心情（2026-10-01）
+   ⚠⚠ 为什么非加这三条：`.ph-top` 是 `justify-content:space-between` ⇒ 右边那格
+     文字一变长，**中间的「祁煜」会被推着左右挪** —— 那就是最不丝滑的地方。
+     左右两格各 `flex:1`、中间不伸缩 ⇒ 标题真居中，右边怎么换它都不动。
+   ⚠ 只挂 `.phone.talk`：`/messages/{sid}` 用的是 base.py 里**同一个 `.ph-top`**。 */
+.phone.talk .ph-top>a,.phone.talk .ph-top>#mood-slot{flex:1;min-width:0;white-space:nowrap}
+.phone.talk .ph-top>b{flex:0 0 auto}
+.phone.talk .ph-top>#mood-slot{text-align:right;transition:color .5s ease,opacity .25s ease}
 """
 
 # ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
@@ -221,7 +229,7 @@ TALK_JS = r"""
       var n = document.getElementById('new');
       if (n) { n.removeAttribute('id'); }
       unlock();
-      toBottom();
+      refreshMood();          // 💗 等他那边判完心情（1.5s / 4s 各拉一次）
     }).catch(function () {
       // 拿不到片段 ⇒ 退回整页提交（她那句话别丢）
       ta.value = t;
@@ -230,6 +238,39 @@ TALK_JS = r"""
       form.submit();
     });
   });
+
+  // ============================================================
+  // 💗 顶栏心情自动切换（2026-10-01）
+  // ⚠⭐ 为什么不能顺手塞进 `/chat/send` 的响应里：判定是**异步线程**
+  //   （`Rafayel_mood.spawn_update`），send 返回那一刻它还没算完 ⇒ 拿到的永远是上一轮的值。
+  //   ⇒ 只能等一会儿再单独拉一次；拉两次是给慢的那次兜底（判定超时上限 8s）。
+  // ⚠ 淡出 → 换字换色 → 淡入：纯换 textContent 是硬切，那就谈不上丝滑。
+  // ⚠ 没变就直接 return，否则每次发送都白闪一下。
+  // ============================================================
+  function refreshMood() {
+    function pull() {
+      fetch('/chat/mood').then(function (r) { return r.json(); }).then(function (d) {
+        var el = document.getElementById('mood-slot');
+        if (!el) { return; }
+        var sig = d.calm ? 'calm' : d.text;
+        if (el.getAttribute('data-sig') === sig) { return; }
+        el.style.opacity = 0;
+        setTimeout(function () {
+          if (d.calm) {
+            el.style.color = '';
+            el.innerHTML = '在<span class="dot"></span>';
+          } else {
+            el.style.color = 'var(' + d.color + ')';
+            el.textContent = d.text;
+          }
+          el.setAttribute('data-sig', sig);
+          el.style.opacity = 1;
+        }, 250);
+      }).catch(function () {});
+    }
+    setTimeout(pull, 1500);
+    setTimeout(pull, 4000);
+  }
 
   // ============================================================
   // 🔊 点句子听他说（2026-09-29）
@@ -524,6 +565,23 @@ def _unlock_tick(uid):
     except Exception as e:
         print("[💞] 跨级记账失败（不影响对话）：%s" % e)
 
+def _mood_html(uid):
+    """顶栏右侧那一格：有心情 ⇒ 彩色文案；否则 ⇒ 原样「在 ●」。
+
+    ⚠ 自己吞异常 —— 心情读挂了顶多是「看不出他今天怎么样」，不能让整页打不开。
+    ⚠ `data-sig` 给前端比对用：没变就不重放淡入淡出。
+    """
+    try:
+        m = mood_hint(uid)
+    except Exception as e:
+        print("[💗] 心情渲染失败（退回在线点）：%s" % e)
+        m = None
+    if not m:
+        return ('<span class="hint" id="mood-slot" data-sig="calm">'
+                '在<span class="dot"></span></span>')
+    text, color = m
+    return ('<span class="hint" id="mood-slot" data-sig="%s" '
+            'style="color:var(%s)">%s</span>' % (text, color, _esc(text)))
 
 def _one_turn(uid, text):
     """跑一轮对话（同步、**持锁**）⇒ 调用处丢 `asyncio.to_thread`。"""
@@ -570,8 +628,8 @@ async def chat_page(request: Request):
     shown = _shown_name(uid)
     chat = _talk_body(uid, _read_talk(uid), shown)
     head = ('<div class="ph-top"><a href="%s" class="hint">‹ 目录</a>'
-            '<b>祁煜</b><span class="hint">在<span class="dot"></span></span></div>'
-            % MENU_PATH)
+            '<b>祁煜</b>%s</div>'
+            % (MENU_PATH, _mood_html(uid)))
     body = ('<div class="phone talk">%s<div class="chat" id="chat">%s</div></div>'
             '<div class="bar-bottom">'
             '<form id="say" method="post" action="/chat/send">'
@@ -649,6 +707,25 @@ async def chat_send(request: Request, text: str = Form("")):
 VOICE_CACHE_MAX = 60
 _VOICE_CACHE = collections.OrderedDict()
 _VOICE_GUARD = threading.Lock()
+
+
+@app.get("/chat/mood")
+async def chat_mood(request: Request):
+    """顶栏心情的**只读**接口（自动刷新用）。
+
+    ⚠ 一个字节都不写盘 —— 跟 `GET /chat/voice` 同待遇，ADR-22 那条只读口子没扩大。
+    ⚠ 平静 / 没数据 / 没登录 ⇒ 一律 `{"calm": true}`，前端据此显示「在 ●」。
+    """
+    uid = _current_uid(request)
+    m = None
+    if uid:
+        try:
+            m = mood_hint(uid)
+        except Exception as e:
+            print("[💗] 心情接口失败：%s" % e)
+    if not m:
+        return JSONResponse({"calm": True})
+    return JSONResponse({"text": m[0], "color": m[1]})
 
 
 @app.get(VOICE_PATH)

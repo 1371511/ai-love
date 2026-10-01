@@ -258,6 +258,12 @@ CSS = """/* 🎨 主题变量层（2026-09-30 预留，等「自定义美化」�
   --c-brand-halo:rgba(212,83,126,.18);--c-veil:rgba(0,0,0,.34);
   --c-chip:#F3F1EC;--c-sunk:#EEE;--c-sunk-soft:#F2F2F2;
   --c-danger:#B03030;--c-ok:#4CAF7D;--c-off:#B4B2A9;
+    /* 💗 情绪色（2026-10-01）：只上文字、不加底色；明度压同一档，混着看不杂。
+     ⚠ 名字必须和 `Rafayel_mood.MOOD_HINTS` 第二列一致。 */
+  --c-mood-happy:#B8720E;--c-mood-miss:#993556;--c-mood-expect:#185FA5;
+  --c-mood-proud:#534AB7;--c-mood-stubborn:#7A6A55;--c-mood-jealous:#43701A;
+  --c-mood-sulky:#3F5570;--c-mood-worry:#8A6A1E;--c-mood-down:#4A4A52;
+  --c-mood-guilt:#712B13;
   --r-card:12px;--r-ctl:8px
 }
 body{margin:0;padding:2rem 1rem;background:var(--c-bg);color:var(--c-ink);font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;line-height:1.6}
