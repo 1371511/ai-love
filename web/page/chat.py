@@ -294,6 +294,30 @@ TALK_CSS = """
     .bar-bottom{flex:0 0 auto}
   }
 }
+/* ⌛ 「他正在输入…」占位气泡（2026-10-02）
+------------------------------------------------------------
+⭐ 为什么需要它：她的气泡改成**乐观插入**（点发送就上屏，见 `TALK_JS` 里 `herBubble()`）
+   之后，屏幕是不空了，但接下来等他回话那 1~2 秒仍然是「什么都没发生」。
+   这段空白填上一个会呼吸的三个点 ⇒ 那 1~2 秒变成「他正在回我」，而不是「是不是卡了」。
+⚠⭐ 全部挂在 `.js` 根类下：**没 JS 就永远不会出现**。
+   理由跟 `.spk` 小喇叭一样 —— 这个气泡是**靠 JS 插进去、也靠 JS 撤掉的**；
+   没 JS 那条路是整页 POST + 303 重载，页面一刷新就没了，本来也不需要它。
+   挂 `.js` 之后，就算哪天 JS 挂了，也只会「没有这个提示」，不会「留一个永远撤不掉的点」。
+⚠ 三个 `<i>` 而不是 `::after` 画三个点：三点要**错开相位**依次亮（更像在打字），
+   `::after` 只有一个伪元素、没法各自 `animation-delay`。
+⚠ `transform` 只动 `translateY` 不动 `width/height`：后者每帧都要重排，前者走合成层。 */
+.js .phone.talk .chat .bub.wait{display:flex;align-items:center;gap:5px;padding:12px 13px}
+.js .phone.talk .chat .bub.wait i{width:5px;height:5px;border-radius:50%;
+     background:#B9B7AF;display:block;animation:tydot 1.1s ease-in-out infinite}
+.js .phone.talk .chat .bub.wait i:nth-child(2){animation-delay:.18s}
+.js .phone.talk .chat .bub.wait i:nth-child(3){animation-delay:.36s}
+@keyframes tydot{0%,60%,100%{opacity:.3;transform:translateY(0)}
+                 30%{opacity:.9;transform:translateY(-3px)}}
+/* 🛑 关掉动效的人：三个点**静止地留着**，不闪也不跳（跟上面 `.typing` 那条一个口径）。
+   ⚠ 别写成 `display:none` —— 那就等于把「他在回我」这个信息也一起没收了。 */
+@media (prefers-reduced-motion:reduce){
+  .js .phone.talk .chat .bub.wait i{animation:none;opacity:.45}
+}
 """
 
 # ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
@@ -354,6 +378,53 @@ TALK_JS = r"""
     sending = false;
     if (btn) { btn.disabled = false; }
     ta.focus();
+  }
+
+  // ============================================================
+  // ⚡ 乐观插入（2026-10-02 —— 她提的「我发出去的消息没能及时发出去，
+  //    要等 1~2 秒、页面像刷新了一下才弹出我的气泡」）
+  // ------------------------------------------------------------
+  // ⭐⭐ 病因：原来 `submit` 里**一个 DOM 都没插**，只清空输入框就发请求，
+  //    等服务端把「她的气泡 + 他的回复」打包回来才 `insertAdjacentHTML` 一次性落地
+  //    ⇒ 她的气泡注定要等一整个 LLM 往返，而且两条一起落地 = 高度突变 + 硬滚到底
+  //    = 她看到的「刷一下」。
+  // ⭐⭐ 修法：她自己敲的那句话**本来就是真相源**，没必要绕服务端一圈 ——
+  //    点发送那一刻就地画出来，服务端那趟只用来取「他的回复」。
+  // ⚠⭐ 配套改动（**少了这一半会插出两条一样的**）：`/chat/send` 在 fetch 那条路
+  //    不再渲染她的气泡（见 Python 侧 `frag = [] if typing else [...]` 那行）；
+  //    没 JS 的保底路（整页 303）照旧由服务端渲染 ⇒ 零影响。
+  // ⚠ 用 `createElement` + `textContent`，**不拼 HTML 字符串** ⇒
+  //    ① 天然防注入（她输入什么都是纯文本）② 不用在 JS 里复刻服务端那套 `_rich()`
+  //    （她只发纯文字，服务端那套是为 `[表情:x]` 准备的，这边用不上）。
+  // ⚠ 头像不自己拼：从页面上**已有的**一条同类气泡里拷 `.av` 的 innerHTML
+  //    （那是服务端渲好的、带正确 URL 的），取不到就留空 —— 空 `.av` 有底色，不难看。
+  // ============================================================
+  function bubbleRow(side, bubCls, text) {
+    // `side`：'me' = 她那侧（右边），'' = 他那侧（左边）。
+    var row = document.createElement('div');
+    row.className = side ? ('row ' + side) : 'row';
+    var av = document.createElement('div');
+    av.className = 'av';
+    var ref = box.querySelector(side ? '.row.me .av' : '.row:not(.me) .av');
+    // ⚠ 她**第一条**消息时页面上还没有她的气泡 ⇒ 从服务端藏的样板 `#herav` 取
+    //   （见 Python 侧 `chat_page` 里那个 `<div id="herav" hidden>`）。都取不到就留空。
+    if (!ref && side) { ref = document.getElementById('herav'); }
+    if (ref) { av.innerHTML = ref.innerHTML; }
+    var bub = document.createElement('div');
+    bub.className = bubCls;
+    if (text) { bub.textContent = text; }
+    row.appendChild(av);
+    row.appendChild(bub);
+    return row;
+  }
+
+  function himWait() {
+    // ⌛ 等他回话那 1~2 秒别空着：三个会呼吸的点（样式见 `TALK_CSS` 末尾）。
+    //    ⚠ 它**不带 `data-ty`** ⇒ 打字机的 `tyCollect()` 不会把它当成「要打字的气泡」。
+    var row = bubbleRow('', 'bub wait', '');
+    var bub = row.lastChild;
+    for (var i = 0; i < 3; i++) { bub.appendChild(document.createElement('i')); }
+    return row;
   }
 
   // ============================================================
@@ -533,6 +604,14 @@ TALK_JS = r"""
     //    不然两条 get_reply 并发会把 `memory/*.json` 互相覆盖，直接丢话）。
     ta.value = '';
     grow();
+    // ⚡ 乐观插入：她的气泡**立刻**上屏，不等这一整轮往返（详见 `bubbleRow()` 头顶那段）。
+    //    ⚠ 两条都留引用：他的片段到了要撤掉那三个点（`waitRow`）；
+    //      fetch 失败退回整页提交前要撤掉她的气泡（`herRow`）——
+    //      否则会出现「输入框里已经恢复这句话、气泡里也还挂着一句」的重复观感。
+    var herRow = bubbleRow('me', 'bub', t);
+    box.appendChild(herRow);
+    var waitRow = himWait();
+    box.appendChild(waitRow);
     // ⚠⭐ 发出去就先滚（`force`）—— 她刚发完，视线必须跟着自己那条气泡走，
     //    不能等回复来了才动。这一步是「原来完全没滚」和「现在不拉也能看」的分界。
     toBottom(true);
@@ -547,6 +626,12 @@ TALK_JS = r"""
       if (!r.ok) { throw new Error(r.status); }
       return r.text();
     }).then(function (frag) {
+      // ⌛ 他的话到手 ⇒ 撤掉「正在输入」那三个点。
+      //    ⚠ 必须 try：这儿一旦抛异常就会掉进下面的 `catch`，
+      //      把**已经拿到的回复**再整页重发一遍（丢话比多留一条点严重得多）。
+      try {
+        if (waitRow && waitRow.parentNode) { waitRow.parentNode.removeChild(waitRow); }
+      } catch (e) {}
       // ⚠⭐ `mark` 必须在 `insertAdjacentHTML` **之前**取 —— 它是这一轮之前的子节点数，
       //    插完之后从 `mark` 往后数，正好就是刚加进来的那几条 `.row`。
       //    ⚠ 不能用「`frag` 里数出来几个」或「再解析一遍 `frag`」代替：
@@ -581,6 +666,12 @@ TALK_JS = r"""
       });
     }).catch(function () {
       // 拿不到片段 ⇒ 退回整页提交（她那句话别丢）
+      // ⚠ 先把乐观插入的那两条撤掉：文本马上要还回输入框，气泡里再留一份就是两条。
+      //    整页提交后页面重载本来也会清掉，但**提交前**这一瞬间不能让她看见重复。
+      try {
+        if (waitRow && waitRow.parentNode) { waitRow.parentNode.removeChild(waitRow); }
+        if (herRow && herRow.parentNode) { herRow.parentNode.removeChild(herRow); }
+      } catch (e) {}
       ta.value = t;
       grow();
       unlock();
@@ -1196,16 +1287,26 @@ async def chat_page(request: Request):
     head = ('<div class="ph-top"><a href="%s" class="hint">‹ 目录</a>'
             '<b>祁煜</b>%s</div>'
             % (MENU_PATH, _mood_html(uid)))
+    her = _her_av(uid, shown)
     body = ('<div class="phone talk">%s<div class="chat" id="chat">%s</div></div>'
             '<div class="bar-bottom">'
             '<form id="say" method="post" action="/chat/send">'
+            # ⚡ 她的头像「样板」（2026-10-02）：乐观插入**第一条**消息时，页面上还
+            #    没有她的气泡 ⇒ JS 的 `bubbleRow()` 拷不到头像，会留一个空圆圈。
+            #    在这儿藏一份给它取（`hidden` ⇒ 不显示、不占位，纯粹是模板）。
+            '<div id="herav" hidden>%s</div>'
             # 🧭 方案 B：回目录并进输入栏这一行（顶部那条「‹ 目录」钉住后一直看得见，
             #    这儿是给单手够不到顶部的人一个下位的入口）。
             '<a href="%s" class="hint bk" title="返回目录" aria-label="返回目录">‹ 目录</a>'
-            '<textarea id="t" name="text" rows="1" placeholder="跟他说点什么…" '
+            # ⚡ `maxlength`（2026-10-02）：服务端会把超长的话截到 `CHAT_MAX_INPUT`
+            #    （见 `/chat/send`），而乐观插入用的是**她输入的原文** ⇒
+            #    不加这道闸，超长情况下「本地气泡是全文、刷新后只剩前 800 字」。
+            #    让浏览器在输入框里就截住 ⇒ 她看见的、气泡里的、存进记忆的三者一致。
+            '<textarea id="t" name="text" rows="1" maxlength="%d" '
+            'placeholder="跟他说点什么…" '
             'autocomplete="off" enterkeyhint="send"></textarea>'
             '<button type="submit">发送</button>'
-            '</form></div>' % (head, chat, MENU_PATH))
+            '</form></div>' % (head, chat, her, MENU_PATH, CHAT_MAX_INPUT))
     return _page(body, title="祁煜", css=CHAT_CSS + TALK_CSS, script=TALK_JS)
 
 
@@ -1289,8 +1390,15 @@ async def chat_send(request: Request, text: str = Form("")):
     #      渲染出来是给「没有 JS 的浏览器」看的，打上标记毫无意义（没人认它）；
     #      更重要的是**别让标记漏进历史页**：`/chat` 的整页渲染走 `_talk_body()`，
     #      那条路永远不会传 `typing` ⇒ 刷新后历史气泡全是干净的。
+    # ⚠ 这个变量名叫 `typing`，其实判的是「是不是脚本发来的 fetch」
+    #    （前端只在 `X-Requested-With: fetch` 时才给他的气泡打 `data-ty`）。
     typing = request.headers.get("x-requested-with") == "fetch"
-    frag = [_bubble("her", text, her)]
+    # ⚡ 乐观插入（2026-10-02）：fetch 这条路**不再渲染她的气泡** ——
+    #    前端点发送那一刻已经用 `bubbleRow('me', ...)` 就地画好了，不等这一整轮往返。
+    #    ⚠ 不去掉就会插出**两条一模一样的**（她提的「页面刷一下才弹出我的气泡」修的就是这个）。
+    #    ⚠ 只有 `typing` 这一支跳过：没 JS 的保底路走下面 303 + 整页渲染，
+    #      她的气泡照旧由 `/chat` 渲出来 ⇒ 那条路零影响、功能一点不丢。
+    frag = [] if typing else [_bubble("her", text, her)]
     got = _segs(reply)
     if got:
         for seg, say in zip(got, _says_of(reply)):
