@@ -4,6 +4,11 @@
 web/.secret
 # 2026-09-21：网页端**用户自己传的头像**（用户数据，进仓库就成公开图床了）
 web/avatars/
+# 2026-10-01：网页端**账号数据**（uid + 密码 hash）—— 运行时由 base.py 自动读写。
+#   ⚠ 删了会丢登录，所以**留在本地**；但它不该公开 ⇒ 从跟踪里摘掉（`git rm --cached`）。
+#   （`.bak-*` 是 tools/reset_password.py 的自动备份，同样不进。）
+web/users.json
+web/users.json.bak-*
 
 # Python 缓存
 __pycache__/
