@@ -545,6 +545,34 @@ TALK_JS = r"""
     window.setTimeout(step, TY_MS);
   }
 
+  // ============================================================
+  // ⌛ 段与段之间的「他又在打下一句」（2026-10-02 她提：「等待的时间只有第一段有，
+  //    剩下的段没有缓冲直接出来了」）
+  // ------------------------------------------------------------
+  // ⭐ 病因：打字机是**串行**的（第 1 段逐字打完立刻接第 2 段），而「正在输入」那三个点
+  //    只在「点发送 → 回复回来」那一整段里出现过一次 ⇒ 第 1 段一出来，后面几段像连珠炮。
+  // ⭐ 修法：第 2 段起，每段**开始之前**插一次三个点、停一会儿再撤掉 ⇒
+  //    像真人连发几条（发一条 → 停一下 → 再发一条），而不是一口气倒出来。
+  // ⚠⭐ **第 1 段不加**：它前面已经吃到了请求往返那 1~2 秒的点，再停一次就是拖沓。
+  // ⚠⭐ 停顿**必须能被打断**：她点屏幕 = 跳过 ⇒ 切成 100ms 一片检查 `tySkip`，
+  //    最多多等 100ms 就放行 —— 否则「跳过」会卡在一个她看不见的计时器上，
+  //    她会觉得「点了没反应」。
+  // ⚠ 关动效（`tyReduced()`）那条分支**根本不进 `tyRun`** ⇒ 完全没有额外停顿，照旧直出。
+  // ⚠ 他只回一段时 `first` 一次就走完 ⇒ 一次停顿都不会有，零副作用。
+  // ============================================================
+  var TY_GAP_BASE = 500;      // 段间停顿基数（毫秒）—— 她选的方案 A
+  var TY_GAP_RAND = 500;      // 再叠 0~500 的随机 ⇒ 实际 500~1000ms（不是整齐的机器间隔）
+  var TY_TICK = 100;          // 「她是不是点了跳过」的检查粒度：最多多等这么久
+
+  function tyPause(ms, done) {
+    var left = ms;
+    (function tick() {
+      if (tySkip || left <= 0) { done(); return; }   // 🛑 她点了 ⇒ 立刻放行
+      left -= TY_TICK;
+      window.setTimeout(tick, TY_TICK);
+    })();
+  }
+
   function tyRun(list, after) {
     // 串行跑完 `list` 里所有 `[data-ty]` 的气泡，然后调 `after()`。
     // ⚠⭐ `tyQueue` 是「有没有在打字」的**唯一真相源**（跳过监听只认它）——
@@ -552,9 +580,20 @@ TALK_JS = r"""
     //    每次点屏幕都置跳过旗标，下一轮第一个字都打不出来）。
     var q = list.slice();
     tyQueue = q;
+    var first = true;
     (function next() {
       if (!q.length) { tyQueue = null; after(); return; }
-      tyPlay(q.shift(), next);
+      var bub = q.shift();
+      if (first) { first = false; tyPlay(bub, next); return; }  // 第 1 段：前面已经等过了
+      // ⌛ 第 2 段起：插三个点 → 停 → 撤掉 → 再打这一条
+      var w = himWait();
+      box.appendChild(w);
+      toBottom(true);          // 让那三个点进她视线（它可能刚好落在屏幕下沿外面）
+      tyPause(TY_GAP_BASE + Math.floor(Math.random() * TY_GAP_RAND), function () {
+        // ⚠ 撤不掉不致命，但**不能让它抛出去** —— 会打断整条串行链，后面几段全不出来。
+        try { if (w && w.parentNode) { w.parentNode.removeChild(w); } } catch (e) {}
+        tyPlay(bub, next);
+      });
     })();
   }
 
