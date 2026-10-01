@@ -6,7 +6,10 @@
   POST `/settings/avatar`         上传头像（普通 multipart 表单，**零 JS**）
   POST `/settings/avatar/remove`  移除头像
   GET  `/avatar`                  看**自己**的头像
+  GET  `/asset/sticker`           表情包真图（涂鸦叽，`?t=标签`）
   GET  `/asset/{name}`            项目自带的静态素材（现在只有一张：**祁煜的头像**）
+
+⚠⚠ `/asset/sticker` **必须写在 `/asset/{name}` 前面** —— 参数路由会吃掉它。
 
 ⭐ 全站**零 JS** 的老规矩：上传就是一个普通的 `<form enctype="multipart/form-data">`，
    浏览器自己就会发 multipart，不需要一行脚本。
@@ -29,6 +32,9 @@ from base import (
     # 🖼 写入三件套 2026-09-30 搬去了 `base.py`（`/home/edit/profile` 也要用同一份）
     save_avatar, drop_avatar,
 )
+# 🎨 表情包：标签 ⇒ 磁盘路径。经引擎门面拿，本页不解析 `card/stickers.md`。
+#    ⚠ 这是**只读**调用（只读 md + 只 stat 文件），不写盘 ⇒ 不破 ADR-22。
+from Rafayel_chat import pick_sticker
 
 # 🖼 祁煜**自己的**头像（2026-09-21 她给的那张蓝海油画 —— 用在短信详情页的聊天气泡上）
 #    ⚠ 跟 `web/avatars/` **正相反**：这是**项目素材**、**要进仓库**
@@ -87,6 +93,36 @@ async def avatar_get(request: Request):
     if not p:
         return RedirectResponse("/")
     return FileResponse(p, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/asset/sticker")
+async def asset_sticker(request: Request, t: str = ""):
+    """
+    表情包真图（涂鸦叽）。`t` = 标签（`得意` / `撒娇` 这种，别名也认）。
+
+    ⭐ 2026-10-01 加的：原先网页端只画个灰圆片「表情 · 得意」，看不出是哪张。
+      标签→文件的映射**不在这儿解析** —— 调引擎的门面 `Rafayel_chat.pick_sticker()`，
+      跟 QQ 端共用同一份 `card/stickers.md` 真相源、同一套别名表、
+      同一个「缺图就当没这张」的兜底。**别在本文件里再写一遍解析。**
+
+    ⚠⚠ **本路由必须注册在下面 `/asset/{name}` 之前** —— 否则 `/asset/sticker`
+      会先被那条**参数路由**吃掉（`name="sticker"`），查表查不到 ⇒ 302 回首页，
+      表现是「图全裂」。这是本仓库的老坑（「具体路由注册在参数路由前」）。
+    ⚠ 路径穿越进不来：`t` 只作为**字典的 key** 去查表，真路径由 `pick_sticker`
+      从 `card/stickers/` 拼出来；本路由自己**不拼任何路径**。
+    ⚠ 拿不到（标签不认识 / 那张图不在盘上 / 表情功能被 `STICKER_ENABLE` 关了）
+      ⇒ 302 回 `/`，客服端就是「裂图」而不是几百 KB 的错误页。
+      ⚠ 不返回 404：这一页的所有其它失败路径都是 302，保持一致。
+    ⚠ 缓存头跟 `/asset/qiyu` 一致（`private, max-age=86400`）：素材是仓库里的图、
+      不随用户变，但也不该进公共缓存 ⇒ `private`。gif 有 40KB，缓存下来值得。
+    """
+    uid = _current_uid(request)
+    if not uid:
+        return RedirectResponse("/")
+    p = pick_sticker(t)
+    if not p:
+        return RedirectResponse("/")
+    return FileResponse(p, headers={"Cache-Control": "private, max-age=86400"})
 
 
 @app.get("/asset/{name}")

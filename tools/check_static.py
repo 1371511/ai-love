@@ -64,12 +64,14 @@ WRITER_MODULES = {
 # 网页端允许 import 的（全是只读）
 WEB_WHITELIST = {"Rafayel_affinity", "Rafayel_config"}
 
-# ⚠ **唯三**开过口的写盘页（ADR-22）。值 = 这个文件**被允许** import 的模块白名单。
+# ⚠ 开过口的写盘/引擎页（ADR-22）。值 = 这个文件**被允许** import 的模块白名单。
 #   **别随手往这里加新页 / 新模块** —— 加一行 = 网页端只读红线又漏一个口子。
 #   命中后降级成 ⚪「已知开口」，不计入退出码。
+#   ⚠⚠ 加一行通常意味着**开口数 +2**（写盘 + 引擎各记一次），不是 +1。
 #   · `chat.py`：对话窗口必须写 memory，否则她说的话不进记忆、白聊。
 #   · `home.py`：主页（2026-09-30 她定的「个人信息要能自己改」）—— 生日 / 称呼走画像，
 #     后面「他记住的你」「他记住的事」的增删改也归这一页，届时 `Rafayel_memory` 再加进来。
+#   · `avatar.py`：**素材页**（2026-10-01，表情包真图）。见下面那条注释。
 WEB_WRITE_EXCEPTION = {
     "web/page/chat.py": {"Rafayel_chat", "Rafayel_daily"},
     # ⭐ 第 4 批（2026-09-30）：主页「他记住的事」（key_facts）要能增删改
@@ -82,6 +84,19 @@ WEB_WRITE_EXCEPTION = {
     #   ⚠ 为什么不再拆一个 `Rafayel_diary.py`：**每多一个模块，红线就多开一个口子**；
     #     放 `Rafayel_memory` 里，这个开口只是**在已有的那条上再加一个文件名**。
     "web/page/diary.py": {"Rafayel_memory"},
+    # ⭐ 2026-10-01 素材页：表情包真图（`GET /asset/sticker?t=标签`）。
+    #   ⚠⚠ **她 2026-10-01 亲口批的**（她当时选的是「同意开口」这个方案）。别以为这是我随手加的。
+    #   ⚠ 实际开口数 8 → **9**（我在方案里说 8→10 是**说错了**，事后已向她更正）：
+    #     下面的值里只多出 `Rafayel_chat` 一个引擎模块，没多写盘模块 ⇒ 只 +1。
+    #   ⚠ 为什么非开不可 —— 路由**必须**住在这个文件里：
+    #     同一文件里的 `GET /asset/{name}` 是**参数路由**，会把 `/asset/sticker`
+    #     整个吃掉（`name="sticker"`）。而本仓库的装配顺序是 `avatar` → `chat`
+    #     （见 `web/app.py`），所以路由**只能**在 `avatar.py` 里排到参数路由前面。
+    #     ⇒ 挪去 `chat.py` 就必然注册在参数路由之后 ⇒ 图全裂。
+    #   ⚠ 它调的是 `Rafayel_chat.pick_sticker`（门面）——**只读**：
+    #     只读 `card/stickers.md` + 只 `os.path.isfile` 一下，**一个字节都不写盘**。
+    #     ⇒ 这是本次开口最关键的一句：**扩的是「import 引擎」那一类，不是「写盘」那一类**。
+    "web/page/avatar.py": {"Rafayel_chat"},
 }
 
 

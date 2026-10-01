@@ -32,6 +32,7 @@ import os
 import re
 import sys
 import time
+from urllib.parse import quote as urlquote
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -279,6 +280,26 @@ h2{font-size:13px;font-weight:500;margin:0 0 10px}
 .grid .card{margin:0;padding:1rem;text-align:center}
 .grid .n{font-size:20px;font-weight:500;margin-top:4px}
 .chip{display:inline-block;background:var(--c-chip);border-radius:999px;padding:4px 10px;font-size:12px;margin:0 8px 8px 0}
+/* 🎨 表情包真图（2026-10-01 她：「能不能让它在 web 端显示啊」）
+   ⚠ 放**这份共用 CSS**，别塞进 `CHAT_CSS` —— 跟上面 `a.plain` / `.chip` 是同一个教训：
+     表情可能出现在任何一页的气泡里（对话页、短信详情页都走 `_rich`）。
+   ⚠ **按原图比例**（她 2026-10-01 定的）：只限最大边、不写死宽高。
+     24 张原图是 123×123 ~ 150×150（最大 150），所以 128px 的框对多数图是**缩一点点**，
+     对少数小图是原尺寸 —— 两种都不会被拉伸变形。
+   ⚠ `max-width` + `max-height` 两个都要写：只写 max-width 的话，
+     一张特别高的图（`14-你走.gif` 是 123×137）会按 128 宽等比放大，
+     总高能到 142 ⇒ 还行；但写成 `width:100%` 就会把小的那张也拉满，直接糊。
+   ⚠ `height:auto` 不能省：`img` 不写 height 时是按属性算的，属性又没有（见 `_sticker_img`），
+     显式写 auto 才能让浏览器按「宽度定了、高度等比」算。
+   ⚠ `display:inline-block` + `vertical-align`：图是行内元素，默认底下会多出
+     约 3~4px 的基线空隙（`vertical-align:baseline` 的锅）——
+     气泡里只有一张图时，那个空隙会让气泡看起来下边多一截。
+   ⚠ `margin-top:2px`：一段里既有字又有图时，字和图之间别贴死。 */
+.stk{display:inline-block;vertical-align:middle;max-width:128px;max-height:128px;height:auto;border-radius:8px;margin:2px 0}
+/* 纯图气泡（A1：图**单独占一条**，跟 QQ 端一致 —— 原作 6 成以上是纯表情形态）：
+   这种气泡里一个字都没有，别给它留字的行高和左右内边距。 */
+.bub.pic{padding:2px;line-height:0}
+.bub.pic .stk{max-width:128px;margin:0}
 .note{background:var(--c-brand-soft);border-radius:8px;padding:1rem;margin-bottom:12px;font-size:12px;color:var(--c-brand-deep)}
 .note ul{margin:6px 0 0;padding-left:18px}
 input,button{font:inherit;padding:8px 10px;border-radius:var(--r-ctl);border:0.5px solid var(--c-line-2);background:var(--c-card)}
@@ -544,10 +565,43 @@ def _esc(t):
 _STICKER_TXT = re.compile(r"\[表情:([^\]]+)\]")
 
 
+def _sticker_img(tag):
+    """
+    `[表情:标签]` ⇒ 真图 `<img>`。2026-10-01（她：「能不能让它在 web 端显示啊」）。
+
+    ⭐ 原来画的是灰圆片「表情 · 得意」—— 占位而已，看不出是哪张。
+      现在直连 `/asset/sticker?t=标签`，那头调引擎的 `Rafayel_sticker.pick_sticker()`
+      解析 `card/stickers.md` ⇒ **跟 QQ 端同一份真相源、同一套别名**。
+
+    ⚠ `tag` 必须 **URL 编码**：标签里可能出现 `？` `！` `#` 这种字符
+      （`18-？？？.gif` 的标签就叫「疑问」，但别名表里保不齐哪天加个带符号的），
+      不编码的话 `?` 会被当成 query 的分隔符，标签直接被截断。
+      ⚠ 中文本身在 URL 里合法，但 `urlencode` 会一并处理，省心。
+    ⚠ `t` 只用来**查表**，路由那头不拼路径 ⇒ 这里塞什么都穿不出去。
+    ⚠ `alt` 写「表情」而不是标签本身：读屏念「表情 · 得意」比念一个孤零零的
+      「得意」更说得通（这是个表情，不是个叫得意的东西）。
+    ⚠ `loading="lazy"`：一屏聊天气泡里可能有十几张 gif，不懒加载会一起开始动，
+      手机上直接卡一下。`decoding="async"` 同理由。
+      ⚠ 但**不写 `width/height`** —— 24 张原图尺寸不一（123×123 ~ 150×150），
+        写死尺寸要么拉伸要么留缝；「按原比例」是她定的，交给浏览器按原图算。
+        代价是图加载完高度会跳一下，聊天页本来就在最底部、跳了也看不见。
+    """
+    return ('<img class="stk" src="/asset/sticker?t=%s" alt="表情" '
+            'loading="lazy" decoding="async">'
+            % urlquote(tag.strip(), safe=""))
+
+
 def _rich(t):
-    """转义 + 把 `[表情:标签]` 画成小圆片（网页端没有图床，不硬塞真图）。"""
-    return _STICKER_TXT.sub(
-        r'<span class="chip" style="margin:0;padding:2px 8px">表情 · \1</span>', _esc(t))
+    """
+    转义 + 把 `[表情:标签]` 换成**真图**。
+
+    ⚠ 顺序不能反：**先 `_esc(t)` 再塞 `<img>`**。反过来的话，气泡里的原文
+      （万一有 `<` `&`）没被转义就进了 HTML ⇒ 破版 / XSS 面。
+      所以这里用「先转义整条、再在转义后的串上做替换」的写法：
+      `_STICKER_TXT` 匹配的 `[表情:x]` 那几个字符本身不含 HTML 特殊字符，
+      转义不影响它们被匹配到（`[` `]` `:` 都不在 `html.escape` 的处理范围内）。
+    """
+    return _STICKER_TXT.sub(lambda m: _sticker_img(m.group(1)), _esc(t))
 
 
 def _lock_row(level, right=""):

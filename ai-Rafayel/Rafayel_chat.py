@@ -65,6 +65,16 @@ from Rafayel_llm import (
 from Rafayel_greet import load_pools, try_greet
 from Rafayel_mood import mood_hint   # 💗 顶栏心情（2026-10-01）：门面转出，网页端不许直接 import mood
 
+# —— 旁支：表情包（涂鸦叽标签 → 磁盘上的 gif） ——
+# ⭐ 2026-10-01：网页端要**显示真图**了（原先是灰圆片占位）。
+#   ⚠ 走门面转出，不让 `web/` 直接 import `Rafayel_sticker` —— 理由两条：
+#     ① 跟 `mood_hint` 一个口径，网页端只认 `Rafayel_chat` 这一个门面；
+#     ② `Rafayel_sticker` 自己要读 `card/stickers.md`、还带模块级缓存（`_TABLE_CACHE`），
+#        这类「有状态的模块」经门面进出，将来改缓存策略只动一个地方。
+#   ⚠ 它是**只读**模块（只读 md + 只 stat 文件，一个字节都不写盘），
+#     所以**不登记进 `WRITER_MODULES`** —— 那名单是给写盘模块用的。
+from Rafayel_sticker import pick_sticker
+
 
 __all__ = [
     # 对外调用
@@ -75,6 +85,8 @@ __all__ = [
     "comment_reply",
     # 主动打招呼
     "try_greet", "load_pools",
+    # 表情包（标签 ⇒ 磁盘绝对路径；`None` = 没这张 / 功能关着）
+    "pick_sticker",
     # 对话与记忆
     "ConversationManager", "save_memory", "load_memory", "recent_context",
     # 用户画像

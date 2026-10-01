@@ -46,6 +46,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from base import (
     app, _page, _esc, _rich, _safe_uid, _avatar_url, _current_uid, _load_users,
     MEMORY_DIR, CHAT_CSS, MENU_PATH,
+    # 🎨 表情标记的正则 —— 跟 `_rich()` 用**同一条**（`_pic_only()` 要判「剥完还剩不剩字」）
+    _STICKER_TXT,
 )
 from Rafayel_affinity import compute, current_level, init_unlocked, pending_unlock
 from Rafayel_chat import get_reply, mood_hint, take_opening
@@ -67,18 +69,40 @@ from Rafayel_voice import strip_actions, synth_wav
 # ⚠ `.phone.talk` 给个最小高度 —— 不然刚开聊时内容很短，输入栏会浮在屏幕中间。
 # ============================================================
 TALK_CSS = """
-.phone.talk{min-height:calc(100vh - 232px)}
-/* ⭐ 2026-09-29 她定的：**顶栏固定在顶部**（滚气泡时「‹ 目录 / 祁煜 / 在●」不许滚走）。
-   ⚠⚠ `overflow:visible` 这行**删不得** —— `.phone`（在 base.py 的 CHAT_CSS 里）写着
-      `overflow:hidden`（为了 16px 圆角）。**父级一旦不是 visible，子元素的
-      `position:sticky` 会整个失效**（sticky 只贴「最近的滚动祖先」，而 overflow:hidden
-      的祖先把滚动吃掉了）⇒ 不覆盖这行，下面那句 sticky 就是废的，而且**不报错**。
-   ⚠ 覆盖成 visible 后圆角靠谁？靠 `.ph-top` 自己补 `border-radius:16px 16px 0 0`
-     （它是最上面那个子块，背景 #F7F7F7 会盖住圆角），下面 `.chat` 是透明底、不越界
-     ⇒ 手机壳那圈圆角照样在，不用把 border-radius 从 `.phone` 上摘掉。 */
-.phone.talk{overflow:visible}
-/* z-index 要压过气泡（气泡是普通流、z-index:auto）⇒ 钉住时气泡从下面滚过去。 */
-.phone.talk .ph-top{position:sticky;top:0;z-index:20;border-radius:16px 16px 0 0}
+/* ============================================================
+.member 📐 2026-10-01 · 「发完消息要手动往下拉」的修复（她提的）
+------------------------------------------------------------
+⭐ 病因不在「忘了滚」，而在**让整页滚**：
+   · `TALK_JS` 里那个 `toBottom()` 用的是 `window.scrollTo(0, body.scrollHeight)` ——
+     既没在「发送后 / 收到回复后」这两个时点调用，又跟手机地址栏收缩抢时间，
+     滚不到底是常态。
+   ⇒ 改成：**手机上一屏装下整个手机壳**（顶栏 + 气泡区 + 输入栏），
+     整页不再溢出 ⇒ 「往下拉」这件事从根上没有了；**只有气泡区自己滚**，
+     JS 每次新气泡进来把它滚到底就够了（`scrollTop` 是同步量，不用跟地址栏商量）。
+   ⚠⚠ 顶栏那两条 `position:sticky` 一起删了：手机壳自己一屏高、里面没有可滚的祖先，
+     题面根本不存在（原来配合 `overflow:visible` 那套是为了「整页滚时顶栏不滚走」）。
+     手机壳的 16px 圆角现在靠 `.phone` 自己的 `overflow:hidden`（base.py 的 CHAT_CSS）
+     重新生效 —— 它本来就在，是上一版为了 sticky 才覆盖成 visible 的。
+   ⚠ `.phone.talk` 必须 `display:flex;flex-direction:column`：`.chat` 才能
+     `flex:1` 吃掉剩下的高度、内部再滚。
+   ⚠ 高度用 `calc(100vh - 232px)`：232 是原来那条 `min-height` 里真机量出来的数，
+     一个字节没动，只是从「下限」变成了「定死」。
+     算的是：地址栏 ≈ 56 + body 上 padding 32 + 输入栏(10+8+40+... )≈ 116 + body 下 padding 32
+     ⚠ 改 body 的 padding 或输入栏高度，这个 232 要重新量。
+============================================================ */
+.phone.talk{display:flex;flex-direction:column;
+            height:calc(100vh - 232px);overflow:hidden}
+/* 📱 动态视口：地址栏收缩时 `100vh` 不变、真实可视区变高 ⇒ 输入栏会被顶出屏幕。
+   `dvh` 跟着真实可视区走。不支持的浏览器**整块忽略**，落回上面那条 `100vh`。 */
+@supports(height:100dvh){
+  .phone.talk{height:calc(100dvh - 232px)}
+}
+/* 气泡区：**唯一允许滚的地方**。
+   ⚠ `overscroll-behavior:contain` —— 滚到顶/底时别把滚动接力给整页
+     （否则又变回「整页跟着动」，白改）。
+   ⚠ `min-height:0` 是 flex 子项的老坑：默认 `min-height:auto` 不肯缩，
+     内容一多就把 `.phone` 顶高、`overflow` 形同虚设。 */
+.phone.talk>.chat{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain}
 /* ⚠⭐ `.dot`（在线点）2026-09-29 **已搬去 base.py 的 `CSS`** —— 它 `/affinity` 也在用，
    留在这儿只有 `/chat` 拿得到 ⇒ 那边那个点不显示。**别再往这儿加回来。** */
 .bar-bottom{position:sticky;bottom:0;z-index:10;background:#FAFAF8;
@@ -111,14 +135,34 @@ TALK_CSS = """
        一开始我把三个都归零了，真机量出输入栏**离屏幕底还有 32px**（`gap:32`，正好就是那 2rem）。
        ⇒ 桌面上正确写法是 `margin:0 0 -2rem`。 */
   .bar-bottom{margin:0 0 -2rem}
-  /* ⚠⚠ `.phone.talk` 的最小高度**必须重算**。手机那个 `- 232px` 是按「手机浏览器地址栏 +
-     顶栏 + 输入栏 + body padding」估出来的；桌面没有地址栏那一截 ⇒ 不重算的话页面填不满
-     视口，而 `.bar-bottom` 是 `position:sticky;bottom:0`，**贴不到底就会浮在半空**
-     （这正是这条 min-height 当初要治的病）。
-     ⚠ `- 104px` 这个数是**真机量出来的**，不是推的：顶栏≈58（钉住）+ 输入栏≈58，
-       再减掉那条 `-2rem` 负 margin 抵消掉的 32 ⇒ 页面正好填满一屏。
-       改顶栏/输入栏任何一个高度都要重新量。 */
-  .phone.talk{min-height:calc(100vh - 104px)}
+  /* ⚠⭐ `.phone` 的 `margin-bottom:14px` **桌面上必须归零**（2026-09-29 那条 `.phone` 在
+     base.py 的 CHAT_CSS 里带的，那是给「手机壳 + 底栏」之间留缝的一次性间距）。
+     现在手机壳被定成 `高度 = 一屏 - 104` ⇒ 它 + 这 14px 会**比可用空间多出 14px**，
+     整页多滚一点点（真机量到 `docH 811 vs innerH 800`，正好 11px 露在输入栏下面）。
+     ⚠ 视觉上**没有损失**：手机壳和输入栏之间本来就还有 `.bar-bottom` 的
+       `padding-top:10px`；真正的「手机壳贴在输入栏上」那种观感不会出现。
+     ⚠ 桌面独有的问题 —— 手机端整页一屏装得下，那 14px 只是把 `.chat` 压矮一点点，
+       反而让「手机壳 + 输入栏」两截更分明，所以**手机那条不动**。 */
+  .phone.talk{margin-bottom:0}
+  /* ⚠⚠ `.phone.talk` 的高度**必须重算**。手机那个 `- 232px` 是按「手机浏览器地址栏 +
+     顶栏 + 输入栏 + body padding」估出来的；桌面没有地址栏那一截 ⇒ 不重算的话手机壳
+     填不满视口，而 `.bar-bottom` 是 `position:sticky;bottom:0`，**贴不到底就会浮在半空**
+     （这正是这条高度当初要治的病）。
+     ⚠ `- 104px` 这个数是**真机量出来的**，不是推的：顶栏≈58 + 输入栏≈58，
+       再减掉那条 `-2rem` 负 margin 抵消掉的 32 ⇒ 手机壳正好填满一屏。
+       改顶栏/输入栏任何一个高度都要重新量。
+     ⚠⚠ `min-height:` 是 2026-10-01 改成 `height:` 的 —— 现在手机壳要**一屏装下、
+       内部自己滚**（见 `TALK_CSS` 顶部那段说明），光给下限不够。
+     ⚠⚠⚠ `!important` 在这里**不是偷懒**，是必需的：手机壳那套写在 `@supports(height:100dvh)`
+       里面 —— media query 与 supports 查询**不影响特异性**，而 `@supports` 那条
+       `.phone.talk` 出现在本块**之前** ⇒ 不加 `!important`，桌面上会被它按字面顺序压过去，
+       高度变成 `100dvh - 232px`（少 128px）⇒ 输入栏浮在半空。这跟「`@supports` 忽略
+       不认识的声明」不是一回事，对支持 `dvh` 的桌面浏览器是**必然踩中**。
+       同时 `overflow:hidden` 也要重述一遍：`@supports` 那条是**同一条规则、优先级更高**，
+       `overflow` 若只在上面写、不在这条里带一遍，桌面会拿到 `@supports` 的 `overflow:hidden`——
+       值一样，但依赖别人替你写是错的；重述一遍，这条规则自己是完整的。 */
+  .phone.talk{height:calc(100vh - 104px) !important;
+              min-height:0;overflow:hidden}
 }
 
 /* 🔊 点句子听他说（2026-09-29 · 她定：小喇叭放气泡**右下角**）
@@ -149,6 +193,43 @@ TALK_CSS = """
 .phone.talk .bub .spk.on{background:#8E3556;color:#fff}
 /* 这句拿不到音频（404 已滚出历史 / 503 TTS 挂了）⇒ 闪一下再恢复，别停成死状态 */
 .phone.talk .bub .spk.bad{background:rgba(0,0,0,.05);color:#B4B2A9}
+/* ============================================================
+⌨️ 打字机（2026-10-01 她提的：「他发的消息在 Web 端做成慢慢出现的效果」）
+------------------------------------------------------------
+⭐ 口径（她定的）：**只有新发出来的消息**打字，历史消息 / 刷新后一律直出。
+   ⇒ 服务端只给 `/chat/send` 的 fetch 片段打 `data-ty`（见 `_bubble()`），
+     这里负责把「有 `data-ty` 的那条」先按下去。
+⚠⚠ 全部规则挂 `.js` 根类（脚本跑起来才加得上）——
+   **没 JS ⇒ 一条都不生效 ⇒ 气泡完整直出**。这是本功能的渐进增强底线。
+   ⚠ 所以这里**绝不能**写成「默认藏、`.js` 里放开」以外的任何形态
+     （比如服务端加 `hidden` 属性）—— 那样没 JS 就真的一片空白了。
+⚠ 用 `visibility:hidden` 而不是 `display:none`：
+   ① 逐字放行时气泡会一行行长高，`display:none` 时期它不占位 ⇒ 一揭开就整块跳一下；
+      留位则高度先按**完整内容**占好（后面几行是空白），揭开只是把字填进去 ⇒ 不抖。
+   ② 后面「点任意处全部跳过」要能立刻全部揭示，留位不涉及重排，跳变更小。
+   ⚠ 打字期间那条气泡里的小喇叭也会跟着 `visibility:hidden`，
+     它本来就 `hidden` 属性挂着（等 JS 解锁），**不冲突**。
+------------------------------------------------------------ */
+.js .phone.talk .chat .bub[data-ty]{visibility:hidden}
+/* 打完 / 被跳过 ⇒ 立刻恢复。
+   ⚠ 这个类由 JS 加，且**打完一定会加**（含异常分支）；万一没加上，气泡就一直是空的 ——
+     所以 `finally` 那一步是硬要求，见 `TALK_JS` 的 `finish()`。 */
+.js .phone.talk .chat .bub.tydone{visibility:visible}
+/* 🖊 打字光标：跟在正在出的字后面闪。
+   ⚠ 用 `::after` 生成，不动 DOM ⇒ **不会**被 JS 的「逐字 reveal」当成文字放出来，
+     也不会进 `textContent`（复制粘贴拿到的仍是干净原文）。 */
+.js .phone.talk .chat .bub.typing::after{content:"▍";opacity:.45;
+     animation:tyblink .9s steps(1,end) infinite}
+@keyframes tyblink{0%,50%{opacity:.45}50.01%,100%{opacity:0}}
+/* 🛑 晕动症 / 关掉动效：**整段直出**，一条都不打（跟 `.fresh` 那条一个口径）。
+   ⚠ 特异性算一下：上面那条是 `.js .phone.talk .chat .bub[data-ty]` = (0,4,1)；
+     本条写成 `.js .phone.talk .chat .bub[data-ty]` 也是 (0,4,1) ⇒ 平局、靠源顺序赢
+     —— 本块在 `TALK_CSS` 里本来就排在前面那条**之后**，所以**不用 `!important`**。
+     ⚠⚠ 但别把它搬到前面去：一挪就输，而且**不报错**（这条正是最容易搬错的形态）。 */
+@media (prefers-reduced-motion:reduce){
+  .js .phone.talk .chat .bub[data-ty]{visibility:visible}
+  .js .phone.talk .chat .bub.typing::after{content:none}
+}
 /* 💗 顶栏心情（2026-10-01）
    ⚠⚠ 为什么非加这三条：`.ph-top` 是 `justify-content:space-between` ⇒ 右边那格
      文字一变长，**中间的「祁煜」会被推着左右挪** —— 那就是最不丝滑的地方。
@@ -179,8 +260,35 @@ TALK_JS = r"""
 
   var sending = false;
 
-  function toBottom() {
+  // ============================================================
+  // ⬇️ 滚到底（2026-10-01 重写 —— 她提「发消息之后要手动往下拉着看，好麻烦」）
+  // ⚠⭐ 为什么不再用 `window.scrollTo(0, body.scrollHeight)`：
+  //   ① 页面上滚的**根本不是 window** 了 —— 手机壳现在一屏装下、只有气泡区
+  //      （`#chat`）在滚（见 `TALK_CSS` 顶部）。滚 window 等于什么都没做。
+  //   ② 就算还是整页滚，`window.scrollTo` 在手机上要跟地址栏收缩抢时间 ——
+  //      写进去的数会被浏览器改掉，**滚不到底是常态**（这就是她手动往下拉的原因）。
+  //      `元素.scrollTop = 元素.scrollHeight` 是纯同步量，不跟地址栏商量。
+  // ⚠ `near()` 兜底算一遍 window：哪天布局又变回整页滚，这段也不会失效。
+  // ============================================================
+  function near() {
+    var gap = box.scrollHeight - box.clientHeight - box.scrollTop;
+    var wgap = (document.documentElement.scrollHeight || 0) -
+               (window.innerHeight || 0) - (window.pageYOffset || 0);
+    return Math.max(gap, wgap) < 80;      // 80px 容差：离底不到一屏的十分之一就算「在底部」
+  }
+  function pin() {                        // 真正的滚动动作：气泡区到底 + 整页到底（兜底）
+    try { box.scrollTop = box.scrollHeight; } catch (e) {}
     try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
+  }
+  function toBottom(force) {
+    // ⚠⭐ 她在往上翻旧消息时**不许抢她的滚动** —— 只有本来就贴着底才跟下去。
+    //    没有这道闸，长对话里她往回翻到一半、他回一句，页面就自己弹回最底下。
+    // ⚠ 首屏 / 刚发完消息必须 `force`（那时她本来就在底部，或者就是她主动要往下看）。
+    if (!force && !near()) { return; }
+    pin();
+    // ⚠⭐ 必须再补一帧：`insertAdjacentHTML` 刚插进去那一刻高度还没重排完，
+    //    立刻滚会**差最后一条气泡那么高**（这正是「滚了但没到底」的经典成因）。
+    requestAnimationFrame(pin);
   }
   function grow() {
     ta.style.height = 'auto';
@@ -192,6 +300,154 @@ TALK_JS = r"""
     ta.focus();
   }
 
+  // ============================================================
+  // ⌨️ 打字机（2026-10-01 她提的：「他发的消息在 Web 端做成慢慢出现的效果」）
+  // ------------------------------------------------------------
+  // ⭐ 她定的口径：**只有新发出来的消息**打字，历史消息 / 刷新后一律直出
+  //    ⇒ 服务端只给 `/chat/send` 的 fetch 片段打 `data-ty`（见 `_bubble()`）。
+  // ⭐ 节奏（她定的）：**一条打完再打第二条**（串行）+ 每字 `TY_MS` + 可以跳过。
+  //    串行是关键 —— 他那条回复常切 2~3 个气泡，一起打就不像"人在一句句发"了。
+  // ⚠⚠ 为什么是「逐字揭开**文本节点**」而不是「每帧重设 innerHTML」：
+  //    `_rich()` 已经把 `[表情:x]` 渲染成 `<span class="chip">`，用正则/切片去剁
+  //    HTML 字符串必然剁坏两样东西 —— ① 标签本身 ② **HTML 实体**
+  //    （`&amp;` 被从中间切开就成了 `&am` + `p;`，DOM 里直接显示成乱码）。
+  //    文本节点自成边界、实体在 DOM 里已经是一个字符 ⇒ 只在文本节点上切，两边都安全。
+  // ⚠ `splitText()` 会在原地把文本节点切开并返回后半截 ⇒ 只要把**后半截的长度**逐帧
+  //    缩到 0 就等于"慢慢长出来"，而且 `textContent` 全程都是完整的（选中/复制不受影响）。
+  // ⚠ 表情 chip 那类**元素节点整块放行**（一步到位）：
+  //    一个字一个字蹦出来的表情圆片很怪，而且它是原子单位。
+  // ⚠⚠⚠ **必须拿「已经插进 DOM 的节点」来打**（见 `tyCollect()`）——
+  //    再解析一遍 `frag` 字符串拿到的是游离的另一份，改动全落在垃圾上，
+  //    页面一动不动而且**不报错**。这是本功能第一版翻的唯一车，别重犯。
+  // ============================================================
+  var TY_MS = 18;                    // 每字间隔（她定的速度）
+  var tyQueue = null;                // 正在跑的那批（`null` = 没在打字）—— 跳过监听只认它
+  var tySkip = false;                // 「点任意处全部跳过」的旗标
+
+  function tyReduced() {
+    // ⚠ 只在**支持**这个 API 的地方问；老浏览器一律当"没关动效"（照常打字）。
+    try {
+      return !!(window.matchMedia &&
+                window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+
+  function tyNodes(bub) {
+    // 收集要逐字揭开的文本节点（DOM 顺序）。
+    // ⚠ 跳过 chip 里的文字：它是元素节点，会被整块放行，再收一遍就重复了。
+    var out = [], w = document.createTreeWalker(bub, NodeFilter.SHOW_TEXT, null, false);
+    var n;
+    while ((n = w.nextNode())) {
+      var p = n.parentNode;
+      if (p && p.classList && p.classList.contains('chip')) { continue; }
+      out.push(n);
+    }
+    return out;
+  }
+
+  function tyOpen(bub) {
+    // 把这一条按下去，返回 `{nodes, fulls, flush}`：
+    //   · `nodes` / `fulls` —— 逐字揭开要用的「节点数组」与「每个节点的全文」
+    //   · `flush()`        —— 把剩余部分**一次性**全放出来（正常打完 / 被跳过 / 出错都走它）
+    // ⚠ 先记下每个文本节点的全文，再把它们**立刻**砍到 0 长度 ——
+    //    砍到 0 而不是等到第一帧才砍：中间那一帧若被浏览器画出来，会闪一下全文。
+    // ⚠⚠⚠ `nodes` / `fulls` **必须从这里带出去**，调用方**不许**自己再 `tyNodes()` 读一遍：
+    //    这一步已经把 `nodeValue` 砍成空了，再读只会读到一串空串 ⇒ `total` 算成 0
+    //    ⇒ 立刻 `finish()` ⇒ 气泡**瞬间全出**、`typing` 一帧都不出现（不报错，最难查）。
+    //    2026-10-01 第一版就是这个错，页内 12ms 采样抓了 166 次只看到一种状态才揪出来。
+    var nodes = tyNodes(bub);
+    var fulls = [];
+    for (var i = 0; i < nodes.length; i++) {
+      fulls.push(nodes[i].nodeValue);
+      nodes[i].nodeValue = '';
+    }
+    return {
+      nodes: nodes,
+      fulls: fulls,
+      flush: function () {
+        for (var k = 0; k < nodes.length; k++) {
+          if (nodes[k].nodeValue !== fulls[k]) { nodes[k].nodeValue = fulls[k]; }
+        }
+      }
+    };
+  }
+
+  function tyPlay(bub, done) {
+    // 打这一条。`done()` 在**打完或被打断**时都会调（含 `data-ty` 缺失/异常）。
+    if (!bub || !bub.getAttribute || !bub.getAttribute('data-ty')) { done(); return; }
+    var opened;
+    try { opened = tyOpen(bub); } catch (e) { done(); return; }
+
+    // ⚠ 直接用 `tyOpen` 带出来的那一份（见它头顶那段说明），**不要**再 `tyNodes()`。
+    var nodes = opened.nodes, fulls = opened.fulls, flush = opened.flush;
+
+    bub.classList.add('typing');
+
+    // 全部放出来（正常打完 / 被跳过 / 出错，全走这儿）
+    function finish() {
+      bub.classList.remove('typing');
+      bub.classList.add('tydone');     // ⚠⚠ 必须加 —— 不加就永远是隐藏的（见 TALK_CSS）
+      flush();
+      done();
+    }
+
+    var total = 0;
+    for (var j = 0; j < fulls.length; j++) { total += fulls[j].length; }
+    if (!total) { finish(); return; }   // 纯动作气泡（`（他笑）` 剥完是空）⇒ 没有可打的字
+
+    var wi = 0, wn = 0, seen = 0;       // 现在揭到第几个节点 / 第几个字 / 已揭字数
+
+    function step() {
+      if (tySkip) { finish(); return; }  // 🛑 她点了 ⇒ 这条剩下的立刻全出
+      // ⚠ 一个 tick 可能连揭好几个字：18ms 已经是"看得见在打"的节拍，
+      //    但长句（40+ 字）要 0.7 秒 —— 差不多是真人打一句的观感，不用再加速。
+      while (wi < fulls.length && wn >= fulls[wi].length) { wi++; wn = 0; }
+      if (wi >= fulls.length) { finish(); return; }
+
+      nodes[wi].nodeValue = fulls[wi].slice(0, ++wn);
+      seen++;
+      // ⚠ 每揭几个字就滚一下：气泡在长高，不跟会打到底部看不见。
+      //    用 `near()` 的理由跟 `toBottom()` 一样 —— 她翻着旧消息时不许抢滚动。
+      if (seen % 4 === 0) { toBottom(false); }
+      window.setTimeout(step, TY_MS);
+    }
+
+    // ⚠ 起点要 `toBottom(true)`：这条气泡刚插进来时只有它自己高，
+    //    它一边长一边看才叫"他正在打给你"。
+    toBottom(true);
+    window.setTimeout(step, TY_MS);
+  }
+
+  function tyRun(list, after) {
+    // 串行跑完 `list` 里所有 `[data-ty]` 的气泡，然后调 `after()`。
+    // ⚠⭐ `tyQueue` 是「有没有在打字」的**唯一真相源**（跳过监听只认它）——
+    //    进门就赋、`finally` 里清，中间任何异常都不能让它卡在非 null（卡住 = 之后
+    //    每次点屏幕都置跳过旗标，下一轮第一个字都打不出来）。
+    var q = list.slice();
+    tyQueue = q;
+    (function next() {
+      if (!q.length) { tyQueue = null; after(); return; }
+      tyPlay(q.shift(), next);
+    })();
+  }
+
+  function tyCollect(added) {
+    // 从**刚插进 DOM 的那批节点**里挑出要打字的节点（跳过她的气泡 / `.sys` 兜底句）。
+    // ⚠⚠⚠ 必须查「已经插进文档」的节点，**不能**再拿 `frag` 字符串套一层临时容器去查 ——
+    //    那个临时容器里的元素是**游离的另一份**（跟 `insertAdjacentHTML` 建出来的
+    //    根本不是同一个对象）。拿游离节点去截字/加类，改动全落在垃圾上：
+    //    页面上气泡**原样完整**、永远不 `typing`、永远不 `tydone`，而控制台**一声不响**
+    //    —— 2026-10-01 这一版第一稿就是这么写的，真机 0.03s 一采样才看出来。
+    // ⚠ 入参是 `insertAdjacentHTML` 之前 `box` 里的节点数（`mark`），
+    //    它之后新增的那几个才是这一轮的气泡。
+    var out = [], kids = box.children;
+    for (var i = added; i < kids.length; i++) {
+      var b = kids[i].querySelector('.bub[data-ty]');
+      if (b) { out.push(b); }
+    }
+    return { nodes: out };
+  }
+
   ta.addEventListener('input', grow);
   // 回车发送、Shift+回车换行（手机上回车就是换行，靠「发送」按钮）
   ta.addEventListener('keydown', function (e) {
@@ -201,7 +457,14 @@ TALK_JS = r"""
     }
   });
 
-  if (!window.fetch) { toBottom(); return; }
+  // 进页面（含刷新、含整页 POST 回来）先钉到底 —— **这是原来唯一滚的一次**，
+  // 但它当年排在脚本最末、且只会滚 window，所以刷新后经常停在半截。
+  toBottom(true);
+  // ⚠ 再补两拍：头像 `<img>` 是异步加载的，加载完高度会变 ⇒ 一拍可能滚早。
+  setTimeout(function () { toBottom(true); }, 0);
+  window.addEventListener('load', function () { toBottom(true); });
+
+  if (!window.fetch) { return; }
 
   form.addEventListener('submit', function (e) {
     var t = ta.value.replace(/^\s+|\s+$/g, '');
@@ -214,6 +477,9 @@ TALK_JS = r"""
     //    不然两条 get_reply 并发会把 `memory/*.json` 互相覆盖，直接丢话）。
     ta.value = '';
     grow();
+    // ⚠⭐ 发出去就先滚（`force`）—— 她刚发完，视线必须跟着自己那条气泡走，
+    //    不能等回复来了才动。这一步是「原来完全没滚」和「现在不拉也能看」的分界。
+    toBottom(true);
 
     var body = new URLSearchParams();
     body.set('text', t);
@@ -225,17 +491,44 @@ TALK_JS = r"""
       if (!r.ok) { throw new Error(r.status); }
       return r.text();
     }).then(function (frag) {
+      // ⚠⭐ `mark` 必须在 `insertAdjacentHTML` **之前**取 —— 它是这一轮之前的子节点数，
+      //    插完之后从 `mark` 往后数，正好就是刚加进来的那几条 `.row`。
+      //    ⚠ 不能用「`frag` 里数出来几个」或「再解析一遍 `frag`」代替：
+      //      前者把「服务端给的数据」当成「DOM 里的节点」，后者直接拿到游离的一份。
+      var mark = box.children.length;
       box.insertAdjacentHTML('beforeend', frag);
       var n = document.getElementById('new');
       if (n) { n.removeAttribute('id'); }
       unlock();
+      // ⚠⭐ 他的回复到手**必须再滚一次**（`force`）—— 这是她抱怨的那一刻：
+      //    新气泡冒在输入栏下面看不见，得自己往下拉。放在 `unlock()` 之后
+      //    是因为 `unlock()` 会 `ta.focus()`、输入框可能变高一点。
+      // ⌨️ 2026-10-01：原来这里是「直接 `toBottom(true)` 收工」，
+      //    现在改成**先打字、打完再收底** —— 打字过程中气泡在长高，
+      //    `tyPlay()` 自己每几个字滚一次；等全部打完再钉死一次最底。
+      // ⚠ `refreshMood()` **不放在打字后面**：情绪是异步判定（1.5s / 4s 两次拉），
+      //    跟打字各走各的、互不依赖 —— 串起来只会让顶栏的心情也晚 1~2 秒。
       refreshMood();          // 💗 等他那边判完心情（1.5s / 4s 各拉一次）
+
+      var picked = tyCollect(mark);
+      if (!picked.nodes.length || tyReduced()) {
+        // 没得打（比如他一个字都没回、只有 `.sys` 那句）或用户关了动效 ⇒ 老样子收底。
+        // ⚠⚠ 这条分支**必须调 `toBottom(true)`** —— 上面已经把原来那次收底搬进
+        //    `tyPlay()` 了，不在这儿补一发的话，这些情况页面就停着不动了。
+        toBottom(true);
+        return;
+      }
+      tySkip = false;
+      tyRun(picked.nodes, function () {
+        tySkip = false;       // 🔁 打完复位，下一轮不带着上一轮的「跳过」旗标跑
+        toBottom(true);       // 全部打完 ⇒ 钉到最底（最后一条完整可见）
+      });
     }).catch(function () {
       // 拿不到片段 ⇒ 退回整页提交（她那句话别丢）
       ta.value = t;
       grow();
       unlock();
-      form.submit();
+      form.submit();          // ⚠ 这条是整页跳，新页面由上面那两拍 `toBottom(true)` 接管
     });
   });
 
@@ -271,6 +564,25 @@ TALK_JS = r"""
     setTimeout(pull, 1500);
     setTimeout(pull, 4000);
   }
+
+  // ============================================================
+  // 🛑 点任意处 = 跳过打字（2026-10-01 她选的：**点输入框/屏幕任意处跳过**）
+  // ------------------------------------------------------------
+  // ⚠ 用 `document` 上的**捕获**监听，理由两条：
+  //   ① 她人在哪都可能点（气泡上、输入框里、屏幕空白处）⇒ 挂一个地方最省；
+  //   ② 捕获阶段先于冒泡跑 ⇒ 就算她点的是小喇叭 `.spk`（那条自己的 handler 会
+  //      `preventDefault` + 起播），跳过也已经生效了 —— 不会出现"点了但没跳过"。
+  // ⚠ 只在**真的在打字时**才置旗标：`tyQueue` 是「有没有在跑」的唯一真相源，
+  //    没在打字时点屏幕不该有任何副作用（正常情况下她只是点一下）。
+  // ⚠ 不 `preventDefault()`、不 `stopPropagation()`：
+  //    这一点只是"加速显示"，不该抢掉点击本身该干的事（点输入框要聚焦、
+  //    点喇叭要播音、点链接要跳转）。
+  // ⚠ `pointerdown` 而不是 `click`：`click` 要等手指抬起，打字机在跑的时候
+  //    那几十毫秒的延迟是感觉得到的。
+  // ============================================================
+  document.addEventListener('pointerdown', function () {
+    if (tyQueue) { tySkip = true; }
+  }, true);
 
   // ============================================================
   // 🔊 点句子听他说（2026-09-29）
@@ -314,8 +626,6 @@ TALK_JS = r"""
     var p = au.play();
     if (p && p.catch) { p.catch(function () {}); }   // 失败统一交给上面那个 error
   });
-
-  toBottom();
 })();
 </script>"""
 
@@ -370,6 +680,24 @@ def _segs(text):
     """
     return [x.strip() for x in str(text or "").replace("\r\n", "\n").split("\n")
             if x.strip()]
+
+
+def _pic_only(text):
+    """
+    这一段剥掉 `[表情:x]` 和**括号动作**之后一个字都不剩吗？（⇒ 纯表情段，走图片气泡）
+
+    ⚠ 用**同一个** `_STICKER_TXT` 正则（`base.py` 里 `_rich` 用的那条）——
+      两处各写一个正则的话，将来标签语法一改，一边认一边不认，图会画在错的位置。
+    ⚠ 只认 `[表情:x]` 不够：`（他挑眉）[表情:卖萌]` 这种**带动作的纯表情**也要算。
+      但也**必须要求确实有表情标记** —— 他真正只发一个动作、不发图时不该被当成图片气泡
+      （那种气泡里一个字都没有、图也没有，加 `.pic` 只会把内边距吃掉、看着像空泡）。
+    ⚠ 返回 True 的真实例子（`card/stickers.md` 的语料形态）：
+      `[表情:得意]` / `（他笑）[表情:卖萌]`
+    """
+    if not _STICKER_TXT.search(text or ""):
+        return False                       # 压根没有表情标记 ⇒ 不是图片气泡
+    rest = _STICKER_TXT.sub("", text or "")
+    return not strip_actions(rest)[1]      # [1] = 剥掉括号后的台词列表；空 = 没字
 
 
 def _him_av():
@@ -472,7 +800,7 @@ def _says_of(text):
     return [_voice_text(seg, quote) for seg in segs]
 
 
-def _bubble(who, text, her_av, say=None):
+def _bubble(who, text, her_av, say=None, typing=False):
     """
     一个气泡。`who` 取 `"her"`（右边）或 `"him"`（左边）。
 
@@ -485,20 +813,40 @@ def _bubble(who, text, her_av, say=None):
       不传就退化成「只看这一段自己」（`_voice_text` 自行判定）。
     ⚠ 没台词（纯动作 / 纯旁白）**不挂喇叭** —— 挂了也点不出声音。
       ⚠ 哈希算的是 `say`（提取后的台词），路由那边对每段重算同一个 `say` 来对。
+
+    ⌨️ `typing=True`（2026-10-01 她提的「打字机」）：
+      ⭐ **只由 `/chat/send` 这条 fetch 路传** —— 历史页（`/chat` 整页渲染）一律不传
+        ⇒ 「只有新发出来的消息打字，历史消息不用」，这正是她选的那个口径。
+      ⚠ 标记是**加在气泡外层 `.bub` 上的 `data-ty`**，不是外层 `.row` ——
+        JS 要逐字揭开的就是 `.bub` 里面的东西；`.row` 里还含头像，不该被算进去。
+      ⚠⚠ 这个属性**对没有 JS 的浏览器零影响**：CSS 里那几条打字规则全部挂在
+        `.js` 根类下面（见 `TALK_CSS`），而 `.js` 只有脚本跑起来才加得上
+        ⇒ 没 JS ⇒ 属性在 HTML 里、但没有任何规则认它 ⇒ 气泡照旧完整直出。
+        **这是本功能的渐进增强底线，别把它改成 `hidden` 属性那种服务端就藏起来的东西。**
     """
     if say is None:
         say = _voice_text(text)
+    ty = ' data-ty="1"' if typing else ""
+    # 🎨 A1（她 2026-10-01 定的）：整段剥掉 `[表情:x]` 后一个字都不剩 ⇒ 这是**纯表情段**，
+    #    给它自己的「图片气泡」形态（`.bub.pic`，见 `base.py` 的 `.stk` 那段）。
+    #    ⚠ 原作语料里 6 成以上是这个形态 —— 他不说话、只甩一张图，所以这不是边角情况。
+    #    ⚠ 纯图段**一定没有台词**（`_voice_text` 把整个 `[表情:x]` 剥掉后是空串）
+    #      ⇒ 天然走「不挂喇叭」那条，不用额外判。
+    #    ⚠ `.pic` 只加在**他**那一侧：她这边的表情走 QQ，网页端她只发文字，
+    #      但万一将来她也能发表情，那边要不要 `.pic` 是另一个决定，别顺手改。
+    pic = (who != "her") and _pic_only(text)
+    cls = "bub pic" if pic else ("bub him" if say else "bub")
     if who == "her":
         return ('<div class="row me"><div class="av">%s</div>'
-                '<div class="bub">%s</div></div>' % (her_av, _rich(text)))
+                '<div class="bub"%s>%s</div></div>' % (her_av, ty, _rich(text)))
     if not say:
         return ('<div class="row"><div class="av">%s</div>'
-                '<div class="bub">%s</div></div>' % (_him_av(), _rich(text)))
+                '<div class="%s"%s>%s</div></div>' % (_him_av(), cls, ty, _rich(text)))
     return ('<div class="row"><div class="av">%s</div>'
-            '<div class="bub him"><span class="tx">%s</span>'
+            '<div class="%s"%s><span class="tx">%s</span>'
             '<a class="spk" href="%s?h=%s" hidden aria-label="播放这一句" '
             'title="播放这一句">%s</a></div></div>'
-            % (_him_av(), _rich(text), VOICE_PATH, _vhash(say), _VOICE_SPK))
+            % (_him_av(), cls, ty, _rich(text), VOICE_PATH, _vhash(say), _VOICE_SPK))
 
 
 def _shown_name(uid):
@@ -676,17 +1024,24 @@ async def chat_send(request: Request, text: str = Form("")):
 
     shown = _shown_name(uid)
     her = _her_av(uid, shown)
+    # ⌨️ 打字机只在这条 fetch 路上开（2026-10-01 她定的「只要新发出来的消息有这效果」）：
+    #    ⚠⚠ **只有 `fetch` 这条分支才给他那几条打 `data-ty`** —— 整页 POST 那条（零 JS 保底）
+    #      渲染出来是给「没有 JS 的浏览器」看的，打上标记毫无意义（没人认它）；
+    #      更重要的是**别让标记漏进历史页**：`/chat` 的整页渲染走 `_talk_body()`，
+    #      那条路永远不会传 `typing` ⇒ 刷新后历史气泡全是干净的。
+    typing = request.headers.get("x-requested-with") == "fetch"
     frag = [_bubble("her", text, her)]
     got = _segs(reply)
     if got:
         for seg, say in zip(got, _says_of(reply)):
-            frag.append(_bubble("him", seg, her, say))
+            frag.append(_bubble("him", seg, her, say, typing=typing))
     else:
         # ⚠ 兜底：模型一个字都没回（或接口报错）⇒ 说清楚，别让她以为界面坏了。
         #    **不进记忆**（本来就没这句话）—— 绝不能留下「他说过」的假记忆。
+        #    ⚠ 这条**不打 `data-ty`**：它是个 `.sys` 提示、不是他说的话，打字机不该碰它。
         frag.append('<div class="sys">他没接上话，再说一句试试</div>')
 
-    if request.headers.get("x-requested-with") == "fetch":
+    if typing:
         return HTMLResponse("".join(frag), headers={"Cache-Control": "no-store"})
     return RedirectResponse("/chat", status_code=303)
 
