@@ -60,6 +60,11 @@ card/_work/sources.md
 #   （架构设计 / 接口文档 / 代码评审约定 / 气泡切分-改错记录）
 docs/
 
+# 2026-10-01：编辑器配置（VSCode 的本地设置，跟项目无关）
+.vscode/
+# 2026-10-01：`git commit -F` 用的提交信息临时文件（每次覆盖写，不是项目内容）
+_commit_msg.txt
+
 # 2026-09-29：工作区过程数据（AI 的工作日志 + 真机验证截图）
 #   ⚠ 上面第 21 行那条 `memory/` 只匹配**同名目录** —— 它挡住了 `.workbuddy/memory/`，
 #     但**挡不住** `.workbuddy/shots/`（截图），所以 `git status` 会冒出一条 `?? .workbuddy/`。
