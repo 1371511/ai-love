@@ -20,9 +20,9 @@ import requests
 from Rafayel_config import (
     API_URL, AUTO_GREET_TZ_OFFSET, DAY_KEEP, DAY_ROLL, DAY_ROLL_MIN_GAP,
     DAY_SUMMARY_MAX_TOKENS, DIARY_ENABLE, DIARY_HARD_LEN, DIARY_MAX_ITEMS, DIARY_MAX_LEN,
-    LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
+    LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS, LONG_TERM_SUMMARY_MAX,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
-    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,TIMELINE_GAP_HOURS,
+    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS,
 )
 from Rafayel_daily import record as daily_record
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
@@ -944,9 +944,14 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                     self.long_term_summary = new_summary
                 else:
                     self.long_term_summary = self.long_term_summary + "\n\n" + new_summary
-                if len(self.long_term_summary) > 1500:
-                    self.long_term_summary = self.long_term_summary[-1500:]
-                    self.long_term_summary = "...(较早记忆已压缩)...\n" + self.long_term_summary
+                # 2026-10-01 改按「段」丢，不再按字符砍：字符级截断会砍出「永远；」这种
+                # 半句记忆（实锤：她的现役记忆开头就是残句）。段 = 空行分隔的一段。
+                _parts = self.long_term_summary.split("\n\n")
+                while len("\n\n".join(_parts)) > LONG_TERM_SUMMARY_MAX and len(_parts) > 1:
+                    _parts.pop(0)
+                self.long_term_summary = "\n\n".join(_parts)
+                if not self.long_term_summary.startswith("...(较早记忆已压缩)..."):
+                    self.long_term_summary = "...(较早记忆已压缩)...\n\n" + self.long_term_summary
 
                 # 📔 日记（2026-09-30 · 她：「按天进行多次总结」）：
                 #    同一次摘要，在日记里也留一条 ⇒ **一次摘要 = 一条**，

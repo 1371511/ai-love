@@ -61,6 +61,7 @@ DEFAULT_USER_NAME = "保镖小姐"
 SUMMARY_INTERVAL = 8        # 每 8 轮对话触发一次摘要更新
 MAX_HISTORY_TURNS = 12      # 保留最近 12 轮对话
 MAX_FACTS = 20              # 最多保留 20 条关键事实
+LONG_TERM_SUMMARY_MAX = 1500  # 长期摘要滚动窗上限（字）；超了按「段」丢整段，不按字符砍
 MAX_PROFILE_ITEMS = 12      # 用户画像每个分类最多留 12 条
 
 # 📔 日记（2026-09-30 · 她：「LLM 每 8 轮总结出来的那段话，放在『纪念日』改成『日记』，
