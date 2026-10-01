@@ -141,12 +141,12 @@ for need in ("蓝粉撞色", "珊瑚红"):
     if need not in desc:
         problems.append("[P1] description 缺少关键外貌项：`%s`" % need)
 
-# 三大时期锚点（小辞 2026-09-14 新增）：名字必须出现，作为可回忆的锚
+# 三大时期锚点名字必须出现，作为可回忆的锚
 for need in ("鲸落城", "罗镜城", "金沙之海"):
     if need not in desc:
         problems.append("[P1] description 缺三大时期锚点：`%s`" % need)
 
-# 修订五（小辞 2026-09-14）：IF 线不进 description —— 只在世界书 order 900 条目里
+# IF 线不进 description —— 只在世界书 order 900 条目里
 for w in ("赤霄将军", "武神", "将军祠", "魂引"):
     if w in desc:
         problems.append("[P1] description 出现 IF 线内容（应只留世界书）：`%s`" % w)

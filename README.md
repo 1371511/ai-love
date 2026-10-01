@@ -14,7 +14,7 @@
 - **多用户支持**：每个 QQ 用户一套独立的对话记忆与用户画像，互不干扰
 - **长期记忆**：每 8 轮自动摘要，把重要事件压成长期摘要 + 关键事实
 - **用户画像**：开局**不填表**，规则轨实时抓 + LLM 轨每 8 轮补，自动积累
-- **世界书**：55 条目 / 401 触发词，关键词命中才注入；没聊到就不占 token
+- **世界书**：56 条目 / 417 触发词，关键词命中才注入；没聊到就不占 token
 - **牵绊度（好感系统）**：官方四档「心动 / 倾情 / 眷恋 / 情衷」，等级会反过来影响他说话的亲疏；
   跨级时**解锁**该级的官方素材（彩蛋 / 短信）—— ⚠ **不主动发到 QQ**（发了会打断对话，见下文），
   素材摆到网页端给他/她看
@@ -22,6 +22,13 @@
 - **他会先开口**：冷场够久主动打招呼、按排期发朋友圈；她评论说说，他会在空间回她那条
 - **表情包**：24 张涂鸦叽按场景低频发送；她甩来的表情会先「翻译」再给他看
 - **时间感**：每轮注入「现在几点 + 距她上条消息隔了多久」—— 不会睡前在洗虾、睡醒还在洗
+- **情绪（心情状态）**：他有**跨天的心情**（10 种 + 平静），会随时间衰减、跨天还记着；
+  同一份心情在**刚谈 / 老夫老妻**两种档位下表现完全不同（2026-10-01 加）
+- **日记**：他每 8 轮另写一段**第一人称**的日记（跟喂 prompt 的客观摘要**分开**），
+  网页端能看能改能删，她也写自己的（2026-09-30 加）
+- **语音**：回复里的台词自动合成语音发出去（火山 TTS）；网页端点某个气泡也能听那一句
+- **日常问答 / 节日 / 温度感知**：她问「你今天怎么过的」挑一条原话答；到节日说一句；
+  降温了提醒一句（⚠ 从不提城市名）
 - **不像机器人的回复节奏**：等她说完再回（不抢答）+ 假装打字 2~6 秒 + **拆成几条独立气泡连着发**
 - **戳一戳**：她戳他，他回戳一下 + 说一句（⚠ 私聊链路目前卡在 NapCat 侧，见下文）
 
@@ -35,20 +42,25 @@ ai-love/                    # 项目根 = 数据 + 入口 + 文档
 │                          #   自带 sys.path 引导，会把 ai-Rafayel 挂上
 ├── requirements.txt
 ├── .env                   # DEEPSEEK_API_KEY（不进仓库）
-├── ai-Rafayel/            # ★ 祁煜的全部代码（2026-09-17 从根目录归拢到这里）
+├── ai-Rafayel/            # ★ 祁煜的全部代码（2026-09-17 从根目录归拢到这里，现 19 个模块）
 │   ├── Rafayel_chat.py        # 门面：重新导出 + CLI 调试（改实现请往下找）
 │   ├── Rafayel_config.py      # ⚙️ 配置：路径 / 各项上限 / API key（调参只改这里）
 │   ├── Rafayel_profile.py     # 👤 用户画像：规则提取 + 落盘 + 渲染
-│   ├── Rafayel_memory.py      # 💾 记忆落盘 + ConversationManager（摘要 / 关键事实）
-│   ├── Rafayel_llm.py         # 🚀 get_reply：拼请求 + 调大模型（世界书在这里拼进去）
+│   ├── Rafayel_memory.py      # 💾 记忆落盘 + ConversationManager（摘要 / 关键事实 / 日记账本）
+│   ├── Rafayel_llm.py         # 🚀 get_reply：拼请求 + 调大模型（世界书 / 情绪段在这里拼进去）
+│   ├── Rafayel_mood.py        # 💗 情绪状态：读时衰减 + 异步判定（{uid}_mood.json，只依赖 config）
 │   ├── Rafayel.py             # 人设层：读酒馆卡，导出人设常量
 │   ├── Rafayel_greet.py       # 👋 主动打招呼：冷场门槛 + 排期（{uid}_greet.json）
 │   ├── Rafayel_qzone.py       # 📮 发说说（纯函数：挑条 / 渲染 / 取值）
 │   ├── Rafayel_qzone_auto.py  # ⏰ 自动发说说的排期 + 生日专项（{uid}_qzone.json）
 │   ├── Rafayel_qzone_comment.py # 💬 她评论了说说 ⇒ 他回她那条（bridge WS / 计数降级）
 │   ├── Rafayel_sticker.py     # 🎭 表情包：标签匹配 + 冷却闸 + 说明注入
-│   ├── Rafayel_affinity.py    # 💞 牵绊度计算（**只读**，等级换算 + 档位语气）
-│   ├── Rafayel_daily.py       # 📅 每日统计 + token 用量落盘（**唯一写盘**的地方）
+│   ├── Rafayel_voice.py       # 🔊 语音合成：火山 TTS + 括号/台词拆分（默认不 import websocket）
+│   ├── Rafayel_affinity.py    # 💞 牵绊度计算（**只读**，等级换算 + 档位语气 + 四档情绪调制句）
+│   ├── Rafayel_daily.py       # 📅 每日统计 + token 用量落盘（**`{uid}_daily.json` 唯一写入口**）
+│   ├── Rafayel_dailyq.py      # 🗨 日常问答：她问「你今天怎么过的」⇒ 挑一条原话
+│   ├── Rafayel_event.py       # 🎉 节日：日子到了他说一句原话
+│   ├── Rafayel_weather.py     # 🌡 温度感知（open-meteo）：降温了关怀一句，一天一次
 │   ├── worldbook/
 │   │   └── Rafayel_worldbook.py   # 世界书关键词注入器
 │   └── _backup/               # 各阶段的 .bak 备份（不进仓库）
@@ -77,17 +89,20 @@ ai-love/                    # 项目根 = 数据 + 入口 + 文档
 │   ├── page/                  # 📄 一页一个文件（2026-09-29 拆的，见下「网页端 `web/`」）
 │   │   ├── login.py           #   `/` 首页=登录页 · `POST /login` · `/logout`
 │   │   ├── menu.py            #   `/menu` 目录页（登录后的落点；入口表 NAV 在 base.py）
+│   │   ├── home.py            #   🏠 `/home` 主页（关于你 / 他记住的你 / 他记住的事）+ 17 条编辑路由
+│   │   ├── diary.py           #   📔 `/diary` 日记（按天分组，能增删改，带日期筛选）
 │   │   ├── me.py              #   `/me` 老地址跳转壳 → `/affinity`
 │   │   ├── affinity.py        #   `/affinity` 好感度后台（原「我的页」的内容）
 │   │   ├── messages.py        #   `/messages` 家族
 │   │   ├── settings.py        #   `/settings` 家族
 │   │   ├── avatar.py          #   `POST /settings/avatar*` · `/avatar` · `/asset/{name}`
-│   │   └── chat.py            #   `/chat` · `POST /chat/send`（⚠ 唯一会写 memory 的一节）· `GET /chat/voice`（只读，不写盘）
+│   │   └── chat.py            #   `/chat` · `POST /chat/send` · `GET /chat/voice`（只读，不写盘）
+│   │                          #   （⚠ 会写 memory 的是 chat / home / diary **三个**文件）
 │   ├── assets/qiyu.jpg        # 🖼 **项目素材**（祁煜头像）—— **要进仓库**
 │   ├── users.json             # 账号（密码 sha256 + 显示名 + 相遇那天）
 │   ├── avatars/               # 🖼 用户自己传的头像（**用户数据，不进仓库**）
 │   └── .secret                # 🔑 签名 cookie 密钥（首次启动自动生成，**不进仓库**）
-├── tools/                 # 🧰 一次性工具（backfill_daily.py：日志回填每日统计）
+├── tools/                 # 🧰 一次性工具与自检（静态检查器 / 情绪自测 / 日记导入改写 / TTS 探针 …）
 └── memory/                # 按 user_id 落盘，见下表（不进仓库）
 ```
 
@@ -97,10 +112,16 @@ ai-love/                    # 项目根 = 数据 + 入口 + 文档
 |---|---|---|
 | `{uid}.json` | 对话记忆：历史 / 长期摘要 / **待总结缓冲** / 关键事实 / 轮数 | `Rafayel_memory` |
 | `{uid}_profile.json` | 画像：称呼 / 喜欢 / 讨厌 / 特质 / 生日 | `Rafayel_profile` |
+| `{uid}_diary.json` | 📔 **日记账本**：`id` / `ts` / `src`（他写的 / 你写的）/ 正文 / **心情标签** | `Rafayel_memory` |
+| `{uid}_mood.json` | 💗 **情绪状态**：标签 / 强度 / 起因 / 起于何时（**读时衰减**） | `Rafayel_mood` |
 | `{uid}_greet.json` | 主动打招呼的排期（`next_at`） | `Rafayel_greet` |
 | `{uid}_qzone.json` | 发说说的排期 + 发过哪些 | `Rafayel_qzone_auto` |
+| `{uid}_bday.json` | 生日祝福按年去重 | `Rafayel_qzone_auto` |
+| `{uid}_event.json` | 节日按年去重 | `Rafayel_event` |
 | `{uid}_daily.json` | 每日统计 + 跨级解锁记录（`unlocked` / `sent_eggs`） | `Rafayel_daily` |
 | `{uid}_usage.json` | 💰 token 消耗：累计 + 按天明细（含缓存命中/未命中） | `Rafayel_daily` |
+| `_qzone_posts.json` · `_qzone_cmt.json` | 说说正文指纹、评论数快照与队列（**全局**） | `Rafayel_qzone_comment` |
+| `weather.json` | 今天关怀过了（**全局**） | `Rafayel_weather` |
 
 > ⚠ **代码在 `ai-Rafayel/`，数据目录（`card/`、`memory/`、`.env`）仍在项目根。**
 > 各模块靠 `__file__` 上跳算出项目根再拼路径 —— 别顺手把 `card/` 或 `memory/`
@@ -174,7 +195,7 @@ ss -tlnp | grep 8080           # 有输出 = 端口占着
 ```
 
 > ⚠ **服务器上通常没有 `python`，只有 `python3`** ⇒ 一律用 `venv/bin/python`（跟上面一致）。
-> 启动成功的标志：日志里**印出人设卡与世界书信息**（世界书 55 条那几行），随后出现 `[✅] NapCat 已连接`。
+> 启动成功的标志：日志里**印出人设卡与世界书信息**（世界书 56 条那几行），随后出现 `[✅] NapCat 已连接`。
 > ⚠ 重启要**先把旧进程杀干净**：只发 `C-c` 有时杀不掉，旧进程占着 8080 ⇒
 > 新进程 `Address already in use` 直接退出，看着像重启过、其实没在跑。
 
@@ -214,11 +235,18 @@ card/_work/worldbook/          → 世界书条目（改这里，目录下 14 �
                                  数值前缀即排序锚 + order 区间）
 
 改完跑：
-    python card/_work/_sanitize_md.py
-    python card/_work/md2card.py
+    python card/_work/_sanitize_md.py      # ⚠ 只洗 worldbook/ 目录
+    python card/_work/md2card.py --only card
+    python card/_work/_audit_card.py       # 自查：长度 / 锚点 / 露骨词
 
 再重启服务即可生效。
 ```
+
+- ⚠ **卡是「进程启动时读一次」** ⇒ 改完**必须重启**，而且 **web（8081）也要重启**才吃到新卡
+  （bot 8080 同理）。两边共用同一份 `card/Rafayel.character.json`。
+- ⚠ **`system_prompt` 有长度上限**（审计里那条 3600）—— 现在是 3401，**贴着线**
+  ⇒ 引擎层的规则（时间感 / 情绪 / 牵绊度语气）**一律别往卡里塞**，它们本来就住在引擎里。
+- ⚠ 人设 md 里的 prompt 文案**不许出现 `**`**，也别用 ASCII 双引号（用「」）。
 
 - `ai-Rafayel/Rafayel.py` 只是把 `card/Rafayel.character.json` 读进来的薄薄一层。
 - 世界书是关键词触发的，聊到才注入；改完记得跑一次
@@ -245,22 +273,24 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 ⚠ `LLM_PROVIDER` 拼错 ⇒ 自动退回 `deepseek`（宁可用旧模型好好跑，也不让 bot 起不来）。
 
 所有大模型调用都走标准 **OpenAI 兼容** 的 chat-completions 格式，
-一共 **4 个调用点**：
+一共 **6 个调用点**：
 
 | 位置 | 用途 | max_tokens |
 |---|---|---|
 | `Rafayel_llm.py` 朋友圈开口 | 他主动来找她的第一句 | 120 |
 | `Rafayel_llm.py` 空间回评论 | 在她评论底下回一句 | 120 |
 | `Rafayel_llm.py` `get_reply` | 主对话 | `MAX_TOKENS` |
-| `Rafayel_memory.py` `generate_summary` | 摘要 + 画像补丁（timeout 只给 10s） | `SUMMARY_MAX_TOKENS` |
+| `Rafayel_memory.py` 跨天小结 | 「昨天」压成一条备忘（跨天时跑一次） | `DAY_SUMMARY_MAX_TOKENS=120` |
+| `Rafayel_memory.py` `generate_summary` | 摘要 + 画像补丁 + **日记**（timeout 只给 10s） | `SUMMARY_MAX_TOKENS=900` |
+| `Rafayel_mood.py` 情绪判定 | **回复发出后**异步判一次心情（丢后台线程） | `MOOD_JUDGE_MAX_TOKENS=40` |
 
 - 请求体统一：`{model, messages, stream: False, max_tokens, temperature}`，
   鉴权 `Authorization: Bearer`，取回答 `choices[0].message.content`。
 - ✅ **换一家 OpenAI 兼容的服务**（Kimi / 通义 / 智谱 / 硅基流动 / 火山方舟…）：
-  在 `_LLM_PRESETS` 里**加一条**（`url` / `model` / `env_key` / `extra`），4 个调用点一行都不用改；
+  在 `_LLM_PRESETS` 里**加一条**（`url` / `model` / `env_key` / `extra`），6 个调用点一行都不用改；
   各家**独有的请求字段**（比如 Kimi 的 `thinking`）塞进 `extra`，它会自动拼进四个请求体。
 - ⚠ **换成非 OpenAI 格式的**（原生 Claude / 原生 Gemini）：要改请求构造与响应解析
-  （system 得单独成字段、鉴权头不同、返回路径不同），4 个调用点都得动。
+  （system 得单独成字段、鉴权头不同、返回路径不同），6 个调用点都得动。
 - ⚠ 换家后要留意的四件事：
   ① `max_tokens` 字段名（个别家要 `max_completion_tokens`）；
   ② `temperature` 取值范围（现在是 0.8，一般安全）；
@@ -297,7 +327,7 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 | 常量 | 默认 | 管什么 |
 |---|---|---|
 | `MAX_TOKENS` | 1000 | 他单次回复的上限（≈ 600~1000 字） |
-| `SUMMARY_MAX_TOKENS` | 600 | 每 8 轮生成记忆摘要（含画像补丁）的上限 |
+| `SUMMARY_MAX_TOKENS` | 900 | 每 8 轮生成记忆摘要 \| 日记 \| 画像补丁（**一次调用出三样**）的上限 |
 | `TEMPERATURE` | 0.8 | 回复的随机程度（此前从未传过，一直走 DeepSeek 默认 1.0，角色扮演容易飘） |
 
 调大只是**放开天花板**，不会让他变啰嗦——实际说多长由人设和
@@ -412,8 +442,43 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 - ⚠⭐ **每轮都会变的 prompt 别塞进 system 开头或历史中间**，要放到整段 prompt 的**最后一条**。
   否则「现在几点」每一轮都在变 ⇒ 它**后面**的整段（历史 + 人设）永远按**未命中**计费。
   这就是 `NOW_PROMPT` 那段被挪到最末尾的原因，不是拍脑袋。
-- ⚠ 时间感 / 世界书 / post_history / 表情说明 / 等级语气 **都只进 `request_messages`，
+- ⚠ 时间感 / 世界书 / post_history / 表情说明 / 等级语气 / **情绪段** **都只进 `request_messages`，
   绝不写回 `cm.messages`** —— 写回会被 `save_memory` 落盘，固化成常驻人设。
+
+---
+
+## 💗 情绪（他有心情）
+
+⭐ **一句话：他不是没有情绪，是情绪没有地方存。** 历史只留 12 轮、跨天小结明写「不写感想」、
+长期摘要是第三人称客观备忘 ⇒ **隔夜他就从零开始演**。所以补一份**独立、持久、会衰减**的心情状态。
+
+| 项 | 做法 |
+|---|---|
+| 存哪 | `memory/{uid}_mood.json`（跟对话记忆分开，**不动 `save_memory()` 那 8 个字段**） |
+| 标签 | 10 种 + **平静**：愉悦 / 得意 / 嘴硬 / 担忧（**短**）· 惦记 / 期待 / 吃醋 / 闷气 / 低落 / 内疚（**长**） |
+| 衰减 | **读时算**，不挂定时任务：短情绪隔 2 小时降一档、12 小时归平静；长情绪 12 小时降一档、**72 小时一律归平静**（隔三天还记着那叫记仇） |
+| 判定 | **回复发出去之后**再异步判一次（丢后台线程，**一秒都不占她等回复的时间**）；只喂**最近 4 轮**，`temperature=0.3` |
+| 注入 | 情绪段固定放 prompt 的**最后一条**（每轮都变 ⇒ 放前面会把前缀缓存拦腰截断） |
+
+- ⭐ **同一份心情，刚谈和老夫老妻不是一个样子**：情绪段只给「此刻心情 + 强度」，
+  **该闹到什么程度由牵绊度档位说了算**（心动=收着不敢闹 / 倾情=试探着来 /
+  眷恋=敢闹但一直找台阶 / 情衷=先服软）。两段各有一句桥梁互相指认，不会变成两条打架的命令。
+- ⛔ **情绪绝不说出口**（同「不许把等级 / 分数说出口」那条红线）。它唯一的出口是**日记**（见下一节）。
+- ⚠ **第一轮回复不会有情绪段、第二轮才有** —— 因为判定是异步的，这是**设计如此**，不是 bug。
+- 🔁 回退：`Rafayel_config.MOOD_ENABLE` 改回 `False` + **重启进程**即可，代码不用动别的。
+
+---
+
+## 📔 日记（目录页那格「纪念日」改成的）
+
+**一次总结 = 一条日记**，按天分组、能增删改（他写的那几条她也能改）—— 收在 `memory/{uid}_diary.json`。
+
+- ⚠ **跟喂 prompt 的摘要分开**：`long_term_summary`（客观第三人称、1500 字滚动窗）**一个字不动**；
+  日记是同一次 LLM 调用里**另写的一段第一人称**，两边用单独一行 `DIARY:` 分界。
+- ⚠ 切不出 `DIARY:` ⇒ **这条不写**，绝不拿摘要顶替。开关 `DIARY_ENABLE`。
+- 上限 300 条 / 单条 500 字；**丢的时候绝不丢她自己写的**（`src: "her"`）。
+- ⭐ 条目**时间是能改的**（网页端两个原生控件）⇒ 真改时间时必须 `day.pop()`，
+  但 **`id` 和「谁写的」都不变**（`id` 是网页主键，变了就等于换了一条）。
 
 ---
 
@@ -515,22 +580,31 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 
 **网页端 `web/`**：QQ 号 + 密码登录，只能看自己那份（uid 取自签名 cookie，服务端不信任前端传的）。
 登录后的落点是 **`/menu` 目录页**，从那儿进各个功能。
-18 条路由：`/`、`POST /login`、`/logout`、`/menu`、`/me`（→ `/affinity` 的跳转壳）、`/affinity`、
-`/messages`、`/messages/{level}`、`/messages/{level}/frag`、`/settings`、`POST /settings`、
-`POST /settings/avatar`、`POST /settings/avatar/remove`、`/avatar`、`/asset/{name}`、`/chat`、
-`POST /chat/send`、`GET /chat/voice`。
+**41 条路由**（GET 23 + POST 18）：`/` · `POST /login` · `/logout` · `/menu` ·
+**`/home`**（+ `GET/POST /home/edit/profile` · `…/profile/avatar` · `…/avatar/remove` ·
+`GET/POST /home/edit/tag` · `…/tag/e` · `POST …/tag/del` · `GET/POST /home/edit/fact` ·
+`…/fact/e` · `POST …/fact/del` · `GET/POST /home/edit/{kind}`，共 17 条）·
+**`/diary`**（+ `GET/POST /diary/new` · `GET/POST /diary/e` · `POST /diary/del`，共 6 条）·
+`/me`（→ `/affinity` 的跳转壳）· `/affinity` · `/messages` · `/messages/{level}` ·
+`/messages/{level}/frag` · `/settings` · `POST /settings` · `POST /settings/avatar` ·
+`POST /settings/avatar/remove` · `/avatar` · `/asset/{name}` · `/chat` · `POST /chat/send` ·
+`GET /chat/voice`。
+
+⚠ **写 `memory/` 的开口只有三个文件**：`page/chat.py`（对话）· `page/home.py`（主页那些能改的字段）·
+`page/diary.py`（日记）。其余各页照旧**一个字都不写**。
 
 - ⭐ **一页一个文件**（2026-09-29 拆的）：原来是单个 1500 行的 `web/app.py`，
   为了往对话窗口里继续加功能（语音）时不把单文件越堆越大，按「**负责一个功能就一个 py 文件**」
-  拆成 `base.py`（底座，没有路由）+ `page/` 下 8 个页面文件。
+  拆成 `base.py`（底座，没有路由）+ `page/` 下的页面文件（现在是 **10 个页面 + `__init__.py`**）。
   - `app = FastAPI()` 在 `base.py`，各页 `from base import app` 之后直接 `@app.get(...)` 往上挂；
     `app.py` 里 **import 各页的顺序 = 路由注册顺序**，别随手调
-    （现状：`login, menu, me, affinity, messages, settings, avatar, chat`）。
+    （现状：`login, menu, home, diary, me, affinity, messages, settings, avatar, chat`）。
   - 页面之间**不互相 import** —— 跨页共用的小工具（`_page` / `_esc` / `_rich` / `_avatar_url` …）全在 `base.py`。
   - ⚠ 拆的时候是**纯搬家**：函数体 / 注释 / 文案 / 状态码 / cookie 名字一个字没动，
     用「路由表 + 每条路径在匿名/已登录两态下的响应指纹」做了逐字节对照
     （`app.routes` 里 **19 条** = 15 条业务路由 + FastAPI 自带的 4 条文档路由；**28 组响应全等**；
-    那会儿是 15 条业务路由，现在已长到 **18 条**——后来又加了 `/menu`、`/affinity`、`/chat/voice`）。
+    那会儿是 15 条业务路由，现在已长到 **41 条** —— 后来又加了 `/menu`、`/affinity`、`/chat/voice`、
+    主页那 17 条、日记那 6 条）。
   - ⚠ `tools/reset_password.py` 是 `import app as WEB` 取那几个用户/哈希函数的 ⇒
     `app.py` **原样再导出了一次**，那个工具一个字都不用改。
 
@@ -548,8 +622,10 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
   ⚠ 两道闸都要过：① memory 里有他 ② 密码 = 默认密码 —— **密码错的时候不会顺手把号开出来**。
   ⚠ `_known_uids()` 只认**纯数字**：`*_daily` / `*_usage` / `*_profile` 这些尾巴用 `_` 切一刀归一，
   `cli` 这种非数字测试号不算「用户」。
-- 🧭 `/menu`：**目录页**（登录后的落点）。渲染入口表 `NAV`（在 `base.py`）：
-  主页 / 跟他说话 / 牵绊短信 / 好感度后台 / 小游戏 · 未来信件 · 纪念日 · 预留 ×2（都标「预留」）/ 设置 / 退出。
+- 🧭 `/menu`：**目录页**（登录后的落点）。渲染入口表 `NAV`（在 `base.py`），按顺序：
+  **主页 / 跟他说话 / 牵绊短信 / 好感度后台**（这四个已点亮）/ **日记**（⭐ 2026-09-30 点亮，就是原来的
+  「纪念日」那格）/ 小游戏 · 未来信件 · **美化主题** · 预留（这四个是 `reserved`，灰的、**点不动**）/
+  设置 · 退出（沉底那组）。
   ⭐ **一份数据、两种形态**：手机档 = 这一整页；桌面档 = 左边那一栏 —— 两边吃的是**同一份 `NAV`**，
   加 / 改名 / 灰掉一个入口**只改 `NAV`**，两端自动同步。
   ⚠ 这一页**自己不带「返回目录」底栏**（它就是目录本身）。**设置 / 退出也在这份表里**（沉底那组）。
@@ -568,12 +644,13 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
   他那一侧的头像是**一张真图**（`web/assets/qiyu.jpg`，走 `/asset/qiyu`），她那一侧还是「名字首字」小圆片。
   ⚠ `/asset/{name}` 是**白名单**路由（名字只查表、不拼路径 ⇒ 路径穿越进不来）；
   它放的是**项目素材**（进仓库），跟用户自己传的 `web/avatars/`（不进仓库）**是两回事，别混**。
-- `/settings`：改密码、显示名、**「你们相遇的那天」**、**上传头像**
+- `/settings`：改密码、显示名、**上传头像**
   ⚠⭐ 页上的**小提示只留「头像」那一条**（2026-09-21 她清掉了其余几条）。**别再补回来**：文案越少越好，
-  用户能看懂控件就够了。⚠ 字段本身没动（占位符和日期控件照旧）。
+  用户能看懂控件就够了。⚠ 字段本身没动（占位符照旧）。
   ⚠ 说明别写成模板里的 HTML 注释 —— 那是 `"""..."""` 字符串，注释会**原样发到浏览器**。
-  ⭐ 相遇那天**由用户自己填** —— bot 不记第一次聊天（所有时间戳字段都是「最后一次」），
-  那天只有她自己说了算。
+  ⚠⚠ **「你们相遇的那天」2026-09-30 已从这一页撤掉**（她不要），挪去了主页 `/home/edit/met_day`。
+  ⇒ 这页的 POST **只准写 `display_name` 与密码**，**别遍历整个表单往用户表里灌**
+  （空串会把她在主页填的相遇日**抹成空**）。
   ⭐ 头像走纯 HTML 表单上传（**没有一行 JS**）：服务端**只认文件头字节**（PNG / JPEG / GIF / WebP），
   不信任浏览器给的扩展名与 Content-Type；**限 2 MB**；文件名用清理过的 uid ⇒ 天然挡掉路径穿越；
   只能读回自己的头像；空文件 / 超限 / 非图片一律拒收且**不覆盖旧图**。
@@ -581,8 +658,9 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
   ⭐ 引擎**直接复用 QQ 那套** `Rafayel_chat.get_reply`：它自己管记忆读取、跨天小结、世界书注入、
   牵绊度语气、token 记账；`Rafayel_bot.py` 里跟 QQ 有关的只剩「收消息 → 拆气泡 → 发出去」最后一米。
   ⇒ 两边**共用同一份 `memory/{uid}.json`** —— 在这儿说的话，解冻后他在 QQ 里照样记得，**不是「第二个他」**。
-  ⚠⚠ **这一节会写 memory**（底线①的唯一开口）：`/chat` 只在「他还没开过场」时写那一句开场白，
-  `POST /chat/send` 写每轮对话 + 跨级记账；**其余各页照旧一个字都不写**。
+  ⚠⚠ **这一节会写 memory**（底线①的三个开口之一）：`/chat` 只在「他还没开过场」时写那一句开场白，
+  `POST /chat/send` 写每轮对话 + 跨级记账；**其余各页照旧一个字都不写**（能写的另外两个是
+  `page/home.py` 与 `page/diary.py`）。
   ⚠ **同一 uid 必须串行**（`_chat_lock`）：她连点两次 / 开两个标签页 ⇒ 两条 `get_reply` 并发跑，
   各自持一份内存副本、后写的那份把先写的整个覆盖 ⇒ **直接丢话**。前端另配「发送中禁用按钮」。
   ⚠⚠ **两个进程别同时写**：`Rafayel_bot.py` 和 web 都写 `memory/`，而文件锁跨不了进程
@@ -658,8 +736,9 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 ### 三条红线（改这块代码前先看）
 
 1. ⭐ **网页端默认只读 `memory/`**，一个字都不写 —— 那批文件是 bot 的记忆，写坏他人设就崩。
-   ⚠⭐ **唯一的开口是 `/chat` 与 `POST /chat/send`**（2026-09-29 加对话窗口时开的，原因见上：
-   不写盘 = 她说的话不进记忆 = 白聊）—— **只开给它俩，别再往别的页扩散**。
+   ⚠⭐ **开口只有三个文件**（2026-09-29 开对话窗口、09-30 加主页与日记）：
+   `page/chat.py`（不写盘 = 她说的话不进记忆 = 白聊）· `page/home.py`（主页上「他记住的」那些字段要能改）·
+   `page/diary.py`（日记要能增删改）—— **别再往别的页扩散**。
    用户能改的只有 `web/users.json` 与 `web/avatars/`（那两样是**用户数据**，不是 bot 的记忆）。
 2. ⭐ **好感度 / token 这些系统数据绝不进 QQ 对话** —— 一进聊天就破「不露机器人那一面」。
    后台数字摆在网页端没关系，**他在 QQ 里的口气**才是要守的那条线。
@@ -709,12 +788,15 @@ LLM_PROVIDER = os.environ.get("LLM_PROVIDER", "deepseek").strip().lower()
 
 ## 🛠️ 技术栈
 
-- Python 3.10：服务端逻辑
-- DeepSeek API：大语言模型
-- NapCatQQ：QQ 协议端
+- Python 3.10：服务端逻辑（**asyncio** 事件循环 + `asyncio.to_thread` 兜同步调用）
+- DeepSeek API：大语言模型（**OpenAI 兼容** chat-completions，换家只改 `_LLM_PRESETS` 一张表）
+- NapCatQQ：QQ 协议端（**OneBot v11** 反向 WebSocket；`requests` 走 qzone-bridge REST）
 - WebSocket：消息通信
-- FastAPI + Uvicorn：网页端
+- FastAPI + Uvicorn：网页端（**SSR + 渐进增强**，HMAC 签名 cookie 鉴权）
 - Nginx + Let's Encrypt（acme.sh，DNS-01）：网页端 HTTPS 入口
+- 火山引擎豆包语音（TTS）：回复里的台词合成语音
+- open-meteo：温度感知（降温关怀）
+- 语料质量流水线：`card/_work/` 下 25 个脚本（抓取 → 清洗 → 生成 → 覆盖率/误命中校验 → 审计）
 - tmux：进程守护
 
 ---

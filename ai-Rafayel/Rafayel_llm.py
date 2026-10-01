@@ -424,7 +424,9 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     cm.truncate_history()
 
     # 4. 构建请求的 messages
-    request_messages = cm.messages.copy()
+    request_messages = [{k: v for k, v in m.items()
+                         if k in ("role", "content", "name")}
+                        for m in cm.messages if isinstance(m, dict)]
 
     # 4a. 世界书：命中关键词的条目才注入
     #     ⚠ system 那条是**每轮重算**的，不写回 cm.messages ——

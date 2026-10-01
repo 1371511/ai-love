@@ -22,7 +22,7 @@ from Rafayel_config import (
     DAY_SUMMARY_MAX_TOKENS, DIARY_ENABLE, DIARY_HARD_LEN, DIARY_MAX_ITEMS, DIARY_MAX_LEN,
     LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
-    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,
+    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS,TIMELINE_GAP_HOURS,
 )
 from Rafayel_daily import record as daily_record
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
@@ -111,9 +111,13 @@ def now_prompt_text(gap_hours=None, fest=None, nudge=None):
         return ""
     n = _now_bj()
     # ⭐ 只写**时段**，精确钟点降级成括号里的备注（她问才说）—— 见 `_period_cn` 的注释。
-    lines = ["## 🕐 现在（北京时间）",
-             "%d年%d月%d日 %s %s %s（%02d:%02d）%s" % (
-                 n.tm_year, n.tm_mon, n.tm_mday, _WEEKDAYS_CN[n.tm_wday],
+    # ⭐ 2026-10-01 相对化：标题去掉「（北京时间）」，日期去掉年份 ——
+    #    绝对时间退居其次，真正给「时间感」的是后面那两段（隔了多久 + 时间轴）。
+    #    ⚠ 钟点**留着**（括号里当备注）：她问「现在几点」必须答得出准数，
+    #      这是 9/19 那个 bug 的底线，别为了「相对」把它一起删了。
+    lines = ["## 🕐 现在",
+             "%d月%d日 %s %s %s（%02d:%02d）%s" % (
+                 n.tm_mon, n.tm_mday, _WEEKDAYS_CN[n.tm_wday],
                  _season_cn(n.tm_mon), _period_cn(n.tm_hour), n.tm_hour, n.tm_min,
                  "周末" if n.tm_wday >= 5 else "工作日")]
 
@@ -161,12 +165,15 @@ def now_prompt_text(gap_hours=None, fest=None, nudge=None):
             hint = "—— 中间过了这么久，你手上的事（做饭、洗澡、走路这类）也该有进展了，别还停在原地。"
         lines.append("她上一条消息是%s %s" % (when, hint))
 
-    # ⚠⭐ 2026-09-24 她提「时间提得太频繁」⇒ 这里补上**反向那条禁令**。
-    #     原来只写了「她问就照实说」，等于只管了一半：模型照样主动报时。
+    # ⭐⭐ 2026-10-01：从「只有一条禁令」扩成**两条并存** ——
+    #    ① 正向：时间在走 ⇒ 手上的事必须跟着推进（无条件的，跟 gap 有没有触发无关）；
+    #    ② 反向：别主动报时（9/24 她提「时间提得太频繁」后加的，**一个字都不删**）。
+    #    ⚠ 两条不冲突：一条管**演**，一条管**嘴**。删掉反向那条会退回「开口就报钟点」。
     lines.append(
-        "（这是真实时间。她问起才照实说，别自己编一个钟点。"
-        "她没问就不要主动报时，也别拿时间做文章——"
-        "「这个点」「凌晨四点」「都这个时间了」这类话，她不问就别说。）"
+        "（时间一直在往前走，你手上的事也跟着走 —— 隔了多久，那件事就该推进多远；"
+        "隔了一夜，就别再接着昨晚的动作往下演。这是你演戏的底子，不是要说出口的话。"
+        "她问起才照实说，别自己编一个钟点；她没问就不要主动报时，"
+        "也别拿时间做文章——「这个点」「凌晨四点」「都这个时间了」这类话，她不问就别说。）"
     )
     return "\n".join(lines)
 
@@ -509,7 +516,15 @@ class ConversationManager:
         ⚠ 注意力：原来靠「system 越靠后越受关注」，现在改成「整段 prompt 的最后一条」，
           位置同样是最靠后 ⇒ 真机 A/B 验过再定，不行就往回挪。
         """
-        return now_prompt_text(self.gap_hours, fest=fest, nudge=nudge)
+        txt = now_prompt_text(self.gap_hours, fest=fest, nudge=nudge)
+        if not txt:
+            return ""                       # 总开关关着 ⇒ 时间轴也一起不注入
+        try:
+            tl = self._history_timeline()
+        except Exception as e:
+            print("⚠️ 历史时间轴算失败（不影响对话）：%s" % e)
+            tl = ""
+        return (txt + "\n" + tl) if tl else txt
 
     def _compute_gap_hours(self):
         """
@@ -521,6 +536,59 @@ class ConversationManager:
             return (time.time() - float(self.last_msg_at)) / 3600.0
         except (TypeError, ValueError):
             return None
+
+    def _history_timeline(self):
+        """
+        🕐 「这段对话是不是一口气说的」—— 从历史里每条消息的 `ts` 现算。
+
+        ⭐ 2026-10-01 她提「用相对时间戳替换绝对时间戳」。第一版只按天分组，但
+           `roll_days()` 每天会把「上一自然日」的原话**整个摘出历史** ⇒ 摘完历史里
+           不可能跨天 ⇒ 只有「零点前后跨天、但间隔不到 1 小时所以没滚」才生效，
+           而最常见的「同一天内断了十几个小时」（上午说一句、晚上回一句）**完全漏掉**。
+        ⇒ 改成扫**相邻两条的间隔**：≥ `TIMELINE_GAP_HOURS` 就算断过一次；天那层照旧报。
+
+        ⚠⚠ 只给「跨几天 / 断过几次 / 最长多久」，绝不逐条报时间：逐条标「3.2 小时前」
+           是每轮都在变的相对量，写进历史正文会让 DeepSeek 的前缀缓存每轮全失效。
+           这段只进 `request_messages` 的最后一条（跟时间感同位置），不写回 `cm.messages`。
+
+        ⚠ 返回空串 = 不注入：没历史 / 老数据没 `ts` / 既没跨天又没断层。
+        """
+        stamps = []
+        for m in self.messages[1:]:
+            if not isinstance(m, dict):
+                continue
+            try:
+                stamps.append(float(m["ts"]))
+            except (TypeError, ValueError, KeyError):
+                continue
+        if len(stamps) < 2:
+            return ""
+
+        today = _day_key(time.time())
+        days = sorted({_day_key(ts) for ts in stamps})
+
+        breaks = []
+        for i in range(len(stamps) - 1):
+            gap = (stamps[i + 1] - stamps[i]) / 3600.0
+            if gap >= TIMELINE_GAP_HOURS:
+                breaks.append(gap)
+
+        parts = []
+        if len(days) >= 2:
+            parts.append("它横跨 %d 天，最早那几条是%s说的"
+                         % (len(days), _rel_day_label(days[0], today)))
+        if breaks:
+            longest = max(breaks)
+            if longest >= 24:
+                long_txt = "约 %d 天" % int(round(longest / 24.0))
+            else:
+                long_txt = "约 %d 小时" % int(round(longest))
+            parts.append("中间断过 %d 次，最长一次隔了%s" % (len(breaks), long_txt))
+        if not parts:
+            return ""
+        return ("（翻上面这段对话时留意时间 —— 它不是一口气说的：%s。"
+                "别把早先那几条当成刚刚说的。）" % "；".join(parts))
+
 
     # ============================================================
     #  🗓 跨天滚动（2026-09-24）
@@ -665,7 +733,8 @@ class ConversationManager:
         #    ⚠ daily_record 自己吞异常，这里不再包一层（写不进去最多少几个数，别拖累对话）。
         daily_record(self.user_id, gap_hours=self.gap_hours, media=media)
 
-        self.messages.append({"role": "user", "content": content})
+        self.messages.append({"role": "user", "content": content,
+                              "ts": self.last_msg_at})
         self.turn_count += 1
         self.pending_summary.append({"role": "user", "content": content})
 
@@ -686,7 +755,8 @@ class ConversationManager:
         if not (isinstance(_last, dict) and _last.get("role") == "user"):
             self.reload_shared_from_disk()
 
-        self.messages.append({"role": "assistant", "content": content})
+        self.messages.append({"role": "assistant", "content": content,
+                              "ts": time.time()})
         self.pending_summary.append({"role": "assistant", "content": content})
 
         # 从祁煜的回复中提取可能的重要信息（比如承诺、约定）
