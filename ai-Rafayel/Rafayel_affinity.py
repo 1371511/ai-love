@@ -22,6 +22,7 @@ import json
 import os
 import re
 import time
+from datetime import date
 
 from Rafayel_config import DEFAULT_USER_NAME      # 她的默认称呼（唯一真相源在 config）
 
@@ -569,13 +570,20 @@ def _today():
 
 
 def days_since(day):
-    """`YYYY-MM-DD` 距今几天（含首尾 ⇒ 同一天返回 1）。解析不了返回 0。"""
+    """
+    `YYYY-MM-DD` 距今几天（含首尾 ⇒ 同一天返回 1）。解析不了返回 0。
+
+    ⚠⭐ 2026-10-01 修「第 1008 天」的 bug：
+      旧实现用 `(年*12+月)*31 + 日` 凑天数 ⇒ **把每个月都当成 31 天**
+      （一年算成 372 天），跨 32 个月就凭空虚增 19 天 —— 2024-01-17 真值
+      989 却显示 1008。现在改用 `datetime.date` 真实日历相减，跨月/闰年都对。
+
+    ⚠ 「+1（含首尾）」是她定的口径（相遇当天 = 第 1 天），**别当 off-by-one 改掉**。
+    ⚠ 非法日期（比如 2024-02-31）由 `date()` 抛 ValueError ⇒ 落进 except 返回 0。
+    """
     try:
         y, m, d = (int(x) for x in str(day).split("-")[:3])
-        n = time.localtime()
-        a = (n.tm_year * 12 + n.tm_mon) * 31 + n.tm_mday
-        b = (y * 12 + m) * 31 + d
-        return max(0, a - b) + 1
+        return max(0, (date.today() - date(y, m, d)).days) + 1
     except Exception:
         return 0
 

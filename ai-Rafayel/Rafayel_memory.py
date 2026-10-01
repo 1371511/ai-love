@@ -22,7 +22,7 @@ from Rafayel_config import (
     DAY_SUMMARY_MAX_TOKENS, DIARY_ENABLE, DIARY_HARD_LEN, DIARY_MAX_ITEMS, DIARY_MAX_LEN,
     LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS, LONG_TERM_SUMMARY_MAX,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
-    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS,
+    SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS, temp_for,
 )
 from Rafayel_daily import record as daily_record
 # 🗄 原话留档（2026-10-01 她定「原话不删，供用户查看，不调用」）。
@@ -636,7 +636,7 @@ class ConversationManager:
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
             "max_tokens": DAY_SUMMARY_MAX_TOKENS,
-            "temperature": 0.3,          # 这是备忘不是聊天，别让它发挥
+            "temperature": temp_for(0.3), # 这是备忘不是聊天，别让它发挥（kimi 上被拉到 0.6）
         }
         if LLM_EXTRA:
             data.update(LLM_EXTRA)

@@ -36,7 +36,7 @@ from Rafayel_config import (
     AFFINITY_TONE, API_URL, DAILY_QA, LLM_EXTRA, MAX_TOKENS, MEMORY_DIR, MODEL,
     MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
     REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS,
-    WB_MAX_ENTRIES, api_key,
+    WB_MAX_ENTRIES, api_key, temp_for,
 )
 # 💬 日常问答：她主动问「你今天怎么过的」⇒ 从池子挑一条**照原话说**。
 #    分层上它在 llm 之下（只依赖 config / daily / qzone_auto），这里调它不会成环。
@@ -251,7 +251,7 @@ def comment_opening(user_id: str, post_text: str) -> str:
             ],
             "stream": False,
             "max_tokens": 120,                 # 开口第一句，写长了就不像他了
-            "temperature": TEMPERATURE,
+            "temperature": temp_for(TEMPERATURE),
         }
         if LLM_EXTRA:
             data.update(LLM_EXTRA)
@@ -304,7 +304,7 @@ def comment_reply(user_id: str, post_text: str, her_comment: str) -> str:
             ],
             "stream": False,
             "max_tokens": 120,
-            "temperature": TEMPERATURE,
+            "temperature": temp_for(TEMPERATURE),
         }
         if LLM_EXTRA:
             data.update(LLM_EXTRA)
@@ -516,7 +516,7 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
         "messages": request_messages,
         "stream": False,
         "max_tokens": MAX_TOKENS,
-        "temperature": TEMPERATURE,
+        "temperature": temp_for(TEMPERATURE),
     }
     if LLM_EXTRA:
         data.update(LLM_EXTRA)

@@ -579,6 +579,7 @@ _LLM_PRESETS = {
         "model": "deepseek-chat",
         "env_key": "DEEPSEEK_API_KEY",
         "extra": {},          # DeepSeek 一个额外字段都不要
+        "temperature": None,  # 不锁：各调用方用自己的那一档（0.8 是她当年调好的）
     },
     "kimi": {
         # ⚠ 别用 moonshot-v1 —— 那代已于 2026-08-31 退役，调了直接报模型不存在
@@ -588,6 +589,8 @@ _LLM_PRESETS = {
         # ⭐⭐ 必加：K2.6 **默认开思考** —— 慢一截、reasoning token 按输出价收、
         #   还可能把思考过程带进正文。角色扮演根本不需要它想，一律关掉。
         "extra": {"thinking": {"type": "disabled"}},
+        # ⭐⭐ 官方写死：关思考之后 **只接受 0.6**，传其它值直接报错
+        "temperature": 0.6,
     },
 }
 
@@ -602,6 +605,17 @@ MODEL = _PRESET["model"]
 # ⭐ 随请求体一起发的额外字段（DeepSeek 时空字典 ⇒ 四处调用一个有行为都不变）
 # ⚠ 调用方只能读 + dict.update()，不许就地改它
 LLM_EXTRA = _PRESET["extra"]
+# ⭐ temperature 归一 —— 不同 provider 对这字段的要求完全不同：
+#   kimi-k2.6 关思考后**只认 0.6**（传别的报错）；DeepSeek 没这限制。
+# ⚠ 为什么做在函数里、而不是把 TEMPERATURE 改成 0.6：
+#   那些常量是按 DeepSeek 一个个调出来的语气档，改了就回不去了
+#   ⇒ 转换放在**出口这一层**，两边原值都留着，切回来一模一样。
+_PROVIDER_TEMPERATURE = _PRESET.get("temperature")   # None = 这一档不锁，用调用方的
+
+
+def temp_for(t):
+    """把调用方的 temperature 换成当前 provider 认的那一档。"""
+    return _PROVIDER_TEMPERATURE if _PROVIDER_TEMPERATURE is not None else t
 
 # 从环境变量读取 API Key，如果没有则使用默认值（仅供测试）
 DEFAULT_API_KEY = "sk-需要替换成你自己的api密钥"

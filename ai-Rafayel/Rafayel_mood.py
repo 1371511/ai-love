@@ -37,6 +37,7 @@ from Rafayel_config import (
     MOOD_DECAY_HOURS, MOOD_DECAY_LONG_HOURS, MOOD_ENABLE,
     MOOD_JUDGE_CARD_HINT, MOOD_JUDGE_MAX_TOKENS, MOOD_JUDGE_MAX_TURNS,
     MOOD_JUDGE_TEMPERATURE, MOOD_JUDGE_TIMEOUT, MOOD_MAX_CAUSE, api_key,
+    temp_for,
 )
 
 # ---------------------------------------------------------------- 常量
@@ -458,7 +459,7 @@ def mood_update(user_id, messages, api_key_override=None):
                      {"role": "user", "content": body}],
         "stream": False,
         "max_tokens": MOOD_JUDGE_MAX_TOKENS,
-        "temperature": MOOD_JUDGE_TEMPERATURE,
+        "temperature": temp_for(MOOD_JUDGE_TEMPERATURE),
     }
     if LLM_EXTRA:
         data.update(LLM_EXTRA)
