@@ -264,6 +264,36 @@ TALK_CSS = """
      ⇒ 不存在点进去是空页的死链。 */
 .phone.talk .sys.daysum .arlink{display:block;margin-top:7px;
      color:var(--c-brand-ink);text-decoration:none;font-size:12px}
+
+/* 📱 2026-10-01 晚 ·「输入栏下面空出一大块」的修复（两台真机对照定位）
+------------------------------------------------------------
+⭐ 病因：上面 `calc(100dvh - 232px)` 的 232 是**在一台手机上量出来的**
+   （地址栏 56 + body 上下 padding 64 + 输入栏 ~112，见本串顶部那段注释）。
+   但 `100dvh` 本身就是「跟着真实可视区走」的单位 —— 地址栏/底部工具栏占掉的高度
+   **它已经自己扣掉了**，再减 232 里的地址栏那截 = **chrome 被扣了两次**
+   ⇒ 支持 dvh 的手机上，输入栏下面永远空出一大块（手机 1 实测 ≈130px）；
+   不支持 dvh 的浏览器走上面的 `100vh` 老分支，恰好接近当初量 232 的那台 ⇒ 看着正常。
+   ⇒ 一台坏一台好，同一个 CSS。
+⭐ 修法：**不再手算 chrome**。让内容列 `.main` 自己当外壳定高 ——
+   只扣 64 = body 上下 padding 2rem×2（**页面内部常量，跨浏览器稳定**），
+   手机壳 `flex:1` 吃剩余高度、输入栏 `flex:0 0 auto` 自占其高。
+   地址栏收缩、底部工具栏高度、输入栏打字长高，全部自动适应，没有 magic number。
+⚠ **不支持 dvh 的浏览器整块忽略**（`@supports` 不认识就不生效）⇒ 保持原样、**零回归**。
+⚠ 必须排在本串前面那两条 `.phone.talk` 规则**之后**：特异性相同（0,1,0），靠源顺序取胜，
+   所以 `height:auto` 才压得住 `calc(100dvh - 232px)`。
+⚠ `margin-bottom:0`：手机那条 `.phone` 的 14px 下边距原本是给「壳 + 底栏」留缝的；
+   现在 shell 和输入栏同属一个 flex 列、输入栏自己有 `padding-top:10px` 和 `border-top`，
+   这道缝反而会变成一小条空白。
+⚠ 限定 `max-width:899px`：桌面 `min-width:900px` 那条 `!important` 高度照旧生效，互不打架。
+⚠ `/chat` 的 `.main` 只有两个直接子元素 `.phone.talk` + `.bar-bottom`（`chat.py` 里
+   `chat_page` 组装的），flex 列不会有第三个孩子被意外拉进来。 */
+@supports(height:100dvh){
+  @media(max-width:899px){
+    .main{display:flex;flex-direction:column;height:calc(100dvh - 64px)}
+    .phone.talk{flex:1 1 auto;min-height:0;height:auto;overflow:hidden;margin-bottom:0}
+    .bar-bottom{flex:0 0 auto}
+  }
+}
 """
 
 # ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
