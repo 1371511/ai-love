@@ -31,6 +31,7 @@ import json
 import os
 import re
 import sys
+import threading
 import time
 from urllib.parse import quote as urlquote
 
@@ -47,6 +48,13 @@ sys.path.insert(0, os.path.join(BASE, "ai-Rafayel"))
 #    ⚠ `Rafayel_affinity` 在 `check_static.py` 的 `WEB_WHITELIST` 里（只读引擎）
 #      ⇒ 网页端 import 它**不算**破 ADR-22，不用去 `WEB_WRITE_EXCEPTION` 开口子。
 from Rafayel_affinity import days_since  # noqa: E402
+# ☎️ 通话开场白（`CALL_HELLO`）—— 底座的 `CALL_OPEN`／`_is_call_open()` 从它现算前缀
+#    （通话页字幕 + 历史通话页共用一处判据）。`Rafayel_config` 同样在 `WEB_WHITELIST`
+#    里（纯配置、不写盘）⇒ 不算破 ADR-22。
+from Rafayel_config import CALL_HELLO, CALL_OPEN  # noqa: E402
+# 🔊 「哪几个字该念出来」要用 `strip_actions`（剥 `（动作）`）。`Rafayel_voice`
+#    是**只读**引擎模块（只发 TTS 请求、不写盘）⇒ 在 `WEB_WHITELIST` 里，不算破 ADR-22。
+from Rafayel_voice import strip_actions  # noqa: E402
 
 MEMORY_DIR = os.path.join(BASE, "memory")
 USERS_PATH = os.path.join(BASE, "web", "users.json")
@@ -63,6 +71,23 @@ AVATAR_MAX = 2 * 1024 * 1024        # 2 MB（只有 page/avatar.py 的「上传�
 
 SALT = "rafael-affinity"
 DEFAULT_PWD = "qiyu2026"        # ⭐ 统一默认密码：所有人第一次都用这个进来（在 /settings 里自己改）
+
+# ⌨️ 她一条消息最多多少字（防手滑粘长文烧 token）。
+#    2026-10-02 从 `page/chat.py` **下沉**到这儿：`/chat/send` 和 `/call/say`
+#    两个页面都要用同一把尺子 —— 页面不许互 import，共用常量只能进底座。
+#    ⚠ HTML 那边的 `maxlength` 和服务端这道闸**必须同一个数**：
+#      不然「本地气泡是全文、刷新后只剩前 800 字」那种错位又会回来。
+CHAT_MAX_INPUT = 800
+
+# 🖼 祁煜的头像（**项目素材**，白名单路由 `/asset/qiyu` → `web/assets/qiyu.jpg`，
+#    就是他画的那幅蓝色油画）。
+#    ⚠⭐ 2026-10-02 收敛：这行地址原来在「对话窗口 / 牵绊短信 / 视频通话」**各写了一遍**，
+#      而这三处代表的是**同一个人** ⇒ 图案必须一模一样。现在只留这一个来源，
+#      谁要换他的头像：改这一行 + 换 `web/assets/qiyu.jpg`，别去页面里翻字面量。
+#    ⚠⚠ 别跟 `_avatar_url(uid)` 混 —— 那个是**她自己上传**的头像
+#      （`web/avatars/`，用户数据、不进仓库）。通话页原来错用了它 ⇒
+#      中间那块挂着**她的脸**（2026-10-02 她抓出来的）。
+HIM_AVATAR = "/asset/qiyu"
 
 
 def _load_secret():
@@ -438,10 +463,14 @@ CHAT_CSS = """
 """
 
 
-def _page(body, title="他眼里的你", css="", script="", nav=True):
+def _page(body, title="他眼里的你", css="", script="", nav=True, head_extra=""):
     # ⭐ `script` 只给**短信详情页**用（2026-09-22 的局部刷新）；其余各页照旧零 JS。
     # ⭐ 2026-09-29 加 `nav`：**左栏只在桌面显示**（窄屏 `.side` 是 `display:none`），
     #    内容就是 `_nav_list()` —— 跟 `page/menu.py` 共用同一份 HTML。
+    # ⭐ 2026-10-02 加 `head_extra`：往 `<head>` 里塞**额外的 meta**用的
+    #    （目前只有通话的拨号页要用 `<meta http-equiv="refresh">` 做零 JS 自动跳转
+    #    ——「等待对方接受邀请」停在原地，几秒后浏览器自己去敲 `/call/connect`）。
+    #    ⚠ 只该放 meta / link 这类**资源性**标签，别拿它当第二个 script 口子。
     # ⚠⭐ `/menu` **不**用 `nav=False` —— 它原来传过，但那样 `.wrap` 这个网格只剩一个子元素，
     #    正文会被塞进第一列（172px）直接压扁（真机量到 `mainW=172`）。
     #    ⇒ 现在改成「左栏照出、正文那份入口列桌面用 CSS 藏掉」，见 `page/menu.py` 的 `MENU_CSS`。
@@ -456,9 +485,9 @@ def _page(body, title="他眼里的你", css="", script="", nav=True):
     #    ⇒ 一句话：**私人页一律不缓存**。（ PNG/JPG 素材走 `FileResponse`，各有各的缓存头，不受这条影响。）
     side = ('<aside class="side">%s</aside>' % _nav_list()) if nav else ""
     return HTMLResponse("""<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1">%s
 <title>%s</title><style>%s</style></head><body><div class="wrap">%s<div class="main">%s</div></div>%s</body></html>""" %
-                        (title, CSS + css, side, body, script or ""),
+                        (head_extra, title, CSS + css, side, body, script or ""),
                         headers={"Cache-Control": "no-store"})
 
 
@@ -494,6 +523,237 @@ def _avatar_url(uid):
     except OSError:
         v = 0
     return "/avatar?v=%d" % v
+
+
+# ============================================================
+# 🔒 对话锁 + 读历史（2026-10-02 从 `page/chat.py` **下沉**到这儿）
+# ============================================================
+# ⭐⭐ 为什么非下沉不可：视频通话（`page/call.py`）也要**写 memory**，
+#    而「同一个 uid 的对话必须串行」这条规矩不会因为页面分家就失效 ——
+#    如果 call.py 自己再造一把锁，那 `/chat` 与 `/call` 之间就**不互斥**了：
+#    两边各持一份 `cm` 内存副本、后写的那份把先写的**整份覆盖** ⇒ 直接丢话
+#    （`memory/{uid}.json` 是整份覆盖写的，这条坑踩过一次）。
+#    ⇒ 页面之间不许互相 import（`app.py` 那条铁律）⇒ 共用工具只能下沉底座。
+#    （跟 `_two_way_footer()` 当年从 `page/home.py` 下沉是同一个道理。）
+#
+# ⚠ 这是**进程级**的锁：够用是因为整个 web 只有一个 uvicorn 进程。
+#   跨进程（`Rafayel_bot.py` 与 web 同时跑）它挡不住 —— 那条老规矩不变：
+#   **别让两个进程同时写 memory**。
+_CHAT_LOCKS = {}
+_CHAT_LOCKS_GUARD = threading.Lock()
+
+
+def _chat_lock(uid):
+    """拿到某个 uid 的对话锁（没有就现造一个）—— 全站**共用一把**，跨页面互斥。"""
+    with _CHAT_LOCKS_GUARD:
+        lk = _CHAT_LOCKS.get(uid)
+        if lk is None:
+            lk = threading.Lock()
+            _CHAT_LOCKS[uid] = lk
+        return lk
+
+
+def _memory_path(uid):
+    return os.path.join(MEMORY_DIR, "%s.json" % _safe_uid(uid))
+
+
+# ☎️ 通话场次的界碑判据（2026-10-02 下沉；通话页字幕 + 历史通话页**共用这一处**）
+# ------------------------------------------------------------
+# ⚠⭐ **判据本体已经不在本文件里了**（2026-10-02 第 4 批挪去 `Rafayel_config.CALL_OPEN`）：
+#    引擎侧现在也要用它（判定「这条消息是不是一通电话的开头」⇒ 记录里要不要新开一通），
+#    而网页端不许 import 引擎、引擎也不许 import 网页 ⇒ 只有 config 是两边都能碰的地方。
+#    ⭐ 这里改成 import **不是「多一处副本」，恰恰相反**：以前是「base 现算、引擎另写一份」，
+#      现在是**同一份值**，`CALL_HELLO` 改后半句两边一起跟上。
+#    ⚠ 上面那行 import 改了，这条注释别跟着删 —— 下次有人想把 `CALL_OPEN` 挪回这里时，
+#      要能一眼看到「挪走是因为引擎也要用」。
+def _is_call_open(role, text):
+    """这条消息是不是「一通电话的起点」（她的开场白）。"""
+    return (role == "user" and isinstance(text, str)
+            and text.strip().startswith(CALL_OPEN))
+
+
+# ============================================================
+# 🔊 「这句话该念哪几个字」（2026-10-02 从 `page/chat.py` **下沉**）
+# ------------------------------------------------------------
+# ⭐⭐ 为什么下沉：视频通话页（`page/call.py`）也要给字幕挂语音，而**哈希必须两边
+#    算得一模一样** —— 通话页算出的短哈希要跟 `/chat/voice` 路由重算的那一份对上，
+#    否则一播就是 404。页面之间不许互相 import（`app.py` 铁律）⇒ 只能下沉底座。
+# ⚠ 这套规则（剥 `[表情:x]`、剥括号动作、剧情格式只念「」里的台词）**改一个字就等于
+#    换了哈希** ⇒ 两处永远走同一份实现，别在任何页面里另抄一版。
+# ============================================================
+VOICE_PATH = "/chat/voice"          # 🔊 语音路由（chat.py 注册、通话页也指向它）
+# ⭐ 开关：整条消息里出现过「」⇒ 判为「剧情格式」，只念引号内的台词，
+#   引号外的旁白一个字都不念。关掉它就退回上一版行为（剧情格式的旁白会整段念出去）。
+VOICE_QUOTE_MODE = True
+_VOICE_TAG = re.compile(r"\[[^\[\]]*\]")   # `[表情:涂鸦叽]` 这类方括号标记
+_VOICE_QUOTE = re.compile(r"「([^」]*)」")  # 剧情格式的台词标记
+_VOICE_PUNCT = "，。！？…、；：,.!?"
+
+
+def _segs(text):
+    """
+    一条消息 ⇒ 几条气泡。
+
+    ⭐ 跟 QQ 侧同一个口径（2026-09-22 她拍板）：「分段」就是**一条气泡一段**，
+      不是一条气泡里换行（换行她看着还是一大坨）。
+    ⚠ QQ 那边还会按字数再细切（`_split_bubble`，在 `Rafayel_bot.py` 里）——
+      网页端气泡没有长度上限，不用切。
+    ⚠ 它同时也是语音的**切分单元**（每段各算一个哈希、各合一句 TTS）。
+    """
+    return [x.strip() for x in str(text or "").replace("\r\n", "\n").split("\n")
+            if x.strip()]
+
+
+def _vhash(text):
+    """
+    一段气泡原文 ⇒ 语音路由用的短哈希（16 位十六进制）。
+
+    ⚠⭐ 为什么用哈希，而不是「第几条」：`Rafayel_memory.truncate_history()`
+      是**从头部裁**的（`messages = [system] + recent`）⇒ 「第 N 条」这个下标
+      会随着聊下去往前漂 —— 她点一个旧气泡，服务端可能读到**另一句话**，
+      而且**不报错，只是念错内容**。哈希是从文本算的、跟位置无关
+      ⇒ 只会在「这句已经滚出历史」时失败（404），不会张冠李戴。
+    ⚠ 两侧必须算**同一份**文本 —— 哈希的是 `_voice_text()` 提取后的**台词**，
+      而不是气泡原文：`_bubble` 按 `say` 算、路由里对每段重算同一个 `say`
+      ⇒ 天然一致。（`add_assistant_message` 原样落盘 + `_voice_text` 是纯函数
+      ⇒ 两次必然算出同一份。）
+    """
+    return hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()[:16]
+
+
+def _voice_text(text, quote=None):
+    """
+    气泡原文 ⇒ 该**念出来**的台词。
+
+    ⭐ 项目里并存两种书写格式，靠 `quote` 分流（由 `_says_of` 按**整条消息**判定后传进来）：
+      · `quote=True`（剧情格式，整条里出现过「」）⇒ **只取「」里的台词**；
+        引号外的旁白（「他站起来往门口走，顺手接过你手里的袋子…」）一个字都不念。
+      · `quote=False`（日常格式，system prompt 规定的 `（动作）话跟着写在同一段`）
+        ⇒ 剥掉括号动作后把话念出来（跟上一版行为一致）。
+      `quote=None` ⇒ 就地按本段自己猜（只有单段调用才不用传，页面与路由都显式传）。
+
+    ⚠⭐ 为什么格式判定必须按**整条消息**、不能按单段：剧情格式里
+      「他往厨房走，走了两步又停下来。」这种纯旁白段**自己身上没有「」**，
+      逐段判就会把它当成日常格式 ⇒ 又整段念出去（这正是当初要修的 bug）。
+    ⚠ 两件清洗都得做，否则读出来是噪音：
+      · `（他笑）` / `（挑眉）` —— `strip_actions` 管这个
+      · `[表情:涂鸦叽]` —— 页面上 `_rich` 把它画成小圆片，但 TTS 会照字念「表情 涂鸦叽」
+    ⚠ 剥完没台词（纯动作 / 纯旁白气泡）⇒ 返回 `""`，调用处**不给它渲染小喇叭** ——
+      一个点了必然失败的按钮不如没有。
+    """
+    t = _VOICE_TAG.sub("", str(text or ""))
+    if quote is None:
+        quote = VOICE_QUOTE_MODE and ("「" in t)
+
+    if quote:
+        parts = []
+        for x in _VOICE_QUOTE.findall(t):
+            # 引号里若还夹着括号动作（「（他笑）你回来了。」）⇒ 再剥一层
+            parts.extend(strip_actions(x)[1])
+    else:
+        _actions, parts = strip_actions(t)
+
+    out = ""
+    for x in parts:
+        x = x.strip()
+        if not x:
+            continue
+        # 括号被 `strip_actions` 换成了换行 ⇒ 断开处补个停顿；
+        # 但上一句已经带标点就不补（不然会冒出「。」「，」连着两个）。
+        if out and out[-1] not in _VOICE_PUNCT:
+            out += "，"
+        out += x
+    return out.strip()
+
+
+def _says_of(text):
+    """
+    一条消息 ⇒ **每个气泡**该念的内容（与 `_segs()` 的段一一对应、同序）。
+
+    ⭐ 格式判定在**整条消息**这一层做完，再逐段套用 —— 理由见 `_voice_text()`。
+      返回值里 `""` 表示「这一段没台词」⇒ 不出小喇叭。
+    """
+    segs = _segs(text)
+    quote = VOICE_QUOTE_MODE and ("「" in str(text or ""))
+    return [_voice_text(seg, quote) for seg in segs]
+
+
+def _read_talk_stamped(uid):
+    """
+    跟 `_read_talk` 同一份数据，但**保留 `ts`**：返回 `[(role, text, ts), …]`。
+
+    ⭐ 2026-10-02 加（「历史通话」页要用）：通话记录得能在标题上写「10-02 14:18」，
+       而 `_read_talk` 为了干净把 `ts` 丢了。**不新开读者** —— 它俩现在共用一份
+       实现，`_read_talk` 只是把第三列扔掉而已（两份读法在细节上分叉过就糟了）。
+    ⚠ `ts` 可能是 `None`（老数据 / 手工写进去的）⇒ 原样带出来，由渲染层兜底。
+    ⚠ 时间戳**只给「场次标题」用**，正文一个字都不挂 —— 沿用「相对时间不进正文」
+      那条红线（正文里出现「三分钟前」这种字，会让前缀缓存整段作废）。
+    """
+    p = _memory_path(uid)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[💬] 读记忆失败（%s）：%s" % (uid, e))
+        return []
+    out = []
+    for m in (data.get("messages") or []):
+        if not isinstance(m, dict):
+            continue
+        role, txt = m.get("role"), m.get("content")
+        if role in ("user", "assistant") and isinstance(txt, str) and txt.strip():
+            out.append((role, txt, m.get("ts")))
+    return out
+
+
+def _read_talk(uid):
+    """读 `memory/{uid}.json` 的对话历史（**只读**），返回 [(role, text), …]。"""
+    return [(r, t) for r, t, _ in _read_talk_stamped(uid)]
+
+
+# ☎️🔊 通话记录的**台词**（2026-10-02 第 5 批补）—— 给 `GET /chat/voice` 当**第二个**查找来源。
+# ------------------------------------------------------------
+# ⚠⭐ 为什么非补不可：第 5 批让通话走 `wire=False`（`get_reply` 的入参）⇒ 通话内容
+#    **不再进** `memory/{uid}.json`，而那条语音路由原来**只**在那边按哈希反查台词 ⇒
+#    通话页字幕挂的 `data-v` 它**一个都认不出** ⇒ 全 404、通话里一点声音都没有，
+#    而且**静默**：不报错、不挡流程。
+#    ⚠ 通话页算哈希用的本来就是**通话记录**里的台词（`page/call.py` 渲染字幕时），
+#      ⇒ 「算哈希的地方」和「找台词的地方」必须是**同一份内容**，这里就是把它对齐。
+# ⚠ 口径跟 `/call/history` 一致：**直接 `json.load`、不 import 引擎模块**
+#   （`Rafayel_calls` 在 `check_static` 的 `WRITER_MODULES` 里，引它就是**新开一条 ADR-22 口子**）。
+# ⚠ 读坏了返回空（**绝不抛**）—— 语音放不出来是小事，把页面带崩是大事。
+def _read_calls_talk(uid):
+    """
+    读 `memory/{uid}_calls.json` 里**每一通电话**的台词（**只读**），返回 `[(role, text), …]`。
+
+    ⭐ 顺序 = **新的通话在前**（`reversed(calls)`）：通话页挂的哈希几乎总在**最后一通**里
+      ⇒ 常见情况头几条就命中，不必扫完整份。
+    """
+    safe = _safe_uid(uid)
+    if not safe:
+        return []
+    p = os.path.join(MEMORY_DIR, "%s_calls.json" % safe)
+    if not os.path.isfile(p):
+        return []
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        print("[🔊] 读通话记录失败（%s）：%s" % (uid, e))
+        return []
+    out = []
+    for call in reversed((data or {}).get("calls") or []):
+        if not isinstance(call, dict):
+            continue
+        for m in (call.get("lines") or []):
+            if not isinstance(m, dict):
+                continue
+            role, txt = m.get("role"), m.get("content")
+            if role in ("user", "assistant") and isinstance(txt, str) and txt.strip():
+                out.append((role, txt))
+    return out
 
 
 # 🖼 头像的**写入**三件套（2026-09-30 从 `page/avatar.py` 搬到这儿）。
@@ -661,12 +921,18 @@ NAV_FOOT = [
 MENU_PATH = "/menu"
 
 
-def _nav_list(active=""):
+def _nav_list(active="", foot=True):
     """
     🧭 把 `NAV` 渲染成一列入口。**目录页整页 / 桌面左栏共用这一份 HTML。**
 
     ⚠ 桌面左栏（第 3 步）= 同一份 HTML + 一段 `@media` CSS ⇒ 两端永远同步。
     `active` 传当前页的 href（如 `"/chat"`）⇒ 那一项高亮。
+
+    ⭐ `foot`（2026-10-02 她定的）：**尾部那组「设置 / 退出」渲染不渲染**。
+      目录页传 `foot=False` —— 手机上这两项**不占列表**，改成页面底部的
+      左右底栏（见 `page/menu.py` 的 `menufoot`）；
+      桌面左栏照旧 `foot=True` —— 侧栏没有"底部栏"概念，这两项在桌面
+      的唯一入口就是左栏这组，删了桌面就再也进不去设置了。
     """
     out = []
     for it in NAV:
@@ -679,9 +945,10 @@ def _nav_list(active=""):
                        % (it["href"], (' class="%s"' % cls) if cls else "", label, tail))
         else:
             out.append('<span class="off"><span>%s</span>%s</span>' % (label, tail))
-    out.append('<div class="navgap"></div>')
-    for it in NAV_FOOT:
-        out.append('<a href="%s"><span>%s</span></a>' % (it["href"], _esc(it["label"])))
+    if foot:
+        out.append('<div class="navgap"></div>')
+        for it in NAV_FOOT:
+            out.append('<a href="%s"><span>%s</span></a>' % (it["href"], _esc(it["label"])))
     return '<nav class="nav">%s</nav>' % "".join(out)
 
 

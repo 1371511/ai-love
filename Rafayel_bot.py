@@ -40,6 +40,11 @@ from Rafayel_config import (
     QZONE_CMT_EVENT_WS, QZONE_CMT_HOUR_END, QZONE_CMT_HOUR_START,
     QZONE_CMT_MAX_PER_DAY, QZONE_CMT_POLL_SECONDS, QZONE_CMT_REPLY_ENABLE,
     QZONE_SELF_UIN,
+    # 🚦 报错显示（2026-10-02 下午 · 她选「两个都要」）：上游拒了那一刻，QQ 上
+    #    别把 `（AI 接口出错：Your account org-… max RPM: 3 …）` 这种英文原文发出去。
+    #    ⚠ QQ 只有一条消息、**没有「小字」这种形态** ⇒ 只发人设化的那半句
+    #      （`LLM_BUSY_SAY`）；网页端那两处才是「人设话 + 小字」两句。
+    is_llm_error, LLM_BUSY_SAY,
 )
 from Rafayel_affinity import (current_level, init_unlocked, load_egg_levels,
                               load_sms_nodes, pending_unlock)
@@ -67,7 +72,20 @@ def your_ai_lover_response(user_message: str, user_id: str, media: bool = False)
     """调用祁煜的对话引擎（Rafayel_chat）"""
     # 直接调用 get_reply，它会自动管理该用户的对话历史和记忆
     # media = 她这条是不是图 / 表情 ⇒ 只进每日统计（好感度用），不参与对话内容
-    return get_reply(user_message, user_id, media=media)
+    reply = get_reply(user_message, user_id, media=media)
+    # 🚦 上游把请求拒了（Kimi Tier0 的并发 1 / RPM 3）⇒ `get_reply` 返回的是
+    #    `（AI 接口出错：Your account org-… max RPM: 3 …）` 这种**引擎替上游转述的报错**。
+    #    ⚠⚠ 绝不能原样发到 QQ 上 —— 她会以为祁煜忽然说起英文了
+    #      （她 2026-10-02 下午在网页端截图抓的就是这个形态）。
+    #    ⚠ 这里只发**人设化的那半句**：QQ 是一条消息，挂不了「小字提示」
+    #      （网页端才是「人设话 + 小字」两句，见 `web/page/{chat,call}.py`）。
+    #    ⚠ 报错**不进记忆**（`get_reply` 报错时压根没 `add_assistant_message`）
+    #      ⇒ 这里换掉的只是**发出去的那一句**，不会污染他的对话历史。
+    if is_llm_error(reply):
+        print("[🚦] 上游把请求拒了 ⇒ 这一条改发人设化的话（原文：%s）"
+              % str(reply)[:60])
+        return LLM_BUSY_SAY
+    return reply
 
 
 def _img_payload(p):

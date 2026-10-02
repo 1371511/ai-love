@@ -23,6 +23,9 @@ from Rafayel_config import (
     LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS, LONG_TERM_SUMMARY_MAX,
     MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS, temp_for,
+    # 🚦 2026-10-02（独立项 1）「引擎转述的报错」的判据（前缀，从三句模板现算）。
+    #    ⚠ 那三句话**不是他说的话**，绝不能当台词摘进长期记忆 —— 见 `summarize_call`。
+    LLM_ERR_MARKS,
 )
 from Rafayel_daily import record as daily_record
 # 🗄 原话留档（2026-10-01 她定「原话不删，供用户查看，不调用」）。
@@ -30,6 +33,15 @@ from Rafayel_daily import record as daily_record
 #   ⚠⭐ 这里**只有写入**——本模块从头到尾不读归档，归档也不进任何 prompt
 #      （进了就等于把 DAY_ROLL 白做：旧原话回上下文，他照样把昨天当今天）。
 from Rafayel_archive import append as archive_append
+# ☎️ 通话记录（2026-10-02 第 4 批 · 她定「通话记录就以单次通话作为记忆保存」）。
+#   ⚠ 依赖方向合法：memory(2) → calls(1)；`Rafayel_calls` **只依赖 config**，不反向 import memory。
+#   ⚠⭐ 这里**只有读**，而且是「为了给这一通写摘要」才读（`pending_call`）——
+#     读出来的原话进的是**摘要**，不是把它塞回上下文；
+#     通话原话要是进了 prompt，等于把 12 轮裁剪白做（上下文无限长、前缀缓存全废）。
+#   ⚠ 写入侧（追加每一句 / 标记已摘要）**不在这里**：调用点在 `web/page/call.py`
+#     （她 2026-10-02 选的就是「通话页自己写」）。
+from Rafayel_calls import mark_summarized as calls_mark
+from Rafayel_calls import pending_call as calls_pending
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
 #   ⚠ 只给**事实**、不加指令 —— 让他自己带着这个心情写，不替他规定写什么。
 #   ⚠ 依赖方向合法：memory(2) → mood(1)；mood 只依赖 config，**不反向 import memory**。
@@ -389,7 +401,10 @@ def recent_context(user_id, n=6):
     parts = parts[-n:]
 
     summary = (data.get("long_term_summary") or "").strip()
-    if summary and summary != "（你们刚开始聊天，还没有值得记录的重要事件。）":
+    #  ⚠ 跟 `ConversationManager.__init__` 的初值比的是**同一个常量**（`_SUMMARY_PLACEHOLDER`，
+    #     定义在本文件后半段）—— 以前这里、`__init__`、`push_long_term_summary` 三处
+    #     各写一份字面量，改文案时漏一处就会「明明没记过东西，却当成有摘要」。
+    if summary and summary != _SUMMARY_PLACEHOLDER:
         parts.append(summary[-300:])          # 摘要可能很长，只取尾巴（越近越有用）
 
     # 🗓 跨天小结：跨天滚动之后 `messages` 会变空 ⇒ 只靠 messages 取材会「没话说」，
@@ -415,7 +430,7 @@ class ConversationManager:
         self.base_prompt = base_prompt
         self.user_id = user_id
         self.messages = [{"role": "system", "content": base_prompt}]
-        self.long_term_summary = "（你们刚开始聊天，还没有值得记录的重要事件。）"
+        self.long_term_summary = _SUMMARY_PLACEHOLDER   # 见文件后半段那个常量（唯一真相源）
         self.key_facts = []
         self.turn_count = 0
         self.pending_summary = []  # 待总结的对话片段
@@ -734,7 +749,7 @@ class ConversationManager:
         """更新 messages 中的 system 消息"""
         self.messages[0]["content"] = self.get_full_system_prompt()
 
-    def add_user_message(self, content, media=False):
+    def add_user_message(self, content, media=False, wire=True):
         """
         添加用户消息。
 
@@ -754,10 +769,11 @@ class ConversationManager:
         #    ⚠ daily_record 自己吞异常，这里不再包一层（写不进去最多少几个数，别拖累对话）。
         daily_record(self.user_id, gap_hours=self.gap_hours, media=media)
 
-        self.messages.append({"role": "user", "content": content,
-                              "ts": self.last_msg_at})
-        self.turn_count += 1
-        self.pending_summary.append({"role": "user", "content": content})
+        if wire:
+            self.messages.append({"role": "user", "content": content,
+                                  "ts": self.last_msg_at})
+            self.turn_count += 1
+            self.pending_summary.append({"role": "user", "content": content})
 
         # 检测关键词，提取关键事实
         self._extract_facts(content)
@@ -766,19 +782,23 @@ class ConversationManager:
         if self.profile.extract_from_text(content):
             self.profile.save()
 
-    def add_assistant_message(self, content):
+    def add_assistant_message(self, content, wire=True):
         """添加助手消息"""
         # 🔄 开场白 / 主动开口这类「**她那条消息不在前**」的轮次，也刷一次
         #    （正常一轮的最后一条是 user ⇒ 那次刷新已经在 `add_user_message` 里做过，
         #     这里再刷会把本轮刚提取到的事实冲掉）。
         #    判据就是「最后一条不是她说的」—— `system` / `assistant` / 空 都算。
         _last = self.messages[-1] if self.messages else None
-        if not (isinstance(_last, dict) and _last.get("role") == "user"):
+        # ⚠⚠ 判据必须带 `wire`（2026-10-02 加）：`wire=False`（通话）时窗口的最后一条
+        #   **不是**她那条（她的消息压根没进窗口）⇒ 不加这一条会误判成「开场白轮次」
+        #   去重读磁盘，把本轮 `add_user_message` 刚提取的事实冲掉。
+        if wire and not (isinstance(_last, dict) and _last.get("role") == "user"):
             self.reload_shared_from_disk()
 
-        self.messages.append({"role": "assistant", "content": content,
-                              "ts": time.time()})
-        self.pending_summary.append({"role": "assistant", "content": content})
+        if wire:
+            self.messages.append({"role": "assistant", "content": content,
+                                  "ts": time.time()})
+            self.pending_summary.append({"role": "assistant", "content": content})
 
         # 从祁煜的回复中提取可能的重要信息（比如承诺、约定）
         self._extract_facts_from_reply(content)
@@ -909,8 +929,14 @@ class ConversationManager:
 3. 发生了什么可能影响后续对话的重要事件？
 ⚠ 必须写成**客观的第三人称**（「她说…」「祁煜…」）—— 这段是记忆提要，不是日记，
   写成「我」会污染他的长期记忆。
+⚠⚠⚠ **不要引用他说过的原话**（不要写「他回答『…』」这种带引号的逐字转录）。
+  这段摘要会**原样喂回他下一轮对话的 system 提示词**；你在这里逐字复述他某句，
+  他下一轮就当成「我上次就是这么说的」继续念 —— 通话那边实测已造成逐字复读 9 次。
+  只写发生了什么、他态度/动作如何，不要复述台词措辞。
 ⚠ 写到具体事情时带上时间坐标（比如「{_day_label(_day_now)}她说…」），
   别把不同天的事并成一件；不确定是哪天就写「那天」。
+⚠ 同一个场景在多轮里反复出现时**合并成一句概括**，不要逐轮各写一段
+  —— 段落重复同样会让他照着上一段续写。
 
 【任务二】从对话里留意「关于她」的事实。只写**她自己明确说过**的，不要推测、不要脑补：
 - name：她让祁煜怎么叫她（没说过就空字符串）
@@ -978,18 +1004,14 @@ PROFILE: {{"name": "", "likes": [], "dislikes": [], "traits": [], "birthday": ""
                 if not new_summary:
                     new_summary = "（本轮无可摘要内容）"
 
-                if self.long_term_summary == "（你们刚开始聊天，还没有值得记录的重要事件。）":
-                    self.long_term_summary = new_summary
-                else:
-                    self.long_term_summary = self.long_term_summary + "\n\n" + new_summary
-                # 2026-10-01 改按「段」丢，不再按字符砍：字符级截断会砍出「永远；」这种
-                # 半句记忆（实锤：她的现役记忆开头就是残句）。段 = 空行分隔的一段。
-                _parts = self.long_term_summary.split("\n\n")
-                while len("\n\n".join(_parts)) > LONG_TERM_SUMMARY_MAX and len(_parts) > 1:
-                    _parts.pop(0)
-                self.long_term_summary = "\n\n".join(_parts)
-                if not self.long_term_summary.startswith("...(较早记忆已压缩)..."):
-                    self.long_term_summary = "...(较早记忆已压缩)...\n\n" + self.long_term_summary
+                # 📚 拼接 + 按段滚动统一走 `push_long_term_summary()`（2026-10-02 第 4 批抽出）：
+                #    单通电话摘要那条路（`Rafayel_llm.summarize_call`）用的是**同一个**函数。
+                #    ⚠ 两处各写一份滚动逻辑必然只修一处 —— 上限 / 丢整段的判据 /
+                #      那句 `...(较早记忆已压缩)...` 前缀，任何一条漂了她都会看到两种风格的记忆。
+                #    ⚠ 上面那个「本轮无可摘要内容」的兜底留在**调用点**：它是这条路的私事
+                #      （电话那条路空摘要直接不写，口径不一样）。
+                self.long_term_summary = push_long_term_summary(
+                    self.long_term_summary, new_summary)
 
                 # 📔 日记（2026-09-30 · 她：「按天进行多次总结」）：
                 #    同一次摘要，在日记里也留一条 ⇒ **一次摘要 = 一条**，
@@ -1185,6 +1207,54 @@ DIARY_MARK_RE = re.compile(r"^[ \t>*_#]*DIARY[：:][ \t]*(?:\*\*)?[ \t]*", re.M)
 # 🈳 模型在【任务三】里说「今天没什么可写的」时给的那几种写法 ⇒ 不往日记里塞废话。
 #    ⚠ 比的是**剥掉引号之后**的整串（见 `_diary_text_from`），不是「包含」。
 _DIARY_EMPTY = ("", "无", "（无）", "(无)", "（今天没什么可记的）", "（今天没什么可记的。）")
+
+
+# ============================================================
+#  📚 长期摘要「追加 + 按段滚动」（2026-10-02 第 4 批抽出来共用）
+# ------------------------------------------------------------
+# ⭐⭐ 为什么抽成一个函数：**现在有两条路往 `long_term_summary` 里写**
+#    —— ① 8 轮那趟（`ConversationManager.generate_summary`）
+#          ② 单通电话那趟（`Rafayel_llm.summarize_call`，她 2026-10-02 定的）。
+#    两处各写一份滚动逻辑 = 迟早只修一处：上限、丢整段的判据、
+#    那句 `...(较早记忆已压缩)...` 前缀，任何一条漂了都会让她看到两种风格的记忆。
+# ⚠ 滚动口径**一个字都没改**，就是原样搬过来的：
+#    · 超 `LONG_TERM_SUMMARY_MAX` 从头**丢整段**（`\n\n` 分隔），不按字符砍
+#      —— 字符级截断会砍出「永远；」这种半句记忆（实锤：她的现役记忆开头就是残句）；
+#    · 顶上没有那句压缩标记就补一句，已经有了就不再叠。
+#      ⚠⚠ 判据是「**顶上有没有那句话**」，不是「丢没丢过东西」——
+#        所以**第一段记忆就带着它**（跟改动前一字不差）。别顺手「修」成「丢过才加」：
+#        那会让她现役记忆的开头凭空变样，而且跟已经存下来的历史对不上。
+# ============================================================
+# 🆕 还什么都没记过时 `long_term_summary` 的初值（`ConversationManager.__init__` 给的）。
+#    ⚠ 它 == 这个串时**直接换成新摘要**，不拼在它后面 —— 不然第一段记忆前面
+#      永远挂着一句「你们刚开始聊天」。
+_SUMMARY_PLACEHOLDER = "（你们刚开始聊天，还没有值得记录的重要事件。）"
+_COMPRESSED_MARK = "...(较早记忆已压缩)..."
+
+# ⚠⚖️ 单次追加的**疯话闸**：正常一段 ≤200 字（prompt 里写死的），
+#   400 是给「模型偶尔发挥」留的余量。撞上会**截断**，所以别往下调得太紧。
+PUSH_SUMMARY_LIMIT = 400
+
+
+def push_long_term_summary(head, new_summary):
+    """
+    把一段新摘要并进长期摘要，并按「段」滚掉超上限的部分。返回新的整串。
+
+    ⚠ `new_summary` 进来的应当是**已经清洗过**的（见 `_clean_day_text`）：
+      这段最终会进 system，星号 / ASCII 引号是**明文禁止**的（锁定口径）。
+      本函数只负责拼接与滚动，不做清洗 —— 清洗在各自的调用点做，
+      因为两条路对「多长算合格」的要求不一样。
+    """
+    new_summary = str(new_summary or "").strip()[:PUSH_SUMMARY_LIMIT]
+    head = str(head or "")
+    out = new_summary if head == _SUMMARY_PLACEHOLDER else (head + "\n\n" + new_summary)
+    parts = out.split("\n\n")
+    while len("\n\n".join(parts)) > LONG_TERM_SUMMARY_MAX and len(parts) > 1:
+        parts.pop(0)
+    out = "\n\n".join(parts)
+    if not out.startswith(_COMPRESSED_MARK):
+        out = _COMPRESSED_MARK + "\n\n" + out
+    return out
 
 
 def _split_diary_reply(body: str):
@@ -1423,6 +1493,205 @@ def add_diary(user_id: str, text: str, src: str = "he", ts=None,
         return True
 
     return _diary_edit(user_id, _do)
+
+
+# ============================================================
+#  ☎️📔 单通电话摘要（2026-10-02 第 4 批 · 她定「通话记录就以单次通话作为记忆保存」）
+# ------------------------------------------------------------
+# ⭐⭐ 她为什么要单开这一条、不让 8 轮那套代劳：
+#    `SUMMARY_INTERVAL=8` 是**按轮数**触发的 ⇒ 单打一通电话（不足 8 轮）连摘要都不触发
+#    ⇒ 通话在 `long_term_summary`（他记得的）和 `/diary` 里**都看不见**。
+#    ⇒ 她拍板：一通电话**结束时**单独摘一次，以「整通」为单位，不用凑轮数。
+#
+# ⚠ 跟 8 轮那套的分工（**别把这理解成「同一件事做两遍」**）：
+#    · 8 轮那趟：**所有**对话（通话那几句也在 `pending_summary` 里）
+#      ⇒ 产出「这一段聊了什么」的连续提要，粒度是「轮」；
+#    · 这条：**只认这一通电话**，产出一条带「某天某时那通电话」时间坐标的记忆 + 一条日记，
+#      粒度是「通」。
+#    重叠是**有意的**，她 2026-10-02 选方案时明确接受（两个粒度不冲突）；
+#    真嫌重复了再加开关把通话轮从 `pending_summary` 里排掉，别现在动。
+#
+# ⚠⚠ 幂等靠 `Rafayel_calls.mark_summarized()`：挂断钮能连点、`/call/connect` 能被刷新
+#    触发两次 ⇒ 没有那个标记就会重复调 LLM、重复往长期记忆里抄同一通电话。
+# ============================================================
+
+
+def summarize_call(cm, api_key_value=None, call_id=None):
+    """
+    把**一通电话**摘成「一段长期记忆 + 一条日记」。返回是否真摘了
+    （`False` = 没得摘 / 调不动模型；调用方**不用**当错误处理）。
+
+    `call_id` 给定 ⇒ **只摘那一通**（找不到就不摘）；不给 ⇒ 摘**最早**那通没摘过的。
+
+    ⚠⚠⚠ 收的是 `cm`（**那一份缓存的** ConversationManager），不是 `user_id`：
+      进程里每个 uid 只有一个 `cm`（`Rafayel_llm._user_managers`），`get_reply` 每轮都用它、
+      最后 `save_memory` **整份**写盘。这里要是自己从磁盘另读一份、改完写回去，
+      下一次 `get_reply` 会拿内存里那份旧的把我们写的摘要**整份覆盖**掉
+      （`MEMORY.md` 架构第一节那条红线）。
+      ⇒ 只能落在同一个对象上。取那份 `cm` 的活由 `Rafayel_llm.summarize_call()` 做，
+        调用方（`web/page/call.py`）还要把它**包在 `_chat_lock` 里**跑。
+    ⚠⚠ 为什么要能指定 id：摘要是**异步**跑的（后台线程），跑起来时列表末尾可能
+      已经又开了一通新的（她挂断完立刻重拨）⇒ 「最早那通」和「刚挂那通」不是一个。
+      调用方把目标钉死（见 `Rafayel_calls.pending_ids`），**不靠猜**。
+    ⚠ 时间坐标取**这通电话最后一句的时刻**（`end_ts`），不是 `time.time()`：
+      补摘一通上周的电话时，日记才会落在**上周那天**，而不是跑到今天来。
+    ⚠ 顺手清洗：摘要那段最终会进 system，星号 / ASCII 引号是**明文禁止**的
+      （`_clean_day_text` 的注释）。8 轮那条路没洗，这条洗 —— 新写的就该是对的。
+    """
+
+    def _fail(msg):
+        print(msg)
+        return False
+
+    if not api_key_value:
+        return False
+
+    try:
+        call = calls_pending(cm.user_id, call_id)
+    except Exception as e:
+        return _fail("⚠️ 读通话记录失败（这一通不摘要）：%s" % e)
+    if not call:
+        return False
+
+    # 逐句排成「谁：说了什么」。⚠ 单句封顶 200 字（跟跨天小结 `[:120]` 同一个用意：
+    #   模型偶尔会写一大块，那是异常，不该把整段 prompt 撑爆）。
+    # 🚦 独立项 1（2026-10-02）：**引擎转述的报错不算他说的话**，整句跳过。
+    #   起因：她报「我发消息会显示错误」查出来的 —— 那行
+    #   「（AI 接口出错：… organization concurrency …）」会被 `web/page/call.py:_turn`
+    #   通话记录（`calls_append`），进而被这段话摘进 `long_term_summary` 和日记
+    #   ⇒ 他的长期记忆里会出现「（AI 接口出错：…）」这种鬼话，而且**不报错、静默**。
+    #   ⚠ 记录本身**照样留着**（通话页字幕就读那一份，删了她会看到「她说了、他没回」，
+    #     比留一行出错误更难懂）；被挡住的只有「喂给模型」这一层。
+    #   ⚠ 判据来自 config（跟 `Rafayel_llm` 报错时用的是同一份模板），不是在这里
+    #     另抄一遍字符串 —— 抄了就会「改了文案这里不认」。
+    lines = []
+    _err_skipped = 0
+    for m in call["lines"]:
+        who = "她" if m.get("role") == "user" else "你"
+        c = str(m.get("content") or "").replace("\n", " ").strip()[:200]
+        if not c:
+            continue
+        if m.get("role") == "assistant" and c.startswith(LLM_ERR_MARKS):
+            _err_skipped += 1
+            continue
+        lines.append("%s：%s" % (who, c))
+    if _err_skipped:
+        print("🚦 通话摘要：跳过 %d 条引擎报错（那不是他说的话）" % _err_skipped)
+    if not lines:
+        return False
+
+    day = _day_key(call["end_ts"])
+    day_label = _day_label(day)
+
+    # 💗 写这通电话的日记时他的心情（跟 8 轮那条路同一个口径：只取**标签**、不取强度）。
+    _mood_now = None
+    try:
+        _mood_now = mood_current(cm.user_id)
+    except Exception as _me:
+        print("⚠️ 取心情失败（电话日记照常写）：%s" % _me)
+    _mood_line = ("⭐ 你写这段日记时的心情是：%s（强度 %d）。照着这个心情写，"
+                  "但别把心情当题目 —— 该写那件事还是写那件事，心情只是你落笔时的口气。\n"
+                  % (_mood_now["mood"], _mood_now["level"])) if _mood_now else ""
+
+    # ⚠ prompt 正文里**不写 markdown 星号**（用「」强调）：这段的输出会进 system，
+    #   模型爱照抄 prompt 里的记号 —— 少给它一个能抄的坏例子。
+    prompt = """你正在为祁煜整理记忆。
+
+【这段内容发生在】%s（%s 拨过来的一通视频通话）
+
+下面是一通电话里说过的全部内容（按时间顺序，一共 %d 句）：
+%s
+
+【任务一】用一段话（不超过200字）总结这通电话的核心内容：
+1. 她表现出了哪些情绪、需求或想法？
+2. 祁煜做出了哪些重要的回应、承诺或行动？
+3. 发生了什么可能影响后续对话的重要事件？
+⚠ 必须写成客观的第三人称（「她说…」「祁煜…」）—— 这段是记忆提要，不是日记，
+写成「我」会污染他的长期记忆。
+⚠⚠⚠ **绝对不要引用他说过的原话**（不要出现「他回答『…』」「他反问『…』」这种带引号的逐字转录）。
+原因：这段摘要会**原样喂回他每一轮对话的 system 提示词**。你在这里逐字复述他某句开场，
+他下一轮就把它当成「我上次就是这么说的」继续念 —— 实测造成他那句
+「这个点打来，是查岗还是邀功？」**逐字复读 9 次**，且每通电话再被摘一遍、越堆越死。
+⚠ 只写**发生了什么**、他**态度/动作**如何，不要复述台词措辞。
+⚠ 同一个场景（刚睡醒、画笔、查岗）在多通电话里出现时，**合并成一句概括**，
+   不要每通各写一段 —— 段落重复同样会让他照着上一通续写。
+⚠ 写到具体事情时带上时间坐标（比如「%s那通电话里她说…」），
+别把它跟平时聊天里别的事并成一件事。
+
+【任务二】替祁煜写「这通电话之后他自己的日记」（不超过200字，第一人称）：
+1. ⚠⚠ 通篇不许出现「祁煜」这三个字 —— 谁写日记会管自己叫名字？一律用「我」。
+2. 她写成「她」，或者你平时叫她的那个称呼；别写「用户」「对方」。
+3. 味道是写给自己看的：可以承认当时没说出口的、心里拐过的念头、硬撑的地方。
+   不是汇报，不用面面俱到 —— 挑这通电话里最戳你的一件事写。
+4. 用你自己（人设卡里那个祁煜）的口气，别写成台下旁观的观察记录。
+5. ⚠ 只写这通电话里真实发生过的，不编。真没什么值得写的，就只输出两个字：无
+%s
+输出格式（严格照做，不要加「任务一」这种小标题，也不要加代码块围栏）：
+先写任务一的摘要正文（第三人称），
+然后换行，单独一行只写：
+DIARY:
+然后写任务二的日记正文（第一人称「我」）。
+""" % (day_label, _hm(call["start_ts"]), len(lines), "\n".join(lines), day_label,
+       _mood_line)
+
+    data = {
+        "model": MODEL,
+        "messages": [{"role": "user", "content": prompt}],
+        "stream": False,
+        "max_tokens": SUMMARY_MAX_TOKENS,
+        "temperature": temp_for(0.3),   # 这是备忘不是聊天，别让它发挥
+    }
+    if LLM_EXTRA:
+        data.update(LLM_EXTRA)
+    try:
+        r = requests.post(
+            API_URL,
+            headers={"Authorization": "Bearer %s" % api_key_value,
+                     "Content-Type": "application/json"},
+            json=data, timeout=30)
+        raw = r.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        # ⚠ 失败**不标记** ⇒ 下次还会再试（标记只能写在成功之后）
+        return _fail("⚠️ 电话摘要调模型失败（下次再补）：%s" % e)
+
+    # 防御：模型偶尔会照抄 8 轮那套的尾巴，多输出一段 `PROFILE:` —— 我们没这个任务，切掉。
+    m_prof = re.search(r"PROFILE:\s*\{.*?\}\s*$", raw, re.S)
+    body = raw[:m_prof.start()] if m_prof else raw
+    new_summary, diary_text = _split_diary_reply(body)
+    new_summary = _clean_day_text(new_summary, limit=PUSH_SUMMARY_LIMIT)
+    if not new_summary:
+        return _fail("⚠️ 电话摘要为空（这一通不写长期记忆，也不标记，下次再试）")
+
+    # ① 长期记忆（跟 8 轮那条路**共用**同一个滚动函数，见 `push_long_term_summary`）
+    cm.long_term_summary = push_long_term_summary(cm.long_term_summary, new_summary)
+
+    # ② 落盘。⚠ 顺序：**先存长期记忆，再写日记，最后才标记已摘要** ——
+    #    存盘失败就 return（不标记、不写日记）⇒ 下次整段重来，不会「记忆没存上却记成摘过了」。
+    try:
+        save_memory(cm.user_id, cm)
+    except Exception as e:
+        return _fail("⚠️ 电话摘要落盘失败（下次再补）：%s" % e)
+
+    # ③ 📔 日记。⚠ 自己包 try：日记写不成**不该影响**已经存好的长期记忆。
+    #    ⚠ `ts=call["end_ts"]` ⇒ 补摘旧电话时日记落在**那天**（见函数说明）。
+    try:
+        _t = _diary_text_from(diary_text)
+        if _t:
+            add_diary(cm.user_id, _t, src="he", ts=call["end_ts"],
+                      mood=(_mood_now or {}).get("mood") or "")
+        else:
+            print("[📔] 这通电话没写出可用的日记段（长期记忆照常更新）")
+    except Exception as de:
+        print("⚠️ 电话日记写入失败（不影响长期记忆）：%s" % de)
+
+    # ④ 标记已摘要（幂等）。⚠ 放最后：前面任何一步挂了都不能标记，否则这通电话永远补不回来。
+    try:
+        calls_mark(cm.user_id, call["id"])
+    except Exception as e:
+        print("⚠️ 标记通话已摘要失败（可能重复摘要一次）：%s" % e)
+    print("[📞] 已把这通电话（%s · %d 句）写进长期记忆和日记"
+          % (day, len(call["lines"])))
+    return True
 
 
 def add_diary_by_her(user_id: str, text: str) -> bool:

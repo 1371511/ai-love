@@ -18,6 +18,7 @@
      web/page/settings.py   `/settings` 家族
      web/page/avatar.py     `/avatar` · `/asset/{name}` · `/settings/avatar*`
      web/page/chat.py       `/chat` · `/chat/send`
+     web/page/call.py       `/call` 家族（📹 视频通话，2026-10-02 起分批落地）
 
 ⚠ 别在这个文件里写路由 —— 加功能请落到 `page/` 下对应的那个文件里。
 ⚠ 启动方式没变：`cd web && python app.py`（`start-web.sh` 一个字都没改）。
@@ -41,6 +42,7 @@ from page import messages    # noqa: F401  牵绊提升（短信）
 from page import settings    # noqa: F401  设置
 from page import avatar      # noqa: F401  头像 · 项目素材
 from page import chat        # noqa: F401  对话窗口
+from page import call        # noqa: F401  视频通话（`/call`）
 
 from base import app         # noqa: F401  ← 装配好的那个 FastAPI 实例，给下面 uvicorn 用
 

@@ -17,6 +17,7 @@ import os
 import random
 import re
 import sys
+import time
 
 import requests
 
@@ -33,23 +34,31 @@ from Rafayel import (
 from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
-    AFFINITY_TONE, API_URL, DAILY_QA, LLM_EXTRA, MAX_TOKENS, MEMORY_DIR, MODEL,
-    MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, REPLY_SPLIT_FALLBACK,
-    REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE, WB_MAX_CHARS,
-    WB_MAX_ENTRIES, api_key, temp_for,
+    AFFINITY_TONE, API_URL, CALL_SUMMARY, DAILY_QA, LLM_EXTRA, MAX_TOKENS, CALL_WORLDBOOK_ENABLE,
+    MEMORY_DIR, MODEL, MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE,
+    REPLY_SPLIT_FALLBACK, REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE,
+    WB_MAX_CHARS, WB_MAX_ENTRIES, api_key, temp_for,
+    # 🚦 2026-10-02（方案 A 的 ③）前台重试：撞上「上游并发 / RPM 被拒」这类错就退避重试。
+    #    ⚠ 2026-10-02 下午起改成**指数退避** —— 原来是写死的 1.2 秒，那个跨不过
+    #      RPM 的 60 秒窗口（她第二次报的就是 RPM 那种）。
+    LLM_RETRY, LLM_RETRY_WAIT, LLM_RETRY_BACKOFF, LLM_RETRY_MAX_WAIT,
+    # ⚠ 三句报错文案**只在这里定义**（`Rafayel_memory` 拿它的前缀当判据，
+    #   用来把这种「不是他说的话」挡在摘要之外）⇒ 改文案不用改第二处。
+    LLM_ERR_API, LLM_ERR_EXC, LLM_ERR_TIMEOUT,
 )
 # 💬 日常问答：她主动问「你今天怎么过的」⇒ 从池子挑一条**照原话说**。
 #    分层上它在 llm 之下（只依赖 config / daily / qzone_auto），这里调它不会成环。
 from Rafayel_dailyq import hint_for as dailyq_hint
 from Rafayel_event import fest_today as event_fest_today
 from Rafayel_memory import ConversationManager, load_memory, save_memory
+from Rafayel_memory import summarize_call as _summarize_call_into
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）
 #   ⭐ 只调 `spawn_update` —— 它**起后台线程**判情绪，一秒都不占她等待的时间。
 #   ⚠ 绝不能在 `get_reply` 里**同步**判：那会直接 +1~2s 加到她等待的时间上。
 from Rafayel_mood import block_for, spawn_update
 from Rafayel_sticker import apply_cooldown, sticker_instructions
 from Rafayel_weather import nudge as weather_nudge
-from Rafayel_worldbook import get_worldbook
+from Rafayel_worldbook import get_call_worldbook, get_worldbook
 
 
 # 全局字典，按 user_id 存储每个用户的对话管理器
@@ -156,7 +165,7 @@ def _shape_reply(text):
     return "\n".join(kept)
 
 
-def _build_worldbook(cm, user_message):
+def _build_worldbook(cm, user_message, scan=None):
     """
     返回 (before_text, after_text)：本轮命中的世界书条目渲染结果。
 
@@ -164,18 +173,22 @@ def _build_worldbook(cm, user_message):
     - 注入是**每轮重算**的，不写入 cm.messages（避免沉淀进记忆文件）。
     - 这里允许失败降级：世界书只是"参考资料"，读不到最多是少一点上下文，
       不该把整个聊天搞挂。人设卡（load_card）则相反 —— 读不到必须报错。
+    - `scan` = 本轮的扫描范围（"最近几条消息"）。**通话传 `ctx`** —— 通话里
+      「最近的历史」是这一通电话、不是聊天窗（不然通话专属条目触发不了，
+      还会被聊天里的内容误触发）。不给就照旧走 `cm.get_recent_messages()`。
     """
     try:
         wb = get_worldbook()
+        msgs = cm.get_recent_messages() if scan is None else list(scan)
         return wb.build(
-            cm.get_recent_messages(),
-            user_message,
+            msgs, user_message,
             max_chars=WB_MAX_CHARS,
             max_entries=WB_MAX_ENTRIES,
         )
     except Exception as e:
         print("⚠️ 世界书注入失败（不影响对话）：%s" % e)
         return "", ""
+
 
 
 def _level_block(cm):
@@ -380,8 +393,66 @@ def record_proactive(user_id: str, text: str) -> bool:
         return False
 
 
+# 🚦 前台重试的判据（2026-10-02 方案 A 的 ③）
+# ------------------------------------------------------------
+# ⚠⚠ 背景：上游那个 key 是**组织级并发上限 = 1**。后台线程（情绪判定每轮都起、
+#   单通摘要）一跑起来，前台这一条就被拒回来，原文是
+#     「request reached max organization concurrency: 1, please try again after 1 seconds」
+#   它**明说了「过 1 秒重试」** ⇒ 这类错本来就不该报给她看。
+#
+# ⭐⭐ 但**只对「等一下再来」那类重试**，这是这条规则的全部价值所在：
+#   正文格式错 / 余额不足 / key 失效 / 模型名写错…… 重试一万次还是同一个错，
+#   那类必须**原样报出来**（闷掉就变成「一直在转圈」，比报错更难查）。
+_RETRY_HINTS = (
+    "concurrency",        # ← 组织级并发上限（Kimi Tier0 = 1）
+    "rpm",                # ← 每分钟请求数上限（Kimi Tier0 = 3）⇒ 她 2026-10-02 下午报的那种
+    "rate limit", "too many requests", "429",
+    "please try again", "try again later", "temporarily",
+    "overloaded", "timeout", "timed out",
+)
+
+
+def _retryable(result):
+    """上游这次失败是不是「等一下再来」那种（看 `error.message` 的字面）。"""
+    try:
+        msg = str(result.get("error", {}).get("message", "")).lower()
+    except Exception:
+        return False
+    return any(h in msg for h in _RETRY_HINTS)
+
+
+def _retry_wait(response, attempt):
+    """
+    这一次重试该等多久（秒）；`attempt` 从 **1** 开始。
+
+    ⭐ 两级：
+      ① **上游自己说了就听它的** —— Moonshot 的 429 会带 `X-RateLimit-Reset`
+         （官方文档：「响应头携带 X-RateLimit-Limit / Remaining / Reset，可据此退避重试」）。
+         ⚠⚠ 它的取值有两种可能的写法：**epoch 秒**（1.7e9 这种大数）或**还需等几秒**
+         （小数）。我们**只认小数值**那一支；大数（epoch）**不解析**、直接走 ② ——
+         把 1.7e9 误当成「秒」会睡到天荒地老，而这种 bug 在线上极难看出来。
+      ② 没有头 / 头不可用 ⇒ **指数退避**：`WAIT * BACKOFF ** (attempt - 1)`（1s→2s→4s…）。
+    ⚠ 最后一律夹进 `[0.1, LLM_RETRY_MAX_WAIT]`：宁可这次放弃重试、让显示层给她一句
+      人设化的降级话（`Rafayel_config.LLM_BUSY_SAY`），也绝不让她对着屏幕干等
+      （RPM 窗有 60 秒那么长）。
+    ⚠ **永不抛**：任何意外（没 headers / 值不是数）都退化成指数退避第一步。
+    """
+    wait = None
+    try:
+        raw = response.headers.get("X-RateLimit-Reset")
+        if raw is not None:
+            v = float(str(raw).strip())
+            if 0 <= v <= LLM_RETRY_MAX_WAIT:      # 只认「还需等几秒」；epoch 放过
+                wait = v
+    except Exception:
+        wait = None
+    if wait is None:
+        wait = LLM_RETRY_WAIT * (LLM_RETRY_BACKOFF ** max(0, attempt - 1))
+    return max(0.1, min(float(wait), float(LLM_RETRY_MAX_WAIT)))
+
+
 def get_reply(user_message: str, user_id: str, api_key_override: str = None,
-              media: bool = False) -> str:
+              media: bool = False, ctx=None, wire=True) -> str:
     """
     供外部调用的入口函数
 
@@ -415,7 +486,9 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
         print("⚠️ 跨天小结失败（不影响对话）：%s" % e)
 
     # 1. 添加用户消息（media 只用于每日统计，不参与对话内容）
-    cm.add_user_message(user_message, media=media)
+    #    ☎️ `wire=wire`：通话传 False ⇒ 这一轮**不进聊天窗**（通话内容只落
+    #       `{uid}_calls.json` + 单通摘要）；但每日统计 / 关键事实 / 画像**照做**。
+    cm.add_user_message(user_message, media=media, wire=wire)
 
     # 2. 更新 system 消息（加入最新的记忆）
     cm.update_system_message()
@@ -424,15 +497,35 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     cm.truncate_history()
 
     # 4. 构建请求的 messages
+    # ☎️ `ctx` = 「这一轮让他看哪段历史」。None = 原样走聊天窗（默认，行为不变）；
+    #    给了（哪怕给的是空表）就用它 —— 通话页走这条，只看得见这一通电话。
+    #    ⚠⚠ system 必须显式补回 [0]：ctx 的第一条通常是 user，直接替换会
+    #       把 system prompt 整段丢掉（而且不报错）。见 MEMORY.md / 技能库那条坑。
+    _hist = cm.messages[1:] if ctx is None else list(ctx)
     request_messages = [{k: v for k, v in m.items()
                          if k in ("role", "content", "name")}
-                        for m in cm.messages if isinstance(m, dict)]
+                        for m in ([cm.messages[0]] + _hist) if isinstance(m, dict)]
 
     # 4a. 世界书：命中关键词的条目才注入
     #     ⚠ system 那条是**每轮重算**的，不写回 cm.messages ——
     #        否则命中内容会被 save_memory 沉淀进 memory\*.json，越滚越大还会变成常驻人设。
     # 4a-0. 💞 牵绊度语气（等级几天才动一次，放 system 里不影响前缀缓存）
-    wb_before, wb_after = _build_worldbook(cm, user_message)
+    # ☎️ 扫描范围：通话（`ctx` 给了）看**这一通**，其它走聊天窗。
+    _scan = None if ctx is None else list(ctx)
+    wb_before, wb_after = _build_worldbook(cm, user_message, scan=_scan)
+    # ☎️📚 通话专属设定：**只在通话里**注入。⚠ 跟世界书同一个口径 ——
+    #    只进 `request_messages`，**绝不写回 `cm.messages`**。
+    if _scan is not None and CALL_WORLDBOOK_ENABLE:
+        _wb2 = get_call_worldbook()
+        if _wb2 is not None:
+            try:
+                _b2, _a2 = _wb2.build(_scan, user_message,
+                                      max_chars=WB_MAX_CHARS,
+                                      max_entries=WB_MAX_ENTRIES)
+                wb_before = "\n\n".join(x for x in (wb_before, _b2) if x)
+                wb_after = "\n\n".join(x for x in (wb_after, _a2) if x)
+            except Exception as e:
+                print("⚠️ 通话设定注入失败（不影响对话）：%s" % e)
     _lv = _level_block(cm)
     if _lv or wb_before:
         _sys = cm.get_full_system_prompt()
@@ -522,8 +615,38 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
         data.update(LLM_EXTRA)
 
     try:
-        response = requests.post(API_URL, headers=headers, json=data, timeout=30)
-        result = response.json()
+        # 🚦 前台重试（2026-10-02 方案 A 的 ③）—— **指数退避**。
+        #    ⭐ 她先后报过两种原文：
+        #      · 「… request reached max organization concurrency: 1, please try again
+        #         after 1 seconds」（并发上限）
+        #      · 「… request reached organization max RPM: 3, please try again after
+        #         1 seconds」（**每分钟请求数**上限）
+        #      两种都是**上游自己**说「等一下再来」的错，本来就不该冒到她眼前。
+        #    ⚠⚠ 只重试 `_retryable` 认得的那几种。余额不足 / key 失效 / prompt 格式错
+        #      重试一万次还是同一个错 ⇒ 那类必须**原样报出来**，不能闷掉。
+        #    ⚠ 等待时长交给 `_retry_wait()`：上游给了 `X-RateLimit-Reset` 就听它的，
+        #      没给就指数退避（1s→2s→4s…），**一律不超过 `LLM_RETRY_MAX_WAIT`**
+        #      —— 撞上 RPM 那种 60 秒级的限制时，宁可这次放弃、让显示层给她一句
+        #      人设化的降级话，也不让她干等。
+        #    ⚠ 重试期间**没有拿任何锁**（这是前台请求，不是后台闸门那条路）：
+        #      睡的是她自己的这一次等待，不会连累别人。
+        result = {}
+        for _attempt in range(LLM_RETRY + 1):
+            response = requests.post(API_URL, headers=headers, json=data, timeout=30)
+            result = response.json()
+            if "choices" in result:
+                break
+            if _attempt < LLM_RETRY and _retryable(result):
+                _wait = _retry_wait(response, _attempt + 1)
+                # ⚠ 状态码用 `getattr` 取：打桩 / 假响应对象上可能没有这个属性，
+                #   而**日志本身**绝不能把这条重试路径搞炸（真实 Response 一定有）。
+                print("[🚦] 上游被拒（HTTP %s · %s），%.1fs 后重试（第 %d 次）"
+                      % (getattr(response, "status_code", "?"),
+                         str(result.get("error", {}).get("message", ""))[:60],
+                         _wait, _attempt + 1))
+                time.sleep(_wait)
+                continue
+            break
 
         if "choices" in result:
             choice = result["choices"][0]
@@ -548,8 +671,8 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             # 5.6 回复形状保底：段内不拆行 + 段数封顶（她挑的口径；prompt 里也说了，这里是兜底）
             reply = _shape_reply(reply)
 
-            # 6. 添加助手消息到对话管理器
-            cm.add_assistant_message(reply)
+            # 6. 添加助手消息到对话管理器（☎️ `wire=False` = 通话这一轮不进聊天窗）
+            cm.add_assistant_message(reply, wire=wire)
 
             # 5.7 💬 日常问答去重：**这一条真的说出去了**才记成「说过了」。
             #    放在 finally 之前、return 之前 ⇒ 接口报错 / 超时都走到不到这里，
@@ -584,8 +707,57 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             return reply
         else:
             error_msg = result.get("error", {}).get("message", str(result))
-            return f"（AI 接口出错：{error_msg}）"
+            # ⚠ 三句报错文案的**模板住在 `Rafayel_config`**（单一来源）：
+            #   `Rafayel_memory.summarize_call` 拿它们的前缀当判据，用来把这种
+            #   「不是他说的话」挡在长期记忆之外。改文案只改 config 那一处。
+            return LLM_ERR_API % error_msg
     except requests.exceptions.Timeout:
-        return "（请求超时，请稍后再试 💙）"
+        return LLM_ERR_TIMEOUT
     except Exception as e:
-        return f"（发生错误：{e} 💙）"
+        return LLM_ERR_EXC % e
+
+
+# ============================================================
+#  ☎️📔 单通电话摘要（2026-10-02 第 4 批 · 她定「通话记录就以单次通话作为记忆保存」）
+# ------------------------------------------------------------
+# ⭐ 这一层壳只做一件事：**拿到那一份缓存的 `ConversationManager`**。
+#    真正的活（读通话记录 → 调模型 → 拼进长期记忆 → 写日记 → 标记已摘要）在
+#    `Rafayel_memory.summarize_call()` 里 —— 那些 helper（`_clean_day_text` /
+#    `_split_diary_reply` / `add_diary` / `_day_label`）全是它家的，
+#    搬过来只会多绕一圈 import。分工就一句：**这里取 `cm`，那里干活**。
+# ⚠⚠ 为什么非取这份不可：进程里每个 uid 只有一个 `cm`（就是下面这个 `_user_managers`），
+#    `get_reply` 每轮都用它、最后 `save_memory` **整份**写盘。
+#    在 `Rafayel_memory` 里另造一份、改完写回去 ⇒ 下一次 `get_reply` 拿内存里那份旧的
+#    把我们写的摘要**整份覆盖**掉（`MEMORY.md` 架构第一节那条红线）。
+# ⚠ 调用方（`web/page/call.py`）必须把它**包在 `base._chat_lock(uid)` 里**跑：
+#    它要读改写 `memory/{uid}.json`，跟 `/chat/send` 是同一份文件。
+# ⚠ 它是**异步跑**的（调用方起 daemon 线程）：一次 LLM 调用 5~10 秒，
+#    挂断钮上不能等它，不然她点完挂断要干等十秒。
+# ============================================================
+
+def summarize_call(user_id: str, api_key_override: str = None,
+                   call_id: str = None) -> bool:
+    """
+    一通电话结束时，单独给它写一段长期记忆 + 一条日记。返回是否真摘了。
+
+    `call_id` 给定 ⇒ **只摘那一通**；不给 ⇒ 摘最早那通没摘过的。
+    ⚠ 为什么要有这个参数：它是**异步**跑的（调用方起 daemon 线程），跑起来时
+      列表末尾可能已经又开了一通新的 ⇒ 「最早那通」和「刚挂那通」不是一个。
+      调用方拿 `Rafayel_calls.pending_ids()` 把目标钉死，**不靠猜**。
+
+    ⚠ `CALL_SUMMARY=False` ⇒ 直接 False（**别去删调用点** —— 那样开关只剩半个，
+      跟 `AUTO_GREET` 那批同一个口径；关掉只是「不进他的长期记忆」，
+      通话记录本身照样完整留档）。
+    ⚠ 没有记忆文件（`load_memory` 返回 False）⇒ **不凭空造一份**，直接放弃：
+      跟 `_facts_edit` 一个口径 —— 拿一个空对象去 `save_memory` 会把她的记忆清空。
+    """
+    if not CALL_SUMMARY:
+        return False
+    cm = _user_managers.get(user_id)
+    if cm is None:
+        cm = ConversationManager(system_prompt, user_id=user_id)
+        if not load_memory(user_id, cm):
+            return False
+        _user_managers[user_id] = cm
+    key = api_key_override if api_key_override else api_key
+    return _summarize_call_into(cm, key, call_id)

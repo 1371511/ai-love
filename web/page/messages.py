@@ -19,6 +19,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from base import (
     app, _page, _esc, _rich, _lock_row, _backbar, _current_uid, _load_users,
     MEMORY_DIR, CHAT_CSS, MENU_PATH,
+    # 🖼 祁煜的头像地址（唯一出处；跟对话窗口 / 视频通话同一个图案）
+    HIM_AVATAR,
 )
 from Rafayel_affinity import compute, load_sms_nodes, sms_full
 
@@ -171,9 +173,10 @@ def _chat_html(uid, level, p):
             break
         picked.append(int(x))
 
-    # 🖼 他的头像 = 那张蓝海油画（2026-09-21 她给的图），走白名单路由、别把路径写进 HTML。
+    # 🖼 他的头像 = 那张蓝海油画（2026-09-21 她给的图）。⚠ 地址取底座 `HIM_AVATAR`
+    #    （2026-10-02 收敛：跟对话窗口 / 视频通话**同一个图案**，别再在这儿写第二份字面量）。
     #    她的还是「名字首字」那个小圆片。
-    him_av = '<img src="/asset/qiyu" alt="祁煜">'
+    him_av = '<img src="%s" alt="祁煜">' % HIM_AVATAR
     her_av = (shown or "你")[0]
     rows = ['<div class="sys">%s</div>' % _esc(title)]
 

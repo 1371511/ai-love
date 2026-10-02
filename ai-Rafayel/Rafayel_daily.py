@@ -18,8 +18,10 @@ import json
 import os
 import time
 
+from Rafayel_affinity import current_level, init_unlocked, pending_unlock
 from Rafayel_config import (
-    AUTO_GREET_TZ_OFFSET, DAILY_STATS, MEMORY_DIR, SESSION_GAP_HOURS, USAGE_STATS,
+    AFFINITY_UNLOCK, AUTO_GREET_TZ_OFFSET, DAILY_STATS, MEMORY_DIR,
+    SESSION_GAP_HOURS, USAGE_STATS,
 )
 
 _DAY_CAP = 400          # 最多留这么多天，别让文件无限长大
@@ -29,8 +31,14 @@ def _today():
     return time.strftime("%Y-%m-%d", time.localtime(time.time() + AUTO_GREET_TZ_OFFSET * 3600))
 
 
-def _path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_daily.json" % user_id)
+def _path(user_id, memory_dir=None):
+    """
+    `{uid}_daily.json` 的完整路径。
+
+    ⚠ 默认用引擎自己的 `MEMORY_DIR`（线上所有调用都是这样）；传了 `memory_dir`
+      就用传的那个 —— 留给本地脚本 / 自测指向临时目录用（见 `tick_unlock`）。
+    """
+    return os.path.join(memory_dir or MEMORY_DIR, "%s_daily.json" % user_id)
 
 
 def _load(path):
@@ -133,21 +141,25 @@ def record(user_id, gap_hours=None, media=False):
         return None
 
 
-def load_unlocked(user_id):
-    """读跨级解锁记录（`{uid}_daily.json` 的 `unlocked`）。没记过返回 None。"""
-    d = _load(_path(user_id)) or {}
+def load_unlocked(user_id, memory_dir=None):
+    """读跨级解锁记录（`{uid}_daily.json` 的 `unlocked`）。没记过返回 None。
+
+    ⚠ `memory_dir` 只在本地脚本 / 自测里传（默认走引擎的 `MEMORY_DIR`）。
+    """
+    d = _load(_path(user_id, memory_dir)) or {}
     u = d.get("unlocked")
     return u if isinstance(u, dict) else None
 
 
-def save_unlocked(user_id, data):
+def save_unlocked(user_id, data, memory_dir=None):
     """
     写跨级解锁记录（**本文件的职责**：整条链上只有这里写 `{uid}_daily.json`）。
 
     ⚠ 跟 `record()` 一个脾气：异常一律吞掉，**绝不能因为记解锁把对话搞挂**。
+    ⚠ `memory_dir` 只在本地脚本 / 自测里传（默认走引擎的 `MEMORY_DIR`）。
     """
     try:
-        path = _path(user_id)
+        path = _path(user_id, memory_dir)
         d = _load(path) or {}
         d["unlocked"] = data
         d.setdefault("user_id", user_id)
@@ -157,6 +169,59 @@ def save_unlocked(user_id, data):
     except Exception as e:
         print("⚠️ 跨级解锁记录落盘失败（不影响对话）：%s" % e)
         return None
+
+
+# ---------------------------------------------------------------- 跨级解锁记账
+# 2026-10-02 从网页端 `page/chat.py` 的 `_unlock_tick()` **挪进引擎**：
+#   ⭐ 为什么挪：视频通话页（`/call`）也要记这笔账，而那个函数要
+#      `Rafayel_daily`（写盘）+ `Rafayel_affinity`（算级数）**两个模块** ——
+#      放进 `web/base.py` 会让**所有页面**跟着背两条 ADR-22 口子
+#      ⇒ 正确做法是下沉引擎，网页端经 `Rafayel_chat` 门面转出（`tick_unlock`）。
+#   ⚠ 它是 `Rafayel_bot.maybe_send_unlock` **去掉「发送」那一半**：
+#      QQ 侧本来就是 `AFFINITY_UNLOCK_SEND = False`，只记账、一个字都不发。
+#   ⚠ 为什么非记不可：`unlocked` 原来**只在收到 QQ 私聊时**才写 ⇒
+#      冻结期在网页上（含视频通话里）聊到升级，`/affinity` 的「他说过的那句话」
+#      和 `/messages` 的解锁条数会停在那儿不动，看着像坏了。
+def tick_unlock(user_id, memory_dir=None):
+    """
+    跨级解锁记账（幂等、只增不减）。异常一律吞掉 —— 绝不能因为记账把对话搞挂。
+
+    ⚠ `memory_dir` 默认就用引擎自己的 `MEMORY_DIR`；网页端传的是同一个目录
+      （`web/base.py` 的 `MEMORY_DIR` 与 `Rafayel_config.MEMORY_DIR` 指向同一处），
+      留着这个参数是为了本地脚本 / 测试能指向别处。
+      ⚠⚠ 它必须**一路传下去**（`load_unlocked` / `save_unlocked` 都收这个名字）——
+        只传给 `current_level` / `pending_unlock` 而漏给读写那两个的话，
+        读还是在原目录、写也还在原目录 ⇒ 「指向别处」是假的，自测会
+        **悄悄写进真 memory/**（2026-10-02 我第一次就踩了：临时 uid 的文件
+        落在了 `memory/9900t3_daily.json`）。
+    """
+    if not AFFINITY_UNLOCK:
+        return
+    md = memory_dir or MEMORY_DIR
+    try:
+        rec = load_unlocked(user_id, md)
+        if rec is None:
+            # 第一次接入：只记「现在几级」，**不补发历史**（跟 bot 侧同口径）
+            save_unlocked(user_id, init_unlocked(current_level(user_id, md)), md)
+            return
+        item = pending_unlock(user_id, md)
+        if not item:
+            return
+        got_sms = [int(x) for x in (rec.get("sms") or [])]
+        for lv in (item.get("mark_sms") or []):
+            if lv not in got_sms:
+                got_sms.append(int(lv))
+        rec["sms"] = sorted(got_sms)
+        send = item.get("send")
+        if send:
+            got = list(rec.get("eggs") or [])
+            if send.get("key") not in got:
+                got.append(send["key"])
+            rec["eggs"] = got
+        rec["level"] = max(int(rec.get("level") or 0), int(item.get("level_now") or 0))
+        save_unlocked(user_id, rec, md)
+    except Exception as e:
+        print("[💞] 跨级记账失败（不影响对话）：%s" % e)
 
 
 # ---------------------------------------------------------------- 日常问答去重

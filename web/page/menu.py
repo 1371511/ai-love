@@ -30,7 +30,36 @@ from Rafayel_affinity import compute
 #      正文会被塞进**第一列（172px）**、直接被压扁（真机量到 `mainW=172`，是踩过的 bug）。
 #      ⇒ 左栏照出、藏正文这一份，网格始终是完整两列。 */
 MENU_CSS = """
-@media(min-width:900px){.menubody{display:none}}
+@media(min-width:900px){.menubody{display:none}
+  /* 🖥 目录页自己那条「设置 / 退出」底栏也**桌面藏**：桌面上这两项在左栏
+     （`_nav_list()` 默认 foot=True）已经有了，再出一条就是重复 ——
+     跟上面 `.menubody` 同一个「正文这份桌面重复，藏」的逻辑。 */
+  .menufoot{display:none}}
+
+/* 📱 窄屏：把「设置 / 退出」底栏**真的推到屏幕底**（她 06:16 截图：底栏悬在
+   列表正下方，下面空一大截）。
+   根因：`.footnav` 是 `position:sticky;bottom:0` —— sticky 只在「内容比视口长」
+   时才吸底；目录页列表短，底栏的自然位置就在列表下面 ⇒ 没东西可吸，悬在半空。
+   修法：让 `.main` 至少撑满「一屏 − body 上下 padding（2rem×2）」并变 flex 列，
+   底栏 `margin-top:auto` 推到底 —— 跟桌面那套 `.main:has(>.footnav…)` 同一思路。
+   ⚠ `100vh / 100dvh` 双写：dvh 跟着手机地址栏收放（call.py 全屏那次同款处理）。
+   ⚠ `margin-top:auto` 只覆盖 `.footnav` 的 margin-top（原本 0），
+     左右 `-1rem`、底下 `-2rem`（抵消 body padding）照旧生效。
+   ⚠ 只在窄屏做：桌面上 `.menufoot` 已被藏，这条没活干 —— 仍写上 media 限定，
+     语义干净，也不给桌面 `.main` 白白加 min-height。 */
+@media(max-width:899.9px){
+  .main:has(> .menufoot){min-height:calc(100vh - 4rem);
+      min-height:calc(100dvh - 4rem);display:flex;flex-direction:column}
+  .main:has(> .menufoot)>.menufoot{margin-top:auto}
+}
+
+/* ⬛ 底栏字色（她 06:19 定：**黑色**，且**只改目录页这一条**——
+   其他页的 `.footnav` 链接带 `hint` 类照旧灰字，这里不碰它们）。
+   ⚠ 颜色走 `--c-ink`（全站正文字色）不用写死黑 —— 主题换色时它跟着走。
+   ⚠ `text-decoration:none` 是必须的：HTML 那边去了 `hint` 类后是裸 `<a>`，
+     浏览器默认给链接画下划线 —— 12px 灰字时看不出来，黑色就很显眼了。
+   ⚠ 字号不动：仍吃 `.footnav` 的 12px（她只说了颜色）。 */
+.menufoot a{color:var(--c-ink);text-decoration:none}
 """
 
 
@@ -73,5 +102,21 @@ async def menu_page(request: Request):
     #    （功能页那边将来要传自己的 href；第 3 步的左栏会用到。）
     # ⚠⭐ 入口列包在 `.menubody` 里：桌面靠 `MENU_CSS` 把这一份藏掉（左栏那份照出）
     #    ⇒ 桌面上不会同一份导航出现两次。**别把 `.who` 也包进去**（那张卡桌面要留）。
-    body = _who_block(shown, sub, av) + '<div class="menubody">%s</div>' % _nav_list()
+    # ⭐ `foot=False`（她 2026-10-02 定的）：「设置 / 退出」**不再占列表**，
+    #    挪到页面底部一条左右底栏（见下面 `menufoot`）—— 左设置右退出、各占一半，
+    #    复用全站现成的 `.footnav + .twobar`（跟 `_two_way_footer()` 那种底栏同一套样式）。
+    #    ⚠ 桌面左栏不受影响：侧栏里这两项照旧（`_nav_list()` 默认 foot=True），
+    #      那是桌面进设置的唯一入口。
+    body = (_who_block(shown, sub, av)
+            + '<div class="menubody">%s</div>' % _nav_list(foot=False)
+            # ⚠ `.footnav` 必须是 `.main` 的直接子元素（不能关进 `.card`/`.menubody`）——
+            #   `position:sticky` 只在自己父块范围内贴底，关进去就提前不贴了。
+            # ⚠ 类名带 `menufoot`：桌面用 MENU_CSS 整条藏掉（左栏已有，别重复）。
+            # ⚠ 链接**不带 `hint`**（她 06:18 定：「字体要黑色」）—— `hint` 是灰字
+            #   （`--c-hint`），去掉后颜色继承 body 的 `--c-ink`（正文字色，近黑）；
+            #   字号仍是 `.footnav` 给的 12px，跟其他页底栏一致。
+            + '<p class="footnav menufoot"><span class="twobar">'
+            '<a href="/settings">设置</a>'
+            '<a href="/logout">退出</a>'
+            '</span></p>')
     return _page(body, title="目录", css=MENU_CSS)

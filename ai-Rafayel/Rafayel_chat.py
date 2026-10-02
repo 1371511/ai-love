@@ -58,7 +58,7 @@ from Rafayel_memory import (ConversationManager, load_memory, recent_context,
 # —— 第 4 层：请求组装与 API 调用 ——
 from Rafayel_llm import (
     _build_worldbook, _user_managers, comment_opening, comment_reply,
-    get_reply, record_proactive, take_opening,
+    get_reply, record_proactive, summarize_call, take_opening,
 )
 
 # —— 旁支：主动打招呼（素材原文直发，不经过模型） ——
@@ -75,6 +75,15 @@ from Rafayel_mood import mood_hint   # 💗 顶栏心情（2026-10-01）：门�
 #     所以**不登记进 `WRITER_MODULES`** —— 那名单是给写盘模块用的。
 from Rafayel_sticker import pick_sticker
 
+# —— 旁支：跨级解锁记账（2026-10-02 从网页端 `page/chat.py` 的 `_unlock_tick()` 挪进引擎） ——
+#   ⭐ 为什么经门面转出、不让 `web/` 直接 import `Rafayel_daily`：
+#     要记这笔账得同时动 `Rafayel_daily`（写盘）+ `Rafayel_affinity`（算级数）
+#     两个模块 ⇒ 网页端直接引就是**一条 ADR-22 口子**。而现在
+#     **两个页面**（`/chat` 与 `/call`）都要用它 ⇒ 放门面里，两边只认这一个名字。
+#     ⚠ `web/base.py` 更不能承接它 —— 那会让**所有页面**跟着背这条口子。
+#   ⚠ 它是 `Rafayel_bot.maybe_send_unlock` 去掉「发送」那一半：只记账、一个字都不发。
+from Rafayel_daily import tick_unlock
+
 
 __all__ = [
     # 对外调用
@@ -87,6 +96,14 @@ __all__ = [
     "try_greet", "load_pools",
     # 表情包（标签 ⇒ 磁盘绝对路径；`None` = 没这张 / 功能关着）
     "pick_sticker",
+    # 💞 跨级解锁记账（引擎侧实现 = `Rafayel_daily.tick_unlock`）
+    "tick_unlock",
+    # ☎️📔 单通电话摘要（引擎侧实现 = `Rafayel_memory.summarize_call`，
+    #   取 `cm` 那半在 `Rafayel_llm.summarize_call`）。
+    #   ⭐ 为什么不走「网页端直接 import `Rafayel_memory`」：那个模块是**写盘模块**，
+    #     网页端引它 = 又开一条 ADR-22 口子。走门面 = 复用 `call.py` **已经开着的**那条。
+    #   ⚠ 调用方要自己包 `base._chat_lock(uid)`（它读改写 `memory/{uid}.json`）。
+    "summarize_call",
     # 对话与记忆
     "ConversationManager", "save_memory", "load_memory", "recent_context",
     # 用户画像

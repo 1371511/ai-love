@@ -38,6 +38,11 @@ from Rafayel_config import (
     MOOD_JUDGE_CARD_HINT, MOOD_JUDGE_MAX_TOKENS, MOOD_JUDGE_MAX_TURNS,
     MOOD_JUDGE_TEMPERATURE, MOOD_JUDGE_TIMEOUT, MOOD_MAX_CAUSE, api_key,
     temp_for,
+    # 🚦 2026-10-02（方案 A）后台请求闸门。情绪判定是**每一轮都起**的后台请求，
+    #    是抢「上游那个唯一并发槽」最凶的一家 ⇒ 起线程后先让路、再排队。
+    #    ⚠ 机制本体在 `Rafayel_config`：引擎与网页端**共用同一把锁**才叫互斥，
+    #      而 config 是两层唯一能共用的地方（见那一节的说明）。
+    bg_slot,
 )
 
 # ---------------------------------------------------------------- 常量
@@ -502,7 +507,12 @@ def spawn_update(user_id, messages, api_key_override=None):
 
     def _job():
         try:
-            mood_update(user_id, msgs, api_key_override)
+            # 🚦 让路 + 排队（2026-10-02 方案 A）。
+            #    ⭐ 顺序重点：闸门在**最外面** —— 让路那一步是 sleep，放里面
+            #      （或放 `mood_update` 里）就白睡了，得看调用方有没有持别的锁。
+            #    ⚠ 这一步在**后台线程**里 ⇒ 一秒都不占她等待的时间（方案 B 的本意不变）。
+            with bg_slot():
+                mood_update(user_id, msgs, api_key_override)
         except Exception as e:            # 线程里的异常没人接 ⇒ 自己吞掉
             print("⚠️ 情绪判定线程异常（忽略）：%s" % e)
 

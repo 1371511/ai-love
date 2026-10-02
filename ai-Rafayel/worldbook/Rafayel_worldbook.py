@@ -39,6 +39,9 @@ _HERE = os.path.dirname(os.path.abspath(__file__))          # …\ai-Rafayel\wor
 ROOT = os.path.dirname(os.path.dirname(_HERE))              # E:\ai-love
 CARD_DIR = os.path.join(ROOT, "card")
 WORLDBOOK_JSON = os.path.join(CARD_DIR, "worldbook.json")
+# ☎️ 通话专属设定库（2026-10-02 晚 · 她定「全新写、只在通话生效」）。⚠ 可以**不存在**。
+CALL_WORLDBOOK_JSON = os.path.join(CARD_DIR, "call_worldbook.json")
+
 
 POS_BEFORE = 0   # before_char → 拼在 system 后面
 POS_AFTER = 1    # after_char  → 拼在历史之后
@@ -161,3 +164,29 @@ def get_worldbook():
 
 
 _WB = None
+
+_CALL_WB = None      # None = 还没读过；False = 确认没有（文件不在 / 读坏了）
+
+
+def get_call_worldbook():
+    """
+    ☎️ 通话专属设定库。**文件不在 / 读坏了 ⇒ 返回 `None`，绝不抛。**&#8203;
+
+    ⚠⚠ 跟上面 `get_worldbook()` 的口径**故意相反**：那一份是必装件
+       （读不到就抛，免得「世界书静默失效」难查）；这一份是她**可选加的新东西** ——
+       还没写、或写坏了，都只该是「电话里少几条设定」，不能把通话搞挂。
+    ⚠ 把「没有」缓存成 `False`：文件还没建时不必每轮都去 open 一个不存在的路径。
+    ⚠ 新加条目要**重启进程**才生效（模块级缓存，跟人设卡一个口径）。
+    """
+    global _CALL_WB
+    if _CALL_WB is None:
+        if not os.path.exists(CALL_WORLDBOOK_JSON):
+            _CALL_WB = False
+        else:
+            try:
+                _CALL_WB = WorldBook(CALL_WORLDBOOK_JSON)
+            except Exception as e:
+                print("⚠️ 通话设定库读取失败（当没有处理）：%s" % e)
+                _CALL_WB = False
+    return _CALL_WB or None
+

@@ -47,14 +47,30 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from base import (
     app, _page, _esc, _rich, _safe_uid, _avatar_url, _current_uid, _load_users,
     MEMORY_DIR, CHAT_CSS, MENU_PATH, _backbar,
+    # 🔒 2026-10-02 这三个从本文件**下沉去了 base**（`/call` 要用同一把锁）
+    # ☎️🔊 `_read_calls_talk` 是 2026-10-02 第 5 批补的**第二个台词来源**：
+    #    通话走 `wire=False` 后内容不进 `{uid}.json`，语音路由只认那一份就会全 404。
+    _chat_lock, _memory_path, _read_talk, _read_calls_talk,
+    # ⌨️ 2026-10-02 也下沉了（`/call/say` 要用同一把尺子）
+    CHAT_MAX_INPUT,
     # 🎨 表情标记的正则 —— 跟 `_rich()` 用**同一条**（`_pic_only()` 要判「剥完还剩不剩字」）
     _STICKER_TXT,
+    # 🖼 祁煜的头像地址：**唯一出处**在底座（对话窗口 / 牵绊短信 / 视频通话三处共用一个图案）。
+    HIM_AVATAR,
+    # 🔊 2026-10-02 语音那一套（切段 / 提取台词 / 哈希）**下沉去了 base** ——
+    #    通话页也要给字幕挂语音，而**哈希必须两边算得一模一样**，否则一播就 404。
+    #    页面之间不许互 import ⇒ 只能共用底座那一份。`VOICE_PATH` 也一起搬了。
+    VOICE_PATH, VOICE_QUOTE_MODE, _segs, _voice_text, _says_of, _vhash,
 )
-from Rafayel_affinity import compute, current_level, init_unlocked, pending_unlock
-from Rafayel_chat import get_reply, mood_hint, take_opening
-from Rafayel_config import AFFINITY_UNLOCK
-from Rafayel_daily import load_unlocked, save_unlocked
+from Rafayel_affinity import compute
+from Rafayel_chat import get_reply, mood_hint, take_opening, tick_unlock
 from Rafayel_voice import strip_actions, synth_wav
+# 🚦 报错显示（2026-10-02 下午 · 她选「两个都要」）：上游把请求拒了那一刻，别把他的
+#    气泡渲成一行英文报错 ⇒ 换成人设化的降级话 + 一行小字。
+#    ⚠ 直接 import `Rafayel_config` 是**免费的**：它在 `check_static` 的
+#      `WEB_WHITELIST` 里（只读、**不计开口**）⇒ 本页的 ADR-22 开口数**没有变**。
+#    ⚠ 判据与两句文案都住 config（四个显示点必须说**同一句话**，网页端不许各写一份）。
+from Rafayel_config import LLM_BUSY_HINT, LLM_BUSY_SAY, is_llm_error
 
 
 # ============================================================
@@ -318,6 +334,46 @@ TALK_CSS = """
 @media (prefers-reduced-motion:reduce){
   .js .phone.talk .chat .bub.wait i{animation:none;opacity:.45}
 }
+
+/* ➕ 顶栏「+」下拉菜单（2026-10-02 · 取代原来左上角那条「‹ 目录」）
+------------------------------------------------------------
+⭐ 为什么是 <details>：展开收起浏览器本来就会，零 JS ⇒ 离了 JS 照样能用；
+   两个菜单项都是整页跳转 ⇒ 跳走即收起，不需要「点空白收起」的 JS。
+⚠⭐ 左格那条 `flex:1` **必须复制一遍**给 `details.plus`：
+   上面那条老规则写的是 `.ph-top>a,.ph-top>#mood-slot{flex:1;…}` ——
+   选择器里没有 `details` ⇒ 不补的话左格不伸缩，`.ph-top` 是 space-between，
+   只剩两格时中间的「祁煜」会被推偏（真机一眼就能看出来）。
+   ⚠ 为什么不改老规则：那是「左侧返回链接」用的（/chat/history 顶栏还在用），
+     两件事分开写 —— 哪天撤掉「+」菜单，删这一块即可、互不影响。
+⚠ `z-index:30` 必需：菜单要盖住下面的 `.chat`，而 `.ph-top` 在 HTML 里
+   排在 `.chat` **前面**，不抬 z-index 会被气泡压住。
+⚠ 菜单向下展开约 90px，`.phone.talk` 虽是 `overflow:hidden` 但高度是一屏
+   ⇒ 裁不到。这是**隐式约束**：哪天改 `.phone.talk` 的高度/裁剪，先回来验这个菜单。
+⚠ summary 那两条 marker 隐藏不是啰嗦：Safari 认 `::-webkit-details-marker`、
+   Chrome/Firefox 认 `::marker` / `list-style:none`，少一条就有一个浏览器露出黑三角。
+⚠ 面板**不设 min-width**（她 06:13 反馈「不要做太宽」）：absolute 定位自带
+   shrink-to-fit，两项都是 4 字词 + `white-space:nowrap` ⇒ 宽度贴着内容收，
+   「视频通话」四个字加 padding 就到头。哪天菜单项变长，面板自己会长。 */
+.phone.talk .ph-top{position:relative}
+.phone.talk .ph-top>details.plus{flex:1;min-width:0}
+.phone.talk .plus>summary{list-style:none;cursor:pointer;
+     width:30px;height:30px;border-radius:50%;
+     background:rgba(0,0,0,.05);color:#6E6C65;
+     display:flex;align-items:center;justify-content:center;
+     font-size:18px;line-height:1;user-select:none}
+.phone.talk .plus>summary::-webkit-details-marker{display:none}
+.phone.talk .plus>summary::marker{content:""}
+.phone.talk .plus>.pmenu{position:absolute;top:calc(100% + 6px);left:-6px;z-index:30;
+     background:#fff;border:0.5px solid rgba(0,0,0,.12);
+     border-radius:12px;padding:6px}
+.phone.talk .plus>.pmenu a{display:block;padding:9px 10px;border-radius:8px;
+     font-size:14px;color:#33322E;text-decoration:none;white-space:nowrap}
+/* ⬜ 灰项（她 2026-10-02 定：「历史聊天」功能没做全之前不可点）。
+   ⚠ 尺寸跟上面 `a` 那条**一模一样**（同 padding / 字号）——
+     不然两项在菜单里一高一低（`.call-act` 那个教训的反向运用）。 */
+.phone.talk .plus>.pmenu .off{display:block;padding:9px 10px;border-radius:8px;
+     font-size:14px;color:var(--c-off);white-space:nowrap;cursor:default}
+.phone.talk .plus>.pmenu a:active{background:rgba(0,0,0,.06)}
 """
 
 # ⚠⚠ 渐进增强：脚本没了 / 浏览器太老 ⇒ 表单**照旧整页 POST**，功能一点不丢
@@ -815,44 +871,12 @@ TALK_JS = r"""
 })();
 </script>"""
 
-CHAT_MAX_INPUT = 800            # 她一条最多多少字（防手滑粘长文烧 token）
-_CHAT_LOCKS = {}
-_CHAT_LOCKS_GUARD = threading.Lock()
+# ⌨️ `CHAT_MAX_INPUT` 2026-10-02 **下沉去了 `base.py`**（`/call/say` 要用同一把尺子，
+#   页面之间不许互相 import）⇒ 本文件改从 base import。
 
-
-def _chat_lock(uid):
-    """拿到某个 uid 的对话锁（没有就现造一个）。"""
-    with _CHAT_LOCKS_GUARD:
-        lk = _CHAT_LOCKS.get(uid)
-        if lk is None:
-            lk = threading.Lock()
-            _CHAT_LOCKS[uid] = lk
-        return lk
-
-
-def _memory_path(uid):
-    return os.path.join(MEMORY_DIR, "%s.json" % _safe_uid(uid))
-
-
-def _read_talk(uid):
-    """读 `memory/{uid}.json` 的对话历史（**只读**），返回 [(role, text), …]。"""
-    p = _memory_path(uid)
-    if not os.path.isfile(p):
-        return []
-    try:
-        with open(p, encoding="utf-8") as f:
-            data = json.load(f)
-    except Exception as e:
-        print("[💬] 读记忆失败（%s）：%s" % (uid, e))
-        return []
-    out = []
-    for m in (data.get("messages") or []):
-        if not isinstance(m, dict):
-            continue
-        role, txt = m.get("role"), m.get("content")
-        if role in ("user", "assistant") and isinstance(txt, str) and txt.strip():
-            out.append((role, txt))
-    return out
+# ⚠ `threading` 与下面三个工具（对话锁 / 记忆路径 / 读历史）2026-10-02
+#   **下沉去了 `base.py`** —— 视频通话页 `page/call.py` 也要用同一把锁，
+#   页面之间不许互相 import ⇒ 共用工具只能放底座。详见 `base.py` 那一节。
 
 
 def _read_days(uid):
@@ -999,19 +1023,6 @@ def _split_day_text(d, t):
     return _day_head(d), (t or "").strip()
 
 
-def _segs(text):
-    """
-    一条消息 ⇒ 几条气泡。
-
-    ⭐ 跟 QQ 侧同一个口径（2026-09-22 她拍板）：「分段」就是**一条气泡一段**，
-      不是一条气泡里换行（换行她看着还是一大坨）。
-    ⚠ QQ 那边还会按字数再细切（`_split_bubble`，在 `Rafayel_bot.py` 里）——
-      网页端气泡没有长度上限，不用切。
-    """
-    return [x.strip() for x in str(text or "").replace("\r\n", "\n").split("\n")
-            if x.strip()]
-
-
 def _pic_only(text):
     """
     这一段剥掉 `[表情:x]` 和**括号动作**之后一个字都不剩吗？（⇒ 纯表情段，走图片气泡）
@@ -1031,8 +1042,13 @@ def _pic_only(text):
 
 
 def _him_av():
-    """他那侧的头像 —— 项目素材，走白名单路由 `/asset/qiyu`。"""
-    return '<img src="/asset/qiyu" alt="祁煜">'
+    """
+    他那侧的头像 —— 项目素材，地址取 `base.HIM_AVATAR`（**唯一出处**）。
+
+    ⚠ 2026-10-02 收敛：这行字面量原来在「对话窗口 / 牵绊短信 / 视频通话」**各写了一遍**，
+      三处代表**同一个人** ⇒ 图案必须一致。地址只留一个来源，换图只改底座那一行。
+    """
+    return '<img src="%s" alt="祁煜">' % HIM_AVATAR
 
 
 def _her_av(uid, name):
@@ -1043,91 +1059,13 @@ def _her_av(uid, name):
     return _esc((name or "你")[0])
 
 
-VOICE_PATH = "/chat/voice"
-_VOICE_TAG = re.compile(r"\[[^\[\]]*\]")   # `[表情:涂鸦叽]` 这类方括号标记
-_VOICE_QUOTE = re.compile(r"「([^」]*)」")  # 剧情格式的台词标记
-# ⭐ 开关（2026-09-29 加）：整条消息里出现过「」⇒ 判为「剧情格式」，
-#   只念引号内的台词，引号外的旁白一个字都不念。
-#   关掉它就退回上一版行为（只剥圆括号 ⇒ 剧情格式的旁白会被整段念出去）。
-VOICE_QUOTE_MODE = True
-_VOICE_PUNCT = "，。！？…、；：,.!?"
+# 🔊 `VOICE_PATH` / 语音提取那一套（`_segs` / `_vhash` / `_voice_text` / `_says_of`）
+#   2026-10-02 **下沉去了 `base.py`** —— 通话页也要给字幕挂语音，哈希必须两边一致。
+#   这里只留「小喇叭」那颗 SVG（纯聊天页的观感，通话页用不着）。
 _VOICE_SPK = ('<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">'
               '<path d="M3.2 6.1h2.3L8.9 3.3v9.4L5.5 9.9H3.2z" fill="currentColor"/>'
               '<path d="M11.1 6.1a3 3 0 0 1 0 3.8" fill="none" stroke="currentColor" '
               'stroke-width="1.4" stroke-linecap="round"/></svg>')
-
-
-def _vhash(text):
-    """
-    一段气泡原文 ⇒ 语音路由用的短哈希（16 位十六进制）。
-
-    ⚠⭐ 为什么用哈希，而不是「第几条」：`Rafayel_memory.truncate_history()`
-      是**从头部裁**的（`messages = [system] + recent`）⇒ 「第 N 条」这个下标
-      会随着聊下去往前漂 —— 她点一个旧气泡，服务端可能读到**另一句话**，
-      而且**不报错，只是念错内容**。哈希是从文本算的、跟位置无关
-      ⇒ 只会在「这句已经滚出历史」时失败（404），不会张冠李戴。
-    ⚠ 两侧必须算**同一份**文本 —— 2026-09-29 起哈希的是 `_voice_text()` 提取后的**台词**，
-      而不是气泡原文：`_bubble` 按 `say` 算、路由里对每段重算同一个 `say` ⇒ 天然一致。
-      （`add_assistant_message` 原样落盘 + `_voice_text` 是纯函数 ⇒ 两次必然算出同一份。）
-    """
-    return hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()[:16]
-
-
-def _voice_text(text, quote=None):
-    """
-    气泡原文 ⇒ 该**念出来**的台词。
-
-    ⭐ 项目里并存两种书写格式，靠 `quote` 分流（由 `_says_of` 按**整条消息**判定后传进来）：
-      · `quote=True`（剧情格式，整条里出现过「」）⇒ **只取「」里的台词**；
-        引号外的旁白（「他站起来往门口走，顺手接过你手里的袋子…」）一个字都不念。
-      · `quote=False`（日常格式，system prompt 规定的 `（动作）话跟着写在同一段`）
-        ⇒ 剥掉括号动作后把话念出来（跟上一版行为一致）。
-      `quote=None` ⇒ 就地按本段自己猜（只有单段调用才不用传，页面与路由都显式传）。
-
-    ⚠⭐ 为什么格式判定必须按**整条消息**、不能按单段：剧情格式里
-      「他往厨房走，走了两步又停下来。」这种纯旁白段**自己身上没有「」**，
-      逐段判就会把它当成日常格式 ⇒ 又整段念出去（这正是这次要修的 bug）。
-    ⚠ 两件清洗都得做，否则读出来是噪音：
-      · `（他笑）` / `（挑眉）` —— `strip_actions` 管这个
-      · `[表情:涂鸦叽]` —— 页面上 `_rich` 把它画成小圆片，但 TTS 会照字念「表情 涂鸦叽」
-    ⚠ 剥完没台词（纯动作 / 纯旁白气泡）⇒ 返回 `""`，调用处**不给它渲染小喇叭** ——
-      一个点了必然失败的按钮不如没有。
-    """
-    t = _VOICE_TAG.sub("", str(text or ""))
-    if quote is None:
-        quote = VOICE_QUOTE_MODE and ("「" in t)
-
-    if quote:
-        parts = []
-        for x in _VOICE_QUOTE.findall(t):
-            # 引号里若还夹着括号动作（「（他笑）你回来了。」）⇒ 再剥一层
-            parts.extend(strip_actions(x)[1])
-    else:
-        _actions, parts = strip_actions(t)
-
-    out = ""
-    for x in parts:
-        x = x.strip()
-        if not x:
-            continue
-        # 括号被 `strip_actions` 换成了换行 ⇒ 断开处补个停顿；
-        # 但上一句已经带标点就不补（不然会冒出「。」「，」连着两个）。
-        if out and out[-1] not in _VOICE_PUNCT:
-            out += "，"
-        out += x
-    return out.strip()
-
-
-def _says_of(text):
-    """
-    一条消息 ⇒ **每个气泡**该念的内容（与 `_segs()` 的段一一对应、同序）。
-
-    ⭐ 格式判定在**整条消息**这一层做完，再逐段套用 —— 理由见 `_voice_text()`。
-      返回值里 `""` 表示「这一段没台词」⇒ 不出小喇叭。
-    """
-    segs = _segs(text)
-    quote = VOICE_QUOTE_MODE and ("「" in str(text or ""))
-    return [_voice_text(seg, quote) for seg in segs]
 
 
 def _bubble(who, text, her_av, say=None, typing=False):
@@ -1208,40 +1146,16 @@ def _open_once(uid):
 
 def _unlock_tick(uid):
     """
-    跨级解锁记账 —— `Rafayel_bot.maybe_send_unlock` **去掉「发送」那一半**。
+    跨级解锁记账 —— **实现已挪进引擎**（2026-10-02，见 `Rafayel_daily.tick_unlock`）。
 
-    ⚠ 为什么 web 侧也得做：`unlocked` 原来**只在收到 QQ 私聊时**才写 ⇒
-      冻结期在网页上聊到升级，`/affinity` 的「他说过的那句话」和 `/messages`
-      的解锁条数会停在那儿不动，看着像坏了。
-    ⚠ 只记账、**一个字都不发**（QQ 侧本来就是 `AFFINITY_UNLOCK_SEND = False`）。
-    ⚠ 写的是 `memory/{uid}_daily.json` —— 属于本节开门的那条口子，别再扩散。
+    ⭐ 为什么挪：视频通话页（`/call`）也要记这笔账（不然「通话里升了级，
+       `/affinity` 的解锁条数不涨」，看着像坏了）；而 `_unlock_tick` 要
+       `Rafayel_daily` + `Rafayel_affinity` 两个模块 —— 搬进 `base.py` 会让
+       **所有页面**跟着背这两条 ADR-22 口子 ⇒ 正确做法是下沉到引擎，
+       经 `Rafayel_chat` 门面转出（`tick_unlock`），两个页面都只认门面。
+    ⚠ 本函数保留为**薄壳**：`/chat/send` 的调用点一行没动，语义也没变。
     """
-    if not AFFINITY_UNLOCK:
-        return
-    try:
-        rec = load_unlocked(uid)
-        if rec is None:
-            # 第一次接入：只记「现在几级」，**不补发历史**（跟 bot 侧同口径）
-            save_unlocked(uid, init_unlocked(current_level(uid, MEMORY_DIR)))
-            return
-        item = pending_unlock(uid, MEMORY_DIR)
-        if not item:
-            return
-        got_sms = [int(x) for x in (rec.get("sms") or [])]
-        for lv in (item.get("mark_sms") or []):
-            if lv not in got_sms:
-                got_sms.append(int(lv))
-        rec["sms"] = sorted(got_sms)
-        send = item.get("send")
-        if send:
-            got = list(rec.get("eggs") or [])
-            if send.get("key") not in got:
-                got.append(send["key"])
-            rec["eggs"] = got
-        rec["level"] = max(int(rec.get("level") or 0), int(item.get("level_now") or 0))
-        save_unlocked(uid, rec)
-    except Exception as e:
-        print("[💞] 跨级记账失败（不影响对话）：%s" % e)
+    tick_unlock(uid)
 
 def _mood_html(uid):
     """顶栏右侧那一格：有心情 ⇒ 彩色文案；否则 ⇒ 原样「在 ●」。
@@ -1303,7 +1217,7 @@ def _talk_body(uid, msgs, shown, tail=""):
 
 
 @app.get("/chat", response_class=HTMLResponse)
-async def chat_page(request: Request):
+async def chat_page(request: Request, busy: str = ""):
     """
     💬 对话窗口 —— QQ 号被冻结期间的替代入口。
 
@@ -1311,6 +1225,10 @@ async def chat_page(request: Request):
       本页**会写 memory**，但只在「他还没开过场」时写那一句开场白，其余全只读。
     ⚠ 等级**不显示**：README 铁律 2 是「好感度那一面绝不进对话」——
       聊天气泡上头挂个「第 N 级」，她一眼就跳戏了。
+    🚦 `busy=1`（2026-10-02 下午加）：`POST /chat/send` 撞上上游限流时，零 JS 那条
+      保底路会 303 到 `/chat?busy=1` —— 报错**不进 `messages`**，这一页本身什么都
+      渲不出来 ⇒ 由这个参数补一行小字，跟 fetch 那条路行为一致（两种情况都说同一个理）。
+      ⚠ 状态**不粘住**：她自己刷新一下（不带参数）就没了，所以不写 cookie、不落库。
     """
     uid = _current_uid(request)
     if not uid:
@@ -1323,9 +1241,36 @@ async def chat_page(request: Request):
 
     shown = _shown_name(uid)
     chat = _talk_body(uid, _read_talk(uid), shown)
-    head = ('<div class="ph-top"><a href="%s" class="hint">‹ 目录</a>'
+    # 🚦 上游拒了那一下的「零 JS 回执」（见 `/chat/send` 末尾那条 303）：报错不进
+    #    `messages` ⇒ 这一页自己渲不出任何东西，靠这个参数补**同一行小字**，
+    #    两条路（fetch / 整页 POST）才一致。
+    #    ⚠ 用 `.sys`（跟「他没接上话」那句同一个样式）：它是**提示**，不是他的话。
+    if busy:
+        chat += '<div class="sys">%s</div>' % _esc(LLM_BUSY_HINT)
+    # ➕ 左上角「+」下拉菜单（2026-10-02 她定：顶栏那条「‹ 目录」换成它）
+    #    ⭐ 原生 <details>/<summary> ⇒ 展开/收起**零 JS**（离了 JS 照样能展开，
+    #      跟全站渐进增强一个口径）；两个菜单项都是整页跳转 ⇒ 跳走即收起，
+    #      不需要「点空白处收起」那种 JS。
+    #    ⚠ 只有两项：视频通话 + 看以前的聊天（她点名的两项）。
+    #      「‹ 返回目录」**故意不进菜单** —— 底部输入栏那一行本来就有（见下面 .bk），
+    #      「同一去向绝不挂两处」是她定的规矩（见 /chat/history 那条注释）。
+    head = ('<div class="ph-top">'
+            '<details class="plus"><summary aria-label="更多">+</summary>'
+            '<div class="pmenu">'
+            '<a href="/call/dial">视频通话</a>'
+            # ⚠ 2026-10-02 下午改指 `/call/dial`（**你打去**的拨号页）：她定的
+            #    「等待页分两种」—— 菜单是她主动发起 ⇒ 走拨号页（等待对方接受邀请）；
+            #    `/call`（他打来、红绿两钮那页）留给第二阶段「他主动来电」。
+            # 🗄 2026-10-02 14:26 她改口径：这一项**不再是「历史聊天」**，改成
+            #    **「历史通话」**并点亮 —— 用来保存/查看**通话记录**（文字形式）。
+            #    页在 `page/call.py`（通话相关都归它），零新增存储：靠开场白哨兵
+            #    从既有记忆里切场次。
+            #    ⚠ 「按天列表的历史聊天」那件事**暂时搁置**：`/chat/history?day=`
+            #      （原话存档页）仍在，只是入口从这儿撤了 —— 要用再挂。
+            '<a href="/call/history">历史通话</a>'
+            '</div></details>'
             '<b>祁煜</b>%s</div>'
-            % (MENU_PATH, _mood_html(uid)))
+            % (_mood_html(uid),))
     her = _her_av(uid, shown)
     body = ('<div class="phone talk">%s<div class="chat" id="chat">%s</div></div>'
             '<div class="bar-bottom">'
@@ -1438,18 +1383,37 @@ async def chat_send(request: Request, text: str = Form("")):
     #    ⚠ 只有 `typing` 这一支跳过：没 JS 的保底路走下面 303 + 整页渲染，
     #      她的气泡照旧由 `/chat` 渲出来 ⇒ 那条路零影响、功能一点不丢。
     frag = [] if typing else [_bubble("her", text, her)]
-    got = _segs(reply)
-    if got:
-        for seg, say in zip(got, _says_of(reply)):
-            frag.append(_bubble("him", seg, her, say, typing=typing))
+    if is_llm_error(reply):
+        # 🚦 上游把请求拒了（Kimi Tier0 的并发 1 / RPM 3）⇒ **别**把他的气泡渲成
+        #    一行英文报错 —— 她 16:4x 截图抓的正是那个形态。换成人设化的降级话
+        #    + 一行小字，就是她 2026-10-02 选的「两个都要」。
+        #    ⚠ 不进记忆：`get_reply` 报错时压根没 `add_assistant_message`
+        #      ⇒ 它是「只显示、不留痕」，绝不会变成「他说过的假记忆」。
+        #    ⚠ 他那条走 `typing=False`：这不是模型吐出来的话，打字机不该演它
+        #      （下面那条 `.sys` 同理）。
+        frag.append(_bubble("him", LLM_BUSY_SAY, her, "", typing=False))
+        frag.append('<div class="sys">%s</div>' % _esc(LLM_BUSY_HINT))
+        busy = True
     else:
-        # ⚠ 兜底：模型一个字都没回（或接口报错）⇒ 说清楚，别让她以为界面坏了。
-        #    **不进记忆**（本来就没这句话）—— 绝不能留下「他说过」的假记忆。
-        #    ⚠ 这条**不打 `data-ty`**：它是个 `.sys` 提示、不是他说的话，打字机不该碰它。
-        frag.append('<div class="sys">他没接上话，再说一句试试</div>')
+        busy = False
+        got = _segs(reply)
+        if got:
+            for seg, say in zip(got, _says_of(reply)):
+                frag.append(_bubble("him", seg, her, say, typing=typing))
+        else:
+            # ⚠ 兜底：模型一个字都没回（或接口报错）⇒ 说清楚，别让她以为界面坏了。
+            #    **不进记忆**（本来就没这句话）—— 绝不能留下「他说过」的假记忆。
+            #    ⚠ 这条**不打 `data-ty`**：它是个 `.sys` 提示、不是他说的话，打字机不该碰它。
+            frag.append('<div class="sys">他没接上话，再说一句试试</div>')
 
     if typing:
         return HTMLResponse("".join(frag), headers={"Cache-Control": "no-store"})
+    # 🚦 零 JS 那条保底路：报错**不在 `messages` 里**（报错时压根没落盘）⇒ 303 回
+    #    `/chat` 之后那一页什么都渲不出来 ⇒ 她会看到「我说了话、他却没回」的**静默失败**
+    #    （比看到英文还难懂）。⇒ 带一个 `?busy=1`，让 `/chat` 渲出**同一行小字**
+    #    —— 两条路（fetch / 整页 POST）行为一致。
+    if busy:
+        return RedirectResponse("/chat?busy=1", status_code=303)
     return RedirectResponse("/chat", status_code=303)
 
 
@@ -1498,8 +1462,11 @@ async def chat_voice(request: Request, h: str = ""):
     ⚠ 未登录回 **401**，不是重定向 —— 这是 `<audio>` 在拉的资源，
       303 会被静默跟随、拿回一坨 HTML，前端只看到「播放失败」，反而更难查。
     ⚠ 四种「没有音频」分得很细，是为了日志里能区分（前端现在统一闪一下）：
-      400 = 哈希格式不对；404 = 这段已经滚出历史；
+      400 = 哈希格式不对；404 = **两个来源里都没找到这句**；
       204 = 这句本来就没台词（纯动作气泡）；503 = TTS 那边挂了。
+    ⚠⚠ **两个台词来源**（2026-10-02 第 5 批起）：`memory/{uid}.json`（聊天）
+      + `memory/{uid}_calls.json`（通话）—— 通话走 `wire=False` 后内容不进前者，
+      只查它会**一条通话台词都认不出**（全 404）。见 `base._read_calls_talk()` 那段注释。
     """
     uid = _current_uid(request)
     if not uid:
@@ -1510,7 +1477,11 @@ async def chat_voice(request: Request, h: str = ""):
         return Response(status_code=400)
 
     raw, found = "", False
-    for role, txt in _read_talk(uid):
+    # ⚠⚠ **两个来源**（2026-10-02 第 5 批补第二个）：聊天历史 + **通话记录**。
+    #    第 5 批起通话走 `wire=False` ⇒ 通话内容不进 `memory/{uid}.json`，
+    #    而通话页字幕的哈希是拿**通话记录**里的台词算的 ⇒ 只查前者会**全 404**。
+    #    ⚠ 顺序：聊天历史在前（老行为不变），通话记录在后（新的通话在前，容易命中）。
+    for role, txt in _read_talk(uid) + _read_calls_talk(uid):
         if role != "assistant":
             continue                       # 她自己的气泡没有播放按钮，不认她的哈希
         for say in _says_of(txt):
@@ -1522,7 +1493,7 @@ async def chat_voice(request: Request, h: str = ""):
         if found:
             break
     if not found:
-        return Response(status_code=404)   # 这句已经被 truncate_history 裁掉了
+        return Response(status_code=404)   # 两边都找不到（这句被裁了 / 记错了）
     text = raw            # 已经是提取好的台词，不能再过一遍 `_voice_text`（会二次剥引号）
     if not text:
         return Response(status_code=204)   # 理论上到不了（空 say 匹配不上），留作防御
