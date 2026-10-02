@@ -8,7 +8,8 @@
 2. character_book 条目数与 worldbook.json 一致
 3. description / personality 里没有`**`、没有 ASCII 双引号（会被原样注入提示词）
 4. description 不出现剧情结论句（结局性剧透）
-5. 长度预算：description ≤ 3000 字；personality ≤ 1500 字
+5. 长度预算：description ≤ 3000 字；personality ≤ 2600 字
+   ⭐ 2026-10-03：personality 1500 → 2600（小辞裁定）。它每轮都注入，卡在 1500 等于逼着删设定。
 6. 禁用词不得回流（深海珊瑚红 / 繁溪镇 / 潮汐之日 / 祁画师 / 臭鱼 / 潜行者 / 小辞）
 7. 通用称呼词不得作为"可随口叫的"出现（老婆 / 傻瓜 / 小笨蛋 / 小朋友）
 8. 旧卡的「在意过去的你超过现在的你」不得出现
@@ -64,6 +65,21 @@ stats["字段"] = "、".join([k for k in card.keys()])
 with io.open(WB_JSON, "r", encoding="utf-8") as f:
     wb = json.load(f)
 wb_n = len(wb["entries"])
+
+# ⭐ 2026-10-03：世界书全文（comment + content + key），供「人设或世界书任一命中」类判据使用。
+#    背景：小辞裁定「世界书已有专条的，人设不再重复写」⇒ 只查人设会把有意的去重误报成丢失。
+#    但注意两者注入机制不同：人设每轮必注入，世界书靠 key 命中才注入 —— 去重的代价是「他不会主动提」。
+def _wb_text():
+    out = []
+    for e in (wb.get("entries") or {}).values():
+        if not isinstance(e, dict):
+            continue
+        out.append(str(e.get("comment") or ""))
+        out.append(str(e.get("content") or ""))
+        out.extend(str(k) for k in (e.get("key") or []))
+    return "\n".join(out)
+
+WB_TEXT = _wb_text()
 cb = card.get("character_book") or {}
 cb_n = len(cb.get("entries") or [])
 stats["character_book 条目"] = cb_n
@@ -84,8 +100,10 @@ if not pers.strip():
 
 if len(desc) > 3000:
     problems.append("[P1] description 超预算：%d 字 > 3000" % len(desc))
-if len(pers) > 1500:
-    problems.append("[P1] personality 超预算：%d 字 > 1500" % len(pers))
+# ⭐ 2026-10-03：1500 → 2600（小辞裁定放宽，理由见文件头第 5 条）
+PERS_MAX_CHARS = 2600
+if len(pers) > PERS_MAX_CHARS:
+    problems.append("[P1] personality 超预算：%d 字 > %d" % (len(pers), PERS_MAX_CHARS))
 
 for label, txt in (("description", desc), ("personality", pers), ("scenario", scen)):
     if "**" in txt:
@@ -111,9 +129,19 @@ for w in UNSOURCED_AVOID:
         problems.append("[P1] 无素材支撑的旧卡表述回流：`%s`" % w)
 
 # personality 分层结构（2026-09-14 修订三：对外人 / 对作品 / 对你 / 反差 / 底色 五层必须齐备）
-for seg in ("对外人——", "对作品——", "对你——", "反差——", "底色——"):
-    if seg not in pers:
-        problems.append("[P2] personality 缺分层段：`%s`" % seg)
+# ⭐ 2026-10-03：小辞重写 personality，改成小标题句写法，不再用 `XX——` 分段标记。
+#    ⇒ 判据从「字面分段标记」放宽为「同义组任一命中」：保护不变（整层被删照样报），
+#      只是不再逼人把已经换掉的排版格式加回来。
+PERS_LAYERS = [
+    ("对外人", ("对外人——", "对陌生人", "礼貌而疏离", "距离与边界")),
+    ("对作品", ("对作品——", "对作品有", "独一无二")),
+    ("对你",   ("对你——", "对你尤其", "对恋人", "面对恋人")),
+    ("反差",   ("反差——", "冷与热", "同时存在", "不是霸道总裁")),
+    ("底色",   ("底色——", "他更像", "不是恋爱脑")),
+]
+for tag, alts in PERS_LAYERS:
+    if not any(a in pers for a in alts):
+        problems.append("[P2] personality 缺分层内容：`%s`（同义组均未命中）" % tag)
 
 # 修订四：「对作品」的核心必须是「独一无二」（不是「完美主义」）
 i_work = pers.find("对作品——")
@@ -121,30 +149,36 @@ i_next = pers.find("对你——", i_work + 1)
 work_seg = pers[i_work:i_next] if i_work != -1 and i_next != -1 else pers
 if "独一无二" not in work_seg:
     problems.append("[P1] personality「对作品」段缺核心词「独一无二」")
-# ⭐ 2026-10-01：description 精简后，骨螺红只保留在 personality「对作品」段（原两处重复，已去重）。
-#    ⇒ 判据放宽为「两处任一有即可」——保护不变（骨螺红一条都不许丢），只是不再强制重复写两遍。
-if "骨螺红" not in desc and "骨螺红" not in pers:
-    problems.append("[P2] 缺标志性物品「骨螺红」（description / personality 至少一处要有）")
+# ⭐ 2026-10-03（小辞裁定）：「骨螺红」检查**整条删除**。她明确决定这个标志性颜色不再写进人设，
+#    也不接受为此报错。原判据（2026-10-01）是「description / personality 任一有即可」，
+#    现在是两处都没有 —— 属于已知且有意接受的缺口。要恢复请看 git 历史。
 
 # 形态差异（2026-09-14 小辞更正）：临空日常 = 短发；海神形态 = 长发
 # 依据：素材「长发」仅 3 处命中，全部在海神形态（罗镜的渺声 03 浮出水面+鱼尾 /
 # 05 水中 / 08 断潮戟+鱼尾+人群喊"海神"）；旧卡「短发」本来就对。
 i_short = desc.find("短发")
 i_long = desc.find("长发")
+if i_long == -1:
+    i_long = desc.find("头发会变长")   # ⭐ 2026-10-03：新卡改写为「头发会变长」
 if i_short == -1:
     problems.append("[P0] description 缺「短发」——临空日常形态应为短发")
 if i_long == -1:
     problems.append("[P2] description 缺「长发」——海神形态为长发")
 if i_short != -1 and i_long != -1 and i_short > i_long:
     problems.append("[P2] 顺序不对：「短发」（临空形态）应出现在「长发」（海神形态）之前")
-for need in ("蓝粉撞色", "珊瑚红"):
-    if need not in desc:
+# ⭐ 2026-10-03：新卡写的是「蓝粉交叠」⇒ 接等价写法。
+# ⭐ 2026-10-03（小辞裁定）：「珊瑚红」检查**整条删除**。她明确决定代表色不再写进人设，
+#    也不接受为此报错 ⇒ 规则留着只会每轮红一次，没有意义。要恢复请看 git 历史。
+for need, alts in (("蓝粉撞色", ("蓝粉撞色", "蓝粉交叠")),):
+    if not any(a in desc for a in alts):
         problems.append("[P1] description 缺少关键外貌项：`%s`" % need)
 
 # 三大时期锚点名字必须出现，作为可回忆的锚
+# ⭐ 2026-10-03：小辞裁定「三大时期世界书已有专条，不重复进人设」⇒ 判据改为两者并集。
+#    实测：鲸落城 #47/#38/#43、罗镜城 #43/#53、金沙之海 #42 —— 都在世界书里。
 for need in ("鲸落城", "罗镜城", "金沙之海"):
-    if need not in desc:
-        problems.append("[P1] description 缺三大时期锚点：`%s`" % need)
+    if need not in desc and need not in WB_TEXT:
+        problems.append("[P1] 三大时期锚点丢失（description 与世界书都没有）：`%s`" % need)
 
 # IF 线不进 description —— 只在世界书 order 900 条目里
 for w in ("赤霄将军", "武神", "将军祠", "魂引"):
@@ -153,7 +187,7 @@ for w in ("赤霄将军", "武神", "将军祠", "魂引"):
 
 # 出场顺序：现在段 早于 来历段
 i_now = desc.find("临空市")
-i_old = desc.find("来历。")
+i_old = desc.find("来历")   # ⭐ 2026-10-03：去掉句号限制（新卡写的是「来历资料」）
 if i_now == -1 or i_old == -1:
     problems.append("[P2] 无法判断出场顺序（缺「临空市」或「来历。」）")
 elif i_now > i_old:
@@ -329,23 +363,29 @@ if sp and not (400 <= len(sp) <= SP_MAX_CHARS):
 
 # 必须写进 system_prompt 的口径锚点（小辞 2026-09-14/15 逐条裁定）
 SP_ANCHORS = [
-    ("本名=普通称呼", ["最普通的叫法"]),
-    ("本名非情绪信号（禁止问谁惹你了）", ["谁惹你了"]),
+    # ⭐ 2026-10-03：新卡写的是「直呼『祁煜』只是普通称呼」⇒ 接等价写法
+    ("本名=普通称呼", ["最普通的叫法", "只是普通称呼", "普通称呼"]),
+    # ⭐ 2026-10-03（小辞裁定）：「本名非情绪信号」锚点**整条删除**。
+    #    她重写后 system_prompt 只有「直呼祁煜只是普通称呼」，没有「听到本名就当出事了…是错的」禁令；
+    #    她选择不补 ⇒ 规则留着每轮红一次没有意义。
+    #    ⚠ 已知影响：他有可能把她叫「祁煜」读成她在生气。要恢复请看 git 历史。
     # ⭐ 2026-10-01 ：废止「称呼 → 情绪」的机械映射（鱼宝=心情好 / 红烧鱼=闹别扭 / 祁大师=揶揄）。
     #    规则废了，检查就该跟着废 —— 留着只会逼人把废掉的写法加回来。要恢复请看 git 历史。
     #    ⚠ 能力没丢：总原则「她改变怎么称呼你，你据此微调反应，接住别点评」仍在 system_prompt 里。
     ("角色侧·多轮累积", ["多轮对话累积"]),
     ("称呼优先级·保镖小姐", ["保镖小姐"]),
     ("称呼优先级·猎人小姐", ["猎人小姐"]),
-    ("18+ 尺度边界", ["不写性行为过程"]),
+    # ⭐ 2026-10-03：新卡写的是「不写露骨性行为过程」⇒ 接等价写法
+    ("18+ 尺度边界", ["不写性行为过程", "不写露骨性行为", "露骨性行为过程"]),
     ("说话方式·反问", ["反问"]),
     ("内心独白格式", ["心想："]),
     ("隐藏设定不主动说", ["利莫里亚"]),
 ]
+# ⭐ 2026-10-03：原来是 `for need in needs: if need not in sp` —— 那是「全部都要在」，
+#    给一条锚点写多个等价写法反而变成新增要求（越加越报错）。改成「任一命中即通过」。
 for tag, needs in SP_ANCHORS:
-    for need in needs:
-        if need not in sp:
-            problems.append("[P1] system_prompt 缺口径锚点「%s」：`%s`" % (tag, need))
+    if not any(need in sp for need in needs):
+        problems.append("[P1] system_prompt 缺口径锚点「%s」：（任一即可）%s" % (tag, " / ".join(needs)))
 
 # system_prompt 不得把「叫本名」写成情绪信号
 # ⚠ 这些词在 system_prompt 里是**作为禁止项**出现的（「问『谁惹你了』是错的」），
