@@ -50,7 +50,7 @@ from Rafayel_config import (
 #    分层上它在 llm 之下（只依赖 config / daily / qzone_auto），这里调它不会成环。
 from Rafayel_dailyq import hint_for as dailyq_hint
 from Rafayel_event import fest_today as event_fest_today
-from Rafayel_memory import ConversationManager, load_memory, save_memory
+from Rafayel_memory import ConversationManager, load_memory, save_memory, _strip_outgoing_prefix
 from Rafayel_memory import summarize_call as _summarize_call_into
 # 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）
 #   ⭐ 只调 `spawn_update` —— 它**起后台线程**判情绪，一秒都不占她等待的时间。
@@ -670,6 +670,12 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
 
             # 5.6 回复形状保底：段内不拆行 + 段数封顶（她挑的口径；prompt 里也说了，这里是兜底）
             reply = _shape_reply(reply)
+
+            # 5.7 🎭 行首前缀兜底（2026-10-03）：他偶尔会照人设卡「回复格式」那节
+            #     写出「祁煜：」这种剧本前缀 ⇒ 显示上像复读（前端还会按换行切成多个气泡）。
+            #     ⚠ 必须在 add_assistant_message **之前** —— 写进记忆的要是最终文本，
+            #        否则下一轮历史里又带着前缀，等于自我强化。
+            reply = _strip_outgoing_prefix(reply)
 
             # 6. 添加助手消息到对话管理器（☎️ `wire=False` = 通话这一轮不进聊天窗）
             cm.add_assistant_message(reply, wire=wire)

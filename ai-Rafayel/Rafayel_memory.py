@@ -448,6 +448,30 @@ def _strip_script_prefix(text):
     out = re.sub(r"[ \t]{2,}", " ", out)          # 剥完留下的连续空白收一下
     return "\n".join(l.rstrip() for l in out.split("\n")).strip()
 
+# 🎭 行首前缀兜底剥离（2026-10-03 19:45 补）
+#    为什么 A（剥摘要）不够：人设卡的 system_prompt 里原本有一节「回复格式」，
+#    **明文规定**「角色行使用「祁煜：」」⇒ 那是模型每轮都在读的**规矩**，
+#    不是它偶尔学歪。摘要剥干净了，它照样照卡里的规矩写。
+#    ⇒ A 治「记忆里存着脏东西」，这一层治「规矩本身还在」——两道都要有。
+#    ⚠ 与 A 的区别别搞混：
+#      A（在 get_full_system_prompt 里）= 剥**送进 prompt 之前**的摘要文本
+#      这一层（在发送之前）        = 剥**模型吐出来之后**的成品
+#    ⚠⚠ 只删**行首**的 `祁煜：`/`用户：`，不动行中 —— 因为
+#      「10月2日星期五，祁煜答应了…」这种第三人称叙述是对的。
+#    ⚠ 不剥整行：前缀后面常有动作旁白（「（搁下画笔…）祁煜：」），
+#      整行删掉会把旁白一起丢。
+_OUT_LINE_PREFIX = re.compile(r"(?:^|(?<=[）)」」』]))(?:祁煜|用户)[ \t]*[：:][ \t]*")
+
+
+def _strip_outgoing_prefix(text):
+    """剥掉模型输出里**行首**的「祁煜：」「用户：」—— 发送前最后一道兜底。"""
+    if not text:
+        return text or ""
+    out = _OUT_LINE_PREFIX.sub("", str(text))
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return "\n".join(l.rstrip() for l in out.split("\n")).strip()
+
+
 class ConversationManager:
     """对话管理器：维护每个用户的对话状态、记忆和用户画像"""
 
