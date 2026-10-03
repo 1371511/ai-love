@@ -423,6 +423,31 @@ def recent_context(user_id, n=6):
 #  🗂 对话管理
 # ============================================================
 
+# 🎭 剧本格式剥离（2026-10-03，服务器测试用户「同样的话重复 4 遍」那次修的）
+#    症状：他的回复里带「祁煜：」自称，还带剧情旁白 ⇒ 前端按换行切成多个气泡
+#          ⇒ 她看到「同样的话重复 N 遍」（其实是一次多段回复被摊开）。
+#    为什么这里能治根：get_full_system_prompt() 里那三段（长期摘要 / 跨天小结 /
+#          关键事实）是**逐字进 system** 的，代码里一处都没剥前缀 ⇒ 摘要里
+#          只要存着一句带前缀的，他下一轮就当成格式范例继续照着写。
+#    ⚠⚠ 三条边界（写之前先想清楚，错了会误伤）：
+#      ① 只删前缀那几个字，不删后面的内容 —— 前面常有旁白
+#         「（雨声从窗缝漏进来…）祁煜：……」整行删掉会把旁白一起丢。
+#      ② 绝不碰 base_prompt（人设卡）—— 人设里出现「你是祁煜」是正常的。
+#         这个函数只给那三段动态文本用。
+#      ③ 只认「行首」或「紧跟在闭括号/空白后面」的 祁煜：/用户：，
+#         中段普通叙述（「他说祁煜：好」）一律不动 ⇒ 摘要里「祁煜答应了…」
+#         这种第三人称叙述必须留着，它是对的。
+_SCRIPT_PREFIX = re.compile(r"(?:^|(?<=[）)」」』\s]))(?:祁煜|用户)\s*[：:]\s*")
+
+
+def _strip_script_prefix(text):
+    """剥掉文本里「祁煜：」「用户：」这种剧本排版前缀 —— 只删前缀本身。"""
+    if not text:
+        return text or ""
+    out = _SCRIPT_PREFIX.sub("", str(text))
+    out = re.sub(r"[ \t]{2,}", " ", out)          # 剥完留下的连续空白收一下
+    return "\n".join(l.rstrip() for l in out.split("\n")).strip()
+
 class ConversationManager:
     """对话管理器：维护每个用户的对话状态、记忆和用户画像"""
 
@@ -496,18 +521,20 @@ class ConversationManager:
             full_prompt += "\n\n" + profile_text
 
         # 追加长期记忆摘要
-        full_prompt += f"\n\n## 📖 长期记忆摘要（请记住这些重要内容）\n{self.long_term_summary}"
+        full_prompt += (f"\n\n## 📖 长期记忆摘要（请记住这些重要内容）\n"
+                        f"{_strip_script_prefix(self.long_term_summary)}")
 
         # 🗓 跨天小结（2026-09-24）：让他知道哪件事是哪天的，别把昨天当成今天。
         #    位置紧跟长期摘要 —— 两者都是「记忆」，挨着才读得顺。
         #    ⚠ 这节一天只变一次（跨天那轮），不会每轮破坏前缀缓存。
         _days = self._render_days()
         if _days:
-            full_prompt += "\n\n" + _days
+            full_prompt += "\n\n" + _strip_script_prefix(_days)
 
         # 追加关键事实
         if self.key_facts:
-            facts_text = "\n".join([f"- {f}" for f in self.key_facts[-MAX_FACTS:]])
+            facts_text = "\n".join(
+                [f"- {_strip_script_prefix(f)}" for f in self.key_facts[-MAX_FACTS:]])
             full_prompt += f"\n\n## 📌 关键事实（用户让你记住的事）\n{facts_text}"
 
         # 🕐 「现在几点 + 隔了多久」**不在这里**了 —— 见下面 `now_hint_text()` 的注释。
