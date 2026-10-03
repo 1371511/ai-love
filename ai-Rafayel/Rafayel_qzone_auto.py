@@ -653,13 +653,27 @@ def render_text(entry, user_id):
 # ============================================================
 
 def load_reminds():
+    """
+    ⚠⚠ 只收 `## 提醒` 小节里的 `- ` 行（2026-10-04 修的真 bug）：
+      文件头「## 记号」那些用法说明**也是 `- ` 开头的**，全文件扫的话
+      会把「`她的名字` = 占位符，发送时换成…」这种**元信息当成提醒语发出去**
+      —— 他会一本正经地给她发一条 Markdown 注释。
+      ⇒ 判据：`.workbuddy/_check_reminds.py` 第 1 项（必须正好 6 条）。
+    """
     lines = []
+    in_sec = False
     try:
         with open(REMINDS_MD, "r", encoding="utf-8") as f:
             for raw in f:
                 s = raw.strip()
-                if s.startswith("- "):
-                    lines.append(s[2:].strip())
+                if s.startswith("## "):
+                    in_sec = s.startswith("## 提醒")      # 只认「## 提醒」这一节
+                    continue
+                if in_sec and s.startswith("- "):
+                    # ⭐ 一行里可以写 `\n`（字面两个字符）⇒ 发的时候换行，
+                    #   前端/QQ 会切成两条气泡（2026-10-04 她写的那批是「轻描淡写 + 钩子」两三段，
+                    #   挤成一句长句就不是那个味道了）。
+                    lines.append(s[2:].strip().replace("\\n", "\n"))
     except Exception as e:
         print("⚠️ 朋友圈提醒语料读取失败（用兜底句）：%s" % e)
     return lines

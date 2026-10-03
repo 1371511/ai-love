@@ -35,6 +35,7 @@ from Rafayel import (
 from Rafayel_affinity import tone_for
 from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
+    ADVANCE_ENABLE, ADVANCE_HINT,
     AFFINITY_TONE, API_URL, CALL_SUMMARY, DAILY_QA, LLM_EXTRA, MAX_TOKENS, CALL_WORLDBOOK_ENABLE,
     MEMORY_DIR, MODEL, MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE,
     REPLY_SPLIT_FALLBACK, REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE,
@@ -237,25 +238,70 @@ def is_repeat_of_recent(reply, recent_assistant):
             return True, old                       # 中等相似 + 共同骨架 ⇒ 也判
     return False, None
 
-# 🔁 复读闸拦下之后发出去的追问池（2026-10-03 23:25 改）。
+# 🔁 复读闸拦下之后发出去的追问池（2026-10-03 23:25 建 / 2026-10-04 重写）。
 #    ⚠ 上游并发 = 1，拦下后**不能**立刻重发（会挤掉她下一条的槽位）。
 #    所以从池里随机挑一句追问发出去，同时让它**落盘**——
 #    这样下一轮历史变了，模型知道自己刚才没再说那句复读体。
 #    ⚠ 池子必须满足：① 都是他该说的话，不带"系统痕迹"；
 #       ② 不能全写动作旁白（别给复读喂骨架素材）；
 #       ③ 互相不同，避免固定一句也变成新的复读 B。
+#
+# ⚠⭐ 2026-10-04 重写（两轮，都是她定的）：
+#   ① 第一轮（她截图指出来的两个坑）：旧池 6 句里有 4 句是「刚才那句不算」
+#      「我换一句」「这话我收回」「重来一次」—— 他在**汇报自己要改口**，不是演戏。
+#      ⚠ 那几句跟 `ADVANCE_HINT` 第③条**直接打架**（那条明令不许说「我换一句」）
+#        ⇒ 池子不改，闸一开就立刻违反刚写好的规则。
+#   ② 第二轮（**她亲手写的 4 组 14 句**，2026-10-04 02:3x）：
+#      旧池是我（布丁）拟定的，没有原作背书；这一版是**她写的**，以她为准。
+#      ⭐ 全部改成「**他走神了 / 忘词了**」这一个情境 —— 比「追问她」贴得多：
+#         复读闸拦下的本来就是「他又在原地转」，拿「发呆被抓包」去接，剧情是顺的。
+#
+# ⭐⭐ 结构：**按组，不按句**。
+#   她写的时候就是一组一组写的（三、四组内部有顺序：「你刚刚叫我几次？」
+#   →「……三次？」→「嗯，记住了。」→「下次你可以靠近一点再叫……」），
+#   打散成单句随机抽会把这个顺序搅乱 ⇒ 一组**整组发出**，组内顺序固定。
+#   ⚠ 回报形式：一组 = 一条消息，行与行之间 `\n` ⇒ 前端 `_segs()` 切成多条气泡，
+#      QQ 侧 `_split_bubble` 再按字数细切 —— 跟正常回复同一条路，不用特殊照顾。
+#
+# ⚠ 她的原句一个字没改（包括没有括号动作这点）：要加「（抬眼）」这类动作前缀
+#   得她点头，我不往她的语料里塞字。
 _REPEAT_FALLBACKS = (
-    "（顿了一下，看她）……你刚才想说什么？",
-    "（抬眼）……刚才那句不算，重新来。",
-    "（停住）……我换一句。",
-    "（轻轻叹气）……你别光看着我，说点什么？",
-    "（偏过头）……这话我收回。",
-    "（低声）……重来一次，你听着。",
+    # 一、装作自己根本没忘，只是故意停顿
+    ("……嗯？",
+     "我刚才说到哪了？",
+     "你看，你一盯着我，我连思路都被你拿走了。"),
+    # 二、承认忘了，但马上把尴尬变成玩笑
+    ("忘了。",
+     "怎么，你很期待我刚才那句？",
+     "那你再问一次，我这次认真一点。"),
+    # 三、发呆其实是因为你，干脆拿这个找补
+    ("刚才没听见。",
+     "在想事情。",
+     "本来想的是画，后来不知道怎么就想到你了。",
+     "然后……就忘了刚才在说什么。"),
+    # 四、发呆得久、被抓包 ⇒ 反过来观察她
+    ("你刚刚叫我几次？",
+     "……三次？",
+     "嗯，记住了。",
+     "下次你可以靠近一点再叫，我比较容易回神。"),
 )
+
+# ⚠ 只记「上一组发了哪组」，用于不连续重复；不落盘（重启归零无所谓）。
+_LAST_FALLBACK = {"group": None}
 
 
 def _pick_fallback():
-    return random.choice(_REPEAT_FALLBACKS)
+    """
+    挑**一组**发呆台词（不是一句），组内顺序原样保留。
+
+    ⚠ 为什么不能只写 `random.choice`：有放回 ⇒ 4 组里连中同一组的概率 1/4，
+       一轮两三次就撞上；她看到的是「他连说两遍一模一样的话」。
+    ⚠ 返回的是**带 `\\n` 的整组文本**，调用方原样发给前端即可（不用自己拼）。
+    """
+    pool = [g for g in _REPEAT_FALLBACKS if g is not _LAST_FALLBACK.get("group")]
+    group = random.choice(pool) if pool else _REPEAT_FALLBACKS[0]
+    _LAST_FALLBACK["group"] = group
+    return "\n".join(group)
 
 
 def _build_worldbook(cm, user_message, scan=None):
@@ -655,6 +701,13 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
     _sticker = sticker_instructions()
     if _sticker:
         request_messages.append({"role": "system", "content": _sticker})
+
+    # 4c-3. 🎬 每轮推进 + 防复读（2026-10-04 她指出的两个症状）
+    #    ⚠ 放在这里而不是 4d/4e 之后：这段**每轮一模一样**，排在动态块前面
+    #       ⇒ 不打断 DeepSeek 的前缀缓存（时间感 / 情绪每轮都在变，放最后）。
+    #    ⚠ 与世界书同一个口径：只进 request_messages，绝不写回 cm.messages。
+    if ADVANCE_ENABLE:
+        request_messages.append({"role": "system", "content": ADVANCE_HINT})
 
     # 4d. 🕐 时间感（2026-09-20 从 system 末尾挪到这里，见 `now_hint_text` 的注释）。
     #     ⭐ 为了**钱**：这段每轮都变，留在 system 里会把 DeepSeek 的前缀缓存拦腰截断，
