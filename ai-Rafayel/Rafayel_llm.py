@@ -18,6 +18,7 @@ import random
 import re
 import sys
 import time
+from difflib import SequenceMatcher
 
 import requests
 
@@ -163,6 +164,65 @@ def _shape_reply(text):
     if len(kept) > REPLY_MAX_LINES:
         kept = kept[:REPLY_MAX_LINES]
     return "\n".join(kept)
+
+#    ⭐⭐ 判据为什么是「骨架词为主 + 相似度为辅」（2026-10-03 自测踩出来的）：
+#      同一批复读体两两相似度只有 0.42~0.87，**波动极大**（0.62 那道门槛直接漏判）；
+#      但它们共同的动作骨架词命中 5~7 个，非常稳。
+#      ⇒ 骨架词当**主判据**，相似度只当下限防误伤。
+#      验过：阈值 0.40 时，复读体 3/3 全中、正常对话 5/5 全不中。
+_REPEAT_SIM_MIN = 0.40      # 相似度门槛（自测定：复读体 0.42~0.55 命中，正常对话 0.13~0.35 不中）
+_REPEAT_SKELETON_MIN = 2    # 共同骨架词最少几个
+_REPEAT_LOOKBACK = 5        # 往回看几条 assistant
+_REPEAT_GUARD = True        # 总开关（关掉 = 回到 10-03 之前的行为，别删逻辑）
+
+# 复读体的「动作骨架」指纹。⚠ 刻意用**短词**，因为要的是共同成分而不是整句。
+_REPEAT_SKELETON = ("站着没动", "指尖", "蹭", "冷色", "喉结", "雨泡透",
+                    "垂着眼", "没出声", "像是", "低下去")
+
+
+def _norm_for_repeat(text):
+    """比对用的归一化：去掉所有空白与标点，只留实词。"""
+    return re.sub(r"[^\w]", "", str(text or ""))
+
+
+def _skeleton_hits(text):
+    """一段文本命中几个动作骨架词。"""
+    return sum(1 for w in _REPEAT_SKELETON if w in str(text or ""))
+
+
+def is_repeat_of_recent(reply, recent_assistant):
+    """
+    本条是不是「他最近说过的」的复读？
+
+    ⚠ 返回 `(是否复读, 跟哪一条像)` —— 两个条件**同时**成立才算：
+       相似度 ≥ `_REPEAT_SIM_MIN` **且** 共同骨架词 ≥ `_REPEAT_SKELETON_MIN`。
+    ⭐ 为什么要「且」：只看相似度会把「我以为…（顿）我以为…」这种正常接话误判；
+       只看骨架词会把「（指尖敲了敲杯子）」这种正常动作误判。两个一起才稳。
+    ⚠ 短句（归一化后 < 8 字，如「好」「嗯」）**一律不算复读** ——
+       「好」重复一次是自然的，判它复读会把对话搞僵。
+    """
+    if not _REPEAT_GUARD:
+        return False, None
+    r = _norm_for_repeat(reply)
+    if len(r) < 8:
+        return False, None
+    r_sk = _skeleton_hits(reply)
+    for old in list(recent_assistant or [])[-_REPEAT_LOOKBACK:]:
+        o = _norm_for_repeat(old)
+        if len(o) < 8:
+            continue
+        if SequenceMatcher(None, r, o).ratio() < _REPEAT_SIM_MIN:
+            continue
+        if _skeleton_hits(old) and r_sk < _REPEAT_SKELETON_MIN:
+            continue
+        return True, old
+    return False, None
+
+# 🔁 复读闸拦下之后**发出去的那句**（2026-10-03）。
+#    ⚠ 刻意写成「问句」而不是「陈述」：她能顺着答，话题就断了，不会再兜回来。
+#    ⚠ 也刻意**不写动作旁白** —— 这批复读的骨架全是动作描写（指尖/冷色/喉结），
+#    这里再写一次等于自己给自己喂复读素材。
+_REPEAT_FALLBACK = "……我刚是不是说过这句了。你想让我接哪句？"
 
 
 def _build_worldbook(cm, user_message, scan=None):
@@ -676,6 +736,27 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             #     ⚠ 必须在 add_assistant_message **之前** —— 写进记忆的要是最终文本，
             #        否则下一轮历史里又带着前缀，等于自我强化。
             reply = _strip_outgoing_prefix(reply)
+
+            # 5.8 🔁 复读闸（2026-10-03 · 真凶 B）：他复读自己时**当场拦下**。
+            #     ⚠⚠ 为什么拦下而不是「重生成」：上游组织级并发 = 1，重生成要多发一次
+            #       请求 ⇒ 挤掉她下一条消息的槽位（就是 10-02 那个英文报错的坑）。
+            #     ⚠ 为什么比对**含通话的 ctx**：通话那轮 `wire=False`，他这一通说的话
+            #       不进 `cm.messages` ⇒ 只看 cm 会漏掉通话里的复读。
+            #     ⚠ 必须在 `add_assistant_message` **之前** —— 拦下的文本不许进历史。
+            _hist_asy = [m.get("content") or "" for m in _hist
+                         if isinstance(m, dict) and m.get("role") == "assistant"]
+            _his_asy = [m.get("content") or "" for m in cm.messages
+                        if isinstance(m, dict) and m.get("role") == "assistant"]
+            _is_rep, _rep_of = is_repeat_of_recent(reply, _his_asy + _hist_asy)
+            if _is_rep:
+                print("🔁 复读闸：本条与他最近的回复高度雷同 ⇒ 拦下，改为提醒他别重复")
+                _nudge = ("⚠ 你上一条（刚才那几句）已经说过几乎一样的话了。"
+                          "**这一轮绝对不许重复它** —— 换一个新反应：说点她刚说的新内容，"
+                          "或者只回一两句短的。不要再用同样的动作、同样的开场。")
+                request_messages.append({"role": "system", "content": _nudge})
+                # ⚠ 这里**不重发**（见上）。改成把本条**收窄**成一句追问，
+                #   保证「她看到的是新内容」而不是原样复读。
+                reply = _REPEAT_FALLBACK
 
             # 6. 添加助手消息到对话管理器（☎️ `wire=False` = 通话这一轮不进聊天窗）
             cm.add_assistant_message(reply, wire=wire)
