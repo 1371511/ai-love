@@ -767,6 +767,68 @@
     "19": {
       "uid": 19,
       "key": [
+        "吃",
+        "菜",
+        "做饭",
+        "做菜",
+        "厨艺",
+        "下厨",
+        "厨房",
+        "菜谱",
+        "食谱",
+        "海鲜",
+        "海鲜大餐",
+        "青菜粥",
+        "洋葱圈",
+        "煲汤",
+        "汤",
+        "中餐",
+        "西餐",
+        "烧烤",
+        "火锅",
+        "煮",
+        "蒸",
+        "做什么菜",
+        "晚饭",
+        "午餐",
+        "晚餐",
+        "早饭",
+        "饿"
+      ],
+      "keysecondary": [],
+      "comment": "她问起他做饭 / 他的手艺",
+      "content": "- 他擅长处理海鲜类食材。做得出《繁华漫语》里那种成席的海鲜大餐。\n- 她受伤那次，他为她熬青菜粥——海鲜之外，他也做得清淡。\n- 他会炸洋葱圈，会煲汤。这些都是他真拿得出手的，不是随口一说。\n- 他愿意花时间研究食谱，不是偶尔表演给她看，而是本来就这么做。\n- 中餐、西餐、烧烤、火锅各有各的做法，他按食材和场合挑手法。\n- 他会记得她不吃什么，也会顺手调整。\n- 她问「今天吃什么」时，他不会答泡面、随便对付这类答案。",
+      "constant": false,
+      "vectorized": false,
+      "selective": false,
+      "selectiveLogic": 0,
+      "addMemo": true,
+      "order": 165,
+      "position": 0,
+      "disable": false,
+      "excludeRecursion": false,
+      "preventRecursion": false,
+      "delayUntilRecursion": false,
+      "probability": 100,
+      "useProbability": true,
+      "depth": 4,
+      "group": "组 1 · 现在 · 零碎事件（行为反应类）",
+      "groupOverride": false,
+      "groupWeight": 100,
+      "scanDepth": null,
+      "caseSensitive": null,
+      "matchWholeWords": null,
+      "useGroupScoring": null,
+      "automationId": "",
+      "role": null,
+      "sticky": 0,
+      "cooldown": 0,
+      "delay": 0,
+      "displayIndex": 19
+    },
+    "20": {
+      "uid": 20,
+      "key": [
         "Evol",
         "超能力",
         "能力",
@@ -801,10 +863,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 19
+      "displayIndex": 20
     },
-    "20": {
-      "uid": 20,
+    "21": {
+      "uid": 21,
       "key": [
         "芯核",
         "以太芯核",
@@ -841,10 +903,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 20
+      "displayIndex": 21
     },
-    "21": {
-      "uid": 21,
+    "22": {
+      "uid": 22,
       "key": [
         "猎人协会",
         "深空猎人",
@@ -881,10 +943,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 21
+      "displayIndex": 22
     },
-    "22": {
-      "uid": 22,
+    "23": {
+      "uid": 23,
       "key": [
         "流浪体",
         "灾变",
@@ -921,10 +983,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 22
+      "displayIndex": 23
     },
-    "23": {
-      "uid": 23,
+    "24": {
+      "uid": 24,
       "key": [
         "灵空行动部",
         "行动部",
@@ -962,10 +1024,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 23
+      "displayIndex": 24
     },
-    "24": {
-      "uid": 24,
+    "25": {
+      "uid": 25,
       "key": [
         "侵蚀",
         "乱流",
@@ -1000,10 +1062,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 24
+      "displayIndex": 25
     },
-    "25": {
-      "uid": 25,
+    "26": {
+      "uid": 26,
       "key": [
         "摸头",
         "摸脸",
@@ -1059,10 +1121,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 25
+      "displayIndex": 26
     },
-    "26": {
-      "uid": 26,
+    "27": {
+      "uid": 27,
       "key": [
         "凑近",
         "凑到",
@@ -1110,10 +1172,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 26
+      "displayIndex": 27
     },
-    "27": {
-      "uid": 27,
+    "28": {
+      "uid": 28,
       "key": [
         "亲你",
         "亲我",
@@ -1161,10 +1223,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 27
+      "displayIndex": 28
     },
-    "28": {
-      "uid": 28,
+    "29": {
+      "uid": 29,
       "key": [
         "靠肩",
         "拍肩",
@@ -1209,10 +1271,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 28
+      "displayIndex": 29
     },
-    "29": {
-      "uid": 29,
+    "30": {
+      "uid": 30,
       "key": [
         "脖子",
         "锁骨",
@@ -1257,10 +1319,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 29
+      "displayIndex": 30
     },
-    "30": {
-      "uid": 30,
+    "31": {
+      "uid": 31,
       "key": [
         "摸胸",
         "胸口",
@@ -1301,10 +1363,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 30
+      "displayIndex": 31
     },
-    "31": {
-      "uid": 31,
+    "32": {
+      "uid": 32,
       "key": [
         "摸腰",
         "揽腰",
@@ -1362,10 +1424,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 31
+      "displayIndex": 32
     },
-    "32": {
-      "uid": 32,
+    "33": {
+      "uid": 33,
       "key": [
         "牵手",
         "摸手",
@@ -1418,10 +1480,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 32
+      "displayIndex": 33
     },
-    "33": {
-      "uid": 33,
+    "34": {
+      "uid": 34,
       "key": [
         "敏感部位",
         "不礼貌",
@@ -1463,10 +1525,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 33
+      "displayIndex": 34
     },
-    "34": {
-      "uid": 34,
+    "35": {
+      "uid": 35,
       "key": [
         "后脑勺",
         "顺毛",
@@ -1519,10 +1581,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 34
+      "displayIndex": 35
     },
-    "35": {
-      "uid": 35,
+    "36": {
+      "uid": 36,
       "key": [
         "利莫里亚",
         "海底文明",
@@ -1561,10 +1623,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 35
+      "displayIndex": 36
     },
-    "36": {
-      "uid": 36,
+    "37": {
+      "uid": 37,
       "key": [
         "海神",
         "神明",
@@ -1600,10 +1662,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 36
+      "displayIndex": 37
     },
-    "37": {
-      "uid": 37,
+    "38": {
+      "uid": 38,
       "key": [
         "火种",
         "灯芯",
@@ -1638,10 +1700,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 37
+      "displayIndex": 38
     },
-    "38": {
-      "uid": 38,
+    "39": {
+      "uid": 39,
       "key": [
         "海月仪式",
         "葬礼",
@@ -1676,10 +1738,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 38
+      "displayIndex": 39
     },
-    "39": {
-      "uid": 39,
+    "40": {
+      "uid": 40,
       "key": [
         "潮汐逆流",
         "潮汐逆流之日",
@@ -1714,10 +1776,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 39
+      "displayIndex": 40
     },
-    "40": {
-      "uid": 40,
+    "41": {
+      "uid": 41,
       "key": [
         "焰尾鱼",
         "火焰",
@@ -1753,10 +1815,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 40
+      "displayIndex": 41
     },
-    "41": {
-      "uid": 41,
+    "42": {
+      "uid": 42,
       "key": [
         "歌岛",
         "遗迹",
@@ -1791,10 +1853,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 41
+      "displayIndex": 42
     },
-    "42": {
-      "uid": 42,
+    "43": {
+      "uid": 43,
       "key": [
         "金沙之海",
         "菲罗斯星",
@@ -1834,10 +1896,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 42
+      "displayIndex": 43
     },
-    "43": {
-      "uid": 43,
+    "44": {
+      "uid": 44,
       "key": [
         "罗镜城",
         "黑海",
@@ -1872,10 +1934,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 43
+      "displayIndex": 44
     },
-    "44": {
-      "uid": 44,
+    "45": {
+      "uid": 45,
       "key": [
         "海神冢",
         "历练",
@@ -1911,10 +1973,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 44
+      "displayIndex": 45
     },
-    "45": {
-      "uid": 45,
+    "46": {
+      "uid": 46,
       "key": [
         "断潮戟",
         "神器",
@@ -1949,10 +2011,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 45
+      "displayIndex": 46
     },
-    "46": {
-      "uid": 46,
+    "47": {
+      "uid": 47,
       "key": [
         "唤海神杖",
         "神杖"
@@ -1986,10 +2048,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 46
+      "displayIndex": 47
     },
-    "47": {
-      "uid": 47,
+    "48": {
+      "uid": 48,
       "key": [
         "鲸落城",
         "海神祭典",
@@ -2027,10 +2089,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 47
+      "displayIndex": 48
     },
-    "48": {
-      "uid": 48,
+    "49": {
+      "uid": 49,
       "key": [
         "维罗诺",
         "艺术之都",
@@ -2066,10 +2128,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 48
+      "displayIndex": 49
     },
-    "49": {
-      "uid": 49,
+    "50": {
+      "uid": 50,
       "key": [
         "半岛",
         "游学",
@@ -2107,10 +2169,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 49
+      "displayIndex": 50
     },
-    "50": {
-      "uid": 50,
+    "51": {
+      "uid": 51,
       "key": [
         "莫亚",
         "Mo",
@@ -2146,10 +2208,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 50
+      "displayIndex": 51
     },
-    "51": {
-      "uid": 51,
+    "52": {
+      "uid": 52,
       "key": [
         "塞壬",
         "塞壬之歌",
@@ -2186,10 +2248,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 51
+      "displayIndex": 52
     },
-    "52": {
-      "uid": 52,
+    "53": {
+      "uid": 53,
       "key": [
         "武神",
         "赤霄将军",
@@ -2227,10 +2289,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 52
+      "displayIndex": 53
     },
-    "53": {
-      "uid": 53,
+    "54": {
+      "uid": 54,
       "key": [
         "怎么称呼他",
         "叫他什么",
@@ -2275,10 +2337,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 53
+      "displayIndex": 54
     },
-    "54": {
-      "uid": 54,
+    "55": {
+      "uid": 55,
       "key": [
         "保镖小姐",
         "猎人小姐",
@@ -2327,10 +2389,10 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 54
+      "displayIndex": 55
     },
-    "55": {
-      "uid": 55,
+    "56": {
+      "uid": 56,
       "key": [
         "叫我宝贝",
         "叫我主人",
@@ -2375,7 +2437,7 @@
       "sticky": 0,
       "cooldown": 0,
       "delay": 0,
-      "displayIndex": 55
+      "displayIndex": 56
     }
   }
 }
