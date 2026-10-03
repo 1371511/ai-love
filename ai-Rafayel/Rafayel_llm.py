@@ -174,8 +174,13 @@ def _shape_reply(text):
 #    （3 次触发里 2 次是「亚亚。」「我现在……状态不对」这种明显不是复读的话）。
 #    取舍很明确：**误伤比漏判更糟** —— 漏了他还是复读（她看得见），
 #    误伤了是他在好好说话却突然蹦一句怪话（她会觉得这人有毛病）。
-_REPEAT_SIM_MIN = 0.50      # 0.40 误伤正常对话（22:45 实测 3 触发 2 误伤）；复读体相似度中位数约 0.5
-_REPEAT_SKELETON_MIN = 2    # 共同骨架词最少几个
+_REPEAT_SIM_MIN = 0.50      # 中档门槛：0.40 误伤正常对话（22:45 实测 3 触发 2 误伤）
+# ⭐ 高档门槛（2026-10-03 23:00 新增）：到这个相似度就**直接判复读，不再看骨架词**。
+#    为什么需要它：22:53 那批复读体相似度 0.58~0.83，但因为骨架词表覆盖不到
+#    （「指腹」「画室」不在表里）而被上一版的反向逻辑放行。
+#    ⇒ 相似度够高时，骨架词**不该有能力否决**。
+_REPEAT_SIM_HIGH = 0.72     # 实测复读体 0.77~0.83 / 正常对话 0.13~0.35 ⇒ 0.72 是安全的中线
+_REPEAT_SKELETON_MIN = 2    # 共同骨架词最少几个（只在中档 0.50~0.72 才用得上）
 _REPEAT_LOOKBACK = 5        # 往回看几条 assistant
 _REPEAT_GUARD = True        # 总开关（关掉 = 回到 10-03 之前的行为，别删逻辑）
 
@@ -198,12 +203,22 @@ def is_repeat_of_recent(reply, recent_assistant):
     """
     本条是不是「他最近说过的」的复读？
 
-    ⚠ 返回 `(是否复读, 跟哪一条像)` —— 两个条件**同时**成立才算：
-       相似度 ≥ `_REPEAT_SIM_MIN` **且** 共同骨架词 ≥ `_REPEAT_SKELETON_MIN`。
-    ⭐ 为什么要「且」：只看相似度会把「我以为…（顿）我以为…」这种正常接话误判；
-       只看骨架词会把「（指尖敲了敲杯子）」这种正常动作误判。两个一起才稳。
+    返回 `(是否复读, 跟哪一条像)`。**三档判据**（2026-10-03 23:00 改过，见下面那段注释）：
+
+      | 相似度 | 骨架词 | 结论 |
+      |---|---|---|
+      | ≥ `_REPEAT_SIM_HIGH` | 不看 | 判复读（几乎照抄） |
+      | ≥ `_REPEAT_SIM_MIN`  | ≥ `_REPEAT_SKELETON_MIN` | 判复读（中等相似 + 共同骨架） |
+      | < `_REPEAT_SIM_MIN`  | 不看 | 不判 |
+
+    ⚠⚠ **上一版是逻辑反向的 bug**，害它放行了整批复读：
+       原来写 `if _skeleton_hits(old) and r_sk < MIN: continue`
+       ⇒ 「old **没有**命中骨架词」时整条检查被**短路跳过** ⇒ **相似度再高也放行**。
+       实测 22:53 那批「（指腹在膝上停了很久，没动。画室安静得能听见自己的呼吸）……」
+       两两相似度高达 0.83 / 0.77，却因为「指腹 / 画室」不在那 10 个骨架词里被放过。
+       ⇒ 骨架词只能当**加分项**，永远不能当**前置门槛**。
     ⚠ 短句（归一化后 < 8 字，如「好」「嗯」）**一律不算复读** ——
-       「好」重复一次是自然的，判它复读会把对话搞僵。
+      「好」重复一次是自然的，判它复读会把对话搞僵。
     """
     if not _REPEAT_GUARD:
         return False, None
@@ -215,21 +230,32 @@ def is_repeat_of_recent(reply, recent_assistant):
         o = _norm_for_repeat(old)
         if len(o) < 8:
             continue
-        if SequenceMatcher(None, r, o).ratio() < _REPEAT_SIM_MIN:
-            continue
-        if _skeleton_hits(old) and r_sk < _REPEAT_SKELETON_MIN:
-            continue
-        return True, old
+        sim = SequenceMatcher(None, r, o).ratio()
+        if sim >= _REPEAT_SIM_HIGH:
+            return True, old                       # 几乎照抄 ⇒ 直接判
+        if sim >= _REPEAT_SIM_MIN and r_sk >= _REPEAT_SKELETON_MIN:
+            return True, old                       # 中等相似 + 共同骨架 ⇒ 也判
     return False, None
 
-# 🔁 复读闸拦下之后**发出去的那句**（2026-10-03 22:45 改过一版）。
-#    ⚠⚠ 第一版写的是「……我刚是不是说过这句了。你想让我接哪句？」——
-#    **错在两点**：① 那是系统在自述，不是角色该说的话，一眼出戏；
-#    ② 它落盘后模型会学它 ⇒ 自己变成新的复读源（22:45 实测真发生了两次）。
-#    ⇒ 改成一句**他会说的**、不带任何"系统痕迹"的话。
-#    ⚠ 刻意不写动作旁白：这批复读的骨架全是动作描写（指尖/冷色/喉结），
-#    这里再写一次等于自己喂复读素材。短句 + 问句，她能顺着接话。
-_REPEAT_FALLBACK = "（顿了一下，看她）……你刚才想说什么？"
+# 🔁 复读闸拦下之后发出去的追问池（2026-10-03 23:25 改）。
+#    ⚠ 上游并发 = 1，拦下后**不能**立刻重发（会挤掉她下一条的槽位）。
+#    所以从池里随机挑一句追问发出去，同时让它**落盘**——
+#    这样下一轮历史变了，模型知道自己刚才没再说那句复读体。
+#    ⚠ 池子必须满足：① 都是他该说的话，不带"系统痕迹"；
+#       ② 不能全写动作旁白（别给复读喂骨架素材）；
+#       ③ 互相不同，避免固定一句也变成新的复读 B。
+_REPEAT_FALLBACKS = (
+    "（顿了一下，看她）……你刚才想说什么？",
+    "（抬眼）……刚才那句不算，重新来。",
+    "（停住）……我换一句。",
+    "（轻轻叹气）……你别光看着我，说点什么？",
+    "（偏过头）……这话我收回。",
+    "（低声）……重来一次，你听着。",
+)
+
+
+def _pick_fallback():
+    return random.choice(_REPEAT_FALLBACKS)
 
 
 def _build_worldbook(cm, user_message, scan=None):
@@ -744,36 +770,26 @@ def get_reply(user_message: str, user_id: str, api_key_override: str = None,
             #        否则下一轮历史里又带着前缀，等于自我强化。
             reply = _strip_outgoing_prefix(reply)
 
-            # 5.8 🔁 复读闸（2026-10-03 · 真凶 B）：他复读自己时**当场拦下**。
+            # 5.8 🔁 复读闸（2026-10-03 · 真凶 B）：他复读自己时当场拦下。
             #     ⚠⚠ 为什么拦下而不是「重生成」：上游组织级并发 = 1，重生成要多发一次
             #       请求 ⇒ 挤掉她下一条消息的槽位（就是 10-02 那个英文报错的坑）。
-            #     ⚠ 为什么比对**含通话的 ctx**：通话那轮 `wire=False`，他这一通说的话
-            #       不进 `cm.messages` ⇒ 只看 cm 会漏掉通话里的复读。
-            #     ⚠ 必须在 `add_assistant_message` **之前** —— 拦下的文本不许进历史。
+            #     ⚠ 为什么比对含通话的 ctx：通话那轮 wire=False，他这一通说的话
+            #       不进 cm.messages ⇒ 只看 cm 会漏掉通话里的复读。
+            #     ⚠ 必须在 add_assistant_message 之前 —— 但拦下后的 fallback 要进历史，
+            #       这样下一轮 prompt 才不会跟本轮一模一样，避免死循环。
             _hist_asy = [m.get("content") or "" for m in _hist
                          if isinstance(m, dict) and m.get("role") == "assistant"]
             _his_asy = [m.get("content") or "" for m in cm.messages
                         if isinstance(m, dict) and m.get("role") == "assistant"]
             _is_rep, _rep_of = is_repeat_of_recent(reply, _his_asy + _hist_asy)
             if _is_rep:
-                print("🔁 复读闸：本条与他最近的回复高度雷同 ⇒ 拦下，改为提醒他别重复")
-                _nudge = ("⚠ 你上一条（刚才那几句）已经说过几乎一样的话了。"
-                          "**这一轮绝对不许重复它** —— 换一个新反应：说点她刚说的新内容，"
-                          "或者只回一两句短的。不要再用同样的动作、同样的开场。")
-                request_messages.append({"role": "system", "content": _nudge})
-                # ⚠ 这里**不重发**（见上）。改成把本条**收窄**成一句追问，
-                #   保证「她看到的是新内容」而不是原样复读。
-                reply = _REPEAT_FALLBACK
+                print("🔁 复读闸：本条与他最近的回复高度雷同 ⇒ 拦下，改为追问")
+                reply = _pick_fallback()
 
-            # 6. 添加助手消息到对话管理器（☎️ `wire=False` = 通话这一轮不进聊天窗）
-            # ⚠⚠ 复读闸的 fallback **只显示、不进历史**（2026-10-03 22:45 补）。
-            #    上一版无条件 add ⇒ 那句「我刚是不是说过这句了」落盘了，
-            #    模型下一轮读到它会**学它** ⇒ 自己变成新的复读源
-            #    （跟「模型复读旧内容」是同一条自我强化，只是复读体换成了我们的话）。
-            if _is_rep:
-                print("   ↳（这句不入历史，避免它被模型学走）")
-            else:
-                cm.add_assistant_message(reply, wire=wire)
+            # 6. 添加助手消息到对话管理器（☎️ wire=False = 通话这一轮不进聊天窗）
+            # ⚠ 拦下后的 fallback 也落盘：上一轮如果是复读，下一轮必须看到一句不同的话，
+            #    否则历史不变，模型还会继续复读。
+            cm.add_assistant_message(reply, wire=wire)
 
             # 5.7 💬 日常问答去重：**这一条真的说出去了**才记成「说过了」。
             #    放在 finally 之前、return 之前 ⇒ 接口报错 / 超时都走到不到这里，
