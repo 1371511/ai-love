@@ -460,7 +460,7 @@ def _strip_script_prefix(text):
 #      「10月2日星期五，祁煜答应了…」这种第三人称叙述是对的。
 #    ⚠ 不剥整行：前缀后面常有动作旁白（「（搁下画笔…）祁煜：」），
 #      整行删掉会把旁白一起丢。
-_OUT_LINE_PREFIX = re.compile(r"(?:^|(?<=[）)」」』]))(?:祁煜|用户)[ \t]*[：:][ \t]*")
+_OUT_LINE_PREFIX = re.compile(r"(?:^|(?<=[）)」」』]))(?:祁煜|用户)[ \t]*[：:][ \t]*", re.M)
 
 
 def _strip_outgoing_prefix(text):
