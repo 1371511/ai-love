@@ -23,6 +23,7 @@
    / chat(对话窗口)。
 """
 
+import contextlib
 import datetime
 import hashlib
 import hmac
@@ -152,6 +153,257 @@ def _save_users(users):
     os.replace(tmp, USERS_PATH)
 
 
+# ============================================================
+#  🔐 账号事务 · 管理员 · 审计 · 密码重置（2026-10-04 · 管理员后台那一批）
+# ============================================================
+# ⚠ 为什么需要一把锁：`users.json` 是**读-改-写**（读整份 → 改一条 → 写整份）。
+#   两个写者同时进来，后写的把先写的**整份盖掉** ⇒ 静默丢更新。
+#   写者有俩：web 进程 与 `tools/reset_password.py`（CLI，常常在服务开着时跑）。
+#   ⚠⚠ **只锁「写」是没用的** —— 丢更新正好发生在「读」和「写」之间，
+#      必须把「读 → 改 → 写」**整段**包住（见 `_users_txn` 的用法示例）。
+#   ⚠ 单进程内其实不会交错（这些函数里没有 await），这把锁主要是**跨进程**那一半。
+#   ⚠ 规划里的 Step 3 会把这张表搬进 SQLite —— 到那时 `_users_txn()` 就是那把现成的缝，
+#      外面一行都不用改。见 `docs/规划/多角色与存储-规划.md` §4.1。
+ADMIN_ROLE = "admin"
+AUDIT_PATH = os.path.join(BASE, "web", "admin_audit.jsonl")
+USERS_BAK_KEEP = 5
+_USERS_LOCK = threading.Lock()
+
+
+def _now():
+    """统一的时间戳格式（账号表 / 审计日志共用，别各写一份 strftime）。"""
+    return time.strftime("%Y-%m-%d %H:%M:%S")
+
+
+@contextlib.contextmanager
+def _users_txn():
+    """
+    账号表的**读-改-写事务**：进程内线程锁 + 跨进程文件锁。
+
+    用法（⚠ **整段**包住，别只包 `_save_users`）::
+
+        with _users_txn():
+            users = _load_users()
+            users[uid] = rec
+            _save_users(users)
+
+    ⚠ 跨进程那把锁用 `fcntl.flock`（POSIX）/ `msvcrt.locking`（Windows）——
+      选它是因为**进程一死内核自动释放**，不像「锁文件」那样会留下一个永远解不开的死锁。
+    ⚠ 拿不到跨进程锁时**不中断**（退回只有进程内锁）：那种情况下的正确性跟加锁之前一样，
+      但至少不会因为一把锁让登录 / 开号整条路挂掉。
+    """
+    _USERS_LOCK.acquire()
+    fh = None
+    try:
+        try:
+            fh = open(USERS_PATH + ".lock", "a+")
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            pass
+        yield
+    finally:
+        try:
+            if fh is not None:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+        except Exception:
+            pass
+        _USERS_LOCK.release()
+
+
+def _user_rec(uid):
+    """
+    某个 uid 的账号记录 —— **带默认值**，返回**副本**。
+
+    ⚠ 老记录没有新字段（`role` / `disabled` / `*_at`）也能直接用 ⇒ **不写迁移脚本**，
+      跟 `met_day` 当年的处理口径一致（见下面 `met_known` 那一段）。
+    """
+    rec = dict(_load_users().get(str(uid)) or {})
+    rec.setdefault("display_name", "")
+    rec.setdefault("met_day", "")
+    rec.setdefault("note", "")
+    rec.setdefault("role", "")
+    rec.setdefault("disabled", False)
+    return rec
+
+
+def _is_admin(uid):
+    """
+    是不是管理员。⚠ 只认 `web/users.json` 里的 `role == "admin"` ——
+    **绝不在代码里写死 uid**（写死了以后换管理员就得改代码 + 重启）。
+    ⚠ 停用的管理员**不算管理员**（一句 `and not disabled`，省得"停用了却还能进后台"）。
+    """
+    if not uid:
+        return False
+    rec = _load_users().get(str(uid)) or {}
+    return str(rec.get("role") or "") == ADMIN_ROLE and not rec.get("disabled")
+
+
+def _backup_users():
+    """写账号表**之前**备份 → `users.json.bak-<时间戳>`，只留最近 N 份。返回备份路径。"""
+    if not os.path.exists(USERS_PATH):
+        return ""
+    ts = time.strftime("%Y%m%d-%H%M%S")
+    dst = "%s.bak-%s" % (USERS_PATH, ts)
+    try:
+        import shutil
+        shutil.copy2(USERS_PATH, dst)
+    except Exception:
+        return ""
+    try:
+        d = os.path.dirname(USERS_PATH)
+        olds = sorted((f for f in os.listdir(d) if f.startswith("users.json.bak-")),
+                      reverse=True)
+        for f in olds[USERS_BAK_KEEP:]:
+            try:
+                os.remove(os.path.join(d, f))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    return dst
+
+
+def _audit(action, target="", detail="", by=""):
+    """
+    管理员动作写进 `web/admin_audit.jsonl`（**只追加**，一行一个 JSON）。
+
+    ⚠ 为什么是 `.jsonl` 而不是 `.json`：**追加不重写** ⇒ 不会被「整份覆盖」写坏
+      —— 这正是 `memory/` 那批踩出来的教训（`docs/网页端.md` 红线 14）。
+    ⚠ 它跟 `users.json` 一样是**网页端自己的数据**，不归 ADR-22 管（一个字节都不碰 memory）。
+    ⚠ 审计失败**绝不能拖垮动作本身** ⇒ 异常吞掉、只打印一行。
+    """
+    rec = {"ts": _now(), "by": str(by or ""), "action": str(action or ""),
+           "target": str(target or ""), "detail": str(detail or "")}
+    try:
+        with open(AUDIT_PATH, "a", encoding="utf-8") as f:
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print("⚠️ 写不了审计日志 %s（%s）" % (AUDIT_PATH, e))
+    return rec
+
+
+def read_audit(limit=50):
+    """读最近 N 条审计（倒序：新的在前）。读不了 ⇒ 空列表（审计坏了不该让页面挂）。"""
+    out = []
+    try:
+        with open(AUDIT_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    out.append(json.loads(line))
+                except ValueError:
+                    continue
+    except Exception:
+        return []
+    return out[-max(1, int(limit)):][::-1]
+
+
+# ---------------------------------------------------------------- 账号动作
+# ⚠ 这三件事**只在 base 里实现一次**：`tools/reset_password.py`（CLI）和 `/admin`（网页）
+#   都调它。⚠「密码哈希绝不各写一份」是这个项目最忌讳的那类 bug（各写一份迟早对不上）。
+
+def reset_pwd(uid, pwd=None, by=""):
+    """
+    🔑 重置账号密码（**默认密码** = `DEFAULT_PWD`）。返回 `(ok, 说明文案)`。
+    ⚠ CLI 与 `/admin` 共用这一份 ⇒ 哈希、备份、落盘、审计的规矩只有一处。
+    """
+    uid = str(uid or "").strip()
+    if not uid:
+        return False, "没有 uid"
+    use_default = not pwd
+    pwd = pwd or DEFAULT_PWD
+    with _users_txn():
+        users = _load_users()
+        existed = uid in users
+        rec = dict(users.get(uid) or {})
+        rec["pwd"] = _hash(pwd)
+        rec.setdefault("note", "")
+        rec["password_changed_at"] = _now()
+        rec["pwd_by"] = str(by or "cli")
+        _backup_users()
+        users[uid] = rec
+        _save_users(users)
+    _audit("reset_pwd", uid,
+           "%s%s" % ("改为默认密码" if use_default else "改为指定密码",
+                     "" if existed else "（新开号）"), by=by)
+    return True, ("改了他原来的密码" if existed else "新开的号（他之前没登过）")
+
+
+def set_user_disabled(uid, flag, by=""):
+    """停用 / 启用一个账号。返回 `(ok, 文案)`。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False, "没有 uid"
+    flag = bool(flag)
+    with _users_txn():
+        users = _load_users()
+        if uid not in users:
+            return False, "这个号还没开"
+        if flag and str(uid) == str(by):
+            return False, "不能停用自己"
+        rec = dict(users[uid])
+        rec["disabled"] = flag
+        _backup_users()
+        users[uid] = rec
+        _save_users(users)
+    _audit("disable" if flag else "enable", uid, "", by=by)
+    return True, ("已停用" if flag else "已启用")
+
+
+def set_user_role(uid, role, by=""):
+    """设 / 取消管理员。返回 `(ok, 文案)`。⚠ 不允许取消自己（免得把自己锁在外面）。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False, "没有 uid"
+    role = str(role or "").strip()
+    with _users_txn():
+        users = _load_users()
+        if uid not in users:
+            return False, "这个号还没开"
+        if role != ADMIN_ROLE and str(uid) == str(by):
+            return False, "不能取消自己的管理员"
+        rec = dict(users[uid])
+        rec["role"] = role
+        _backup_users()
+        users[uid] = rec
+        _save_users(users)
+    _audit("set_role", uid, ("设为 %s" % role) if role else "取消管理员", by=by)
+    return True, ("已设为管理员" if role else "已取消管理员")
+
+
+def set_user_note(uid, note, by=""):
+    """改备注（`note` 是开发者自己看的，不是她看得到的字段）。返回 `(ok, 文案)`。"""
+    uid = str(uid or "").strip()
+    if not uid:
+        return False, "没有 uid"
+    with _users_txn():
+        users = _load_users()
+        if uid not in users:
+            return False, "这个号还没开"
+        rec = dict(users[uid])
+        rec["note"] = str(note or "").strip()
+        _backup_users()
+        users[uid] = rec
+        _save_users(users)
+    _audit("set_note", uid, str(note or ""), by=by)
+    return True, "备注已保存"
+
+
 # ------------------------------------------------------------ 相遇日 / 认识天数
 # ⭐⭐ 这两件东西**全站只认一个口径**（2026-09-30 她定）：
 #     · 相遇日 = 她自己填的那一天，存 `web/users.json` 的 `met_day`
@@ -266,6 +518,52 @@ def _current_uid(request: Request):
         return None
     uid, sig = raw.rsplit(".", 1)
     if not hmac.compare_digest(sig, _sign(uid)):
+        return None
+    # 🚫 停用要**在这里**也判一次：只在登录里判拦不住**已经在线**的会话
+    #    （cookie 还没过期、签名照样有效 ⇒ 停用了却照进）。
+    # ⚠ 读不了账号文件就**当没停用** —— 一个坏掉的 json 不该让**所有页面**一起 500。
+    try:
+        if (_load_users().get(uid) or {}).get("disabled"):
+            return None
+    except Exception:
+        pass
+    return uid
+
+
+# ---------------------------------------------------------------- 🛡 管理员会话（独立一套）
+# ⚠⭐ 为什么**不复用**用户的 `rafael_uid` cookie（2026-10-04 她定的「后台是另一个界面」）：
+#   ① 后台有**自己的登录页**（`/admin`）—— 不需要先去用户端登录；
+#   ② 两边登录态**互不影响**：同一浏览器可以一边登着用户端、一边开着后台，
+#      退出后台不会把她踢下线（反过来也一样）；
+#   ③ ⚠⚠ **签名命名空间也不同**（`admin:` 前缀）⇒ 拿一个有效的**用户** cookie
+#      **伪造不出**管理员 cookie（反过来也是）。这一条是安全上的关键，
+#      **别"顺手统一"成同一个 `_sign()`** —— 那等于把用户票据升格成管理员票据。
+ADMIN_COOKIE = "rafael_admin"
+
+
+def _sign_admin(uid):
+    """管理员 cookie 的签名（⚠ `admin:` 前缀 = 另一套命名空间，见上面第 ③ 条）。"""
+    return hmac.new(SECRET, ("admin:" + str(uid)).encode("utf-8"),
+                    hashlib.sha256).hexdigest()[:20]
+
+
+def _current_admin(request: Request):
+    """
+    当前管理员（读**独立**的 `rafael_admin` cookie）。不是管理员 ⇒ `None`。
+
+    ⚠ 每次请求都**复核** `role == "admin"` 且未停用 ⇒ 撤权 / 停用**立刻生效**
+      （不用等她重新登录，也不用重启）。读不了账号文件 ⇒ 当没登录（保守）。
+    """
+    raw = request.cookies.get(ADMIN_COOKIE) or ""
+    if "." not in raw:
+        return None
+    uid, sig = raw.rsplit(".", 1)
+    if not hmac.compare_digest(sig, _sign_admin(uid)):
+        return None
+    try:
+        if not _is_admin(uid):
+            return None
+    except Exception:
         return None
     return uid
 

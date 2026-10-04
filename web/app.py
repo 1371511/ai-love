@@ -16,6 +16,9 @@
      web/page/affinity.py   `/affinity` 好感度后台（原「我的页」的内容整块搬来的）
      web/page/messages.py   `/messages` 家族
      web/page/settings.py   `/settings` 家族
+     web/page/admin.py      `/admin` 家族（🛡 管理员后台，2026-10-04）
+                            ⚠ **跟用户端是两套东西**：自己的登录页、自己的外壳（顶栏 + 左侧分区
+                            + 自己一套 CSS，**不用 `_page()`**）、自己的 cookie `rafael_admin`
      web/page/avatar.py     `/avatar` · `/asset/{name}` · `/settings/avatar*`
      web/page/chat.py       `/chat` · `/chat/send`
      web/page/call.py       `/call` 家族（📹 视频通话，2026-10-02 起分批落地）
@@ -40,6 +43,7 @@ from page import me          # noqa: F401  老地址跳转壳 → /affinity
 from page import affinity    # noqa: F401  好感度后台（原「我的页」的内容）
 from page import messages    # noqa: F401  牵绊提升（短信）
 from page import settings    # noqa: F401  设置
+from page import admin       # noqa: F401  🛡 管理员后台（**另一个界面**：独立登录页 + 独立 cookie）
 from page import avatar      # noqa: F401  头像 · 项目素材
 from page import chat        # noqa: F401  对话窗口
 from page import call        # noqa: F401  视频通话（`/call`）
@@ -52,8 +56,12 @@ from base import app         # noqa: F401  ← 装配好的那个 FastAPI 实例
 #    WEB._hash / WEB._save_users` 这 6 个名字的。拆文件时它们搬去了 `base.py`，
 #    在这儿再挂一份 ⇒ **那个工具一个字都不用改**
 #    （它文档里「密码哈希绝不各写一份」那条约定，也就这么保住了）。
+# ⭐ 2026-10-04（管理员后台那一批）**再加 5 个**：`reset_pwd` / `set_user_role` 是
+#    「CLI 与 `/admin` 共用同一份实现」的关键 —— 工具现在只调它们，
+#    自己那边**不许**再出现 `_hash` / `shutil.copy2` / `_save_users`。
 from base import (           # noqa: E402,F401
     USERS_PATH, DEFAULT_PWD, _hash, _known_uids, _load_users, _save_users,
+    ADMIN_ROLE, USERS_BAK_KEEP, reset_pwd, set_user_role, read_audit,
 )
 
 

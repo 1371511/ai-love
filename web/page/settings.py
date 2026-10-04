@@ -23,6 +23,8 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from base import (
     app, _page, _esc, _mask_uid, _hash, _current_uid, _load_users, _save_users, _avatar_url,
     _backbar,
+    # 🔐 账号表事务（保存要写它，得跟 CLI / 后台互斥）
+    _users_txn, _now,
 )
 
 # ⚠⭐ `met_day`（你们相遇那天）2026-09-30 **已移出本页** —— 唯一入口是主页
@@ -79,6 +81,7 @@ async def settings_page(request: Request, ok: str = "", err: str = ""):
     # ⚠ `.footnav` 那行在模板里位于 `</div>` **之后**（内容列 `.main` 的直接子元素）：
     #    sticky 只在自己的父块范围内贴底，关进 .card 里的话滚到卡片头之前就不贴了。
     #    ⚠⭐ 说明写在这儿（Python 注释），别写进下面的模板 —— `"""` 里的 HTML 注释会原样发到浏览器。
+
     body = """
     <div class="card">
       <h1>设置</h1>
@@ -132,26 +135,31 @@ async def settings_save(request: Request, display_name: str = Form(""),
     if not uid:
         return RedirectResponse("/")
 
-    users = _load_users()
-    rec = users.get(uid)
-    if not rec:
-        return RedirectResponse("/logout")
+    # 🔐 读-改-写**整段**进事务（管理员后台 / CLI 可能正在同一秒改这张表）。
+    #    ⚠ 校验也留在事务里 —— 它用的就是刚读出来的那份 `rec`，读窄了照样写错。
+    with _users_txn():
+        users = _load_users()
+        rec = users.get(uid)
+        if not rec:
+            return RedirectResponse("/logout")
 
-    name = (display_name or "").strip()
-    new_pwd = (new_pwd or "").strip()
+        name = (display_name or "").strip()
+        new_pwd = (new_pwd or "").strip()
 
-    if new_pwd:
-        if not old_pwd or not hmac.compare_digest(rec.get("pwd", ""), _hash(old_pwd)):
-            return RedirectResponse("/settings?err=" + "现在的密码不对", status_code=303)
-        if len(new_pwd) < 6:
-            return RedirectResponse("/settings?err=" + "新密码至少 6 位", status_code=303)
-        if new_pwd != (new_pwd2 or "").strip():
-            return RedirectResponse("/settings?err=" + "两次输入的新密码不一样", status_code=303)
-        rec["pwd"] = _hash(new_pwd)
+        if new_pwd:
+            if not old_pwd or not hmac.compare_digest(rec.get("pwd", ""), _hash(old_pwd)):
+                return RedirectResponse("/settings?err=" + "现在的密码不对", status_code=303)
+            if len(new_pwd) < 6:
+                return RedirectResponse("/settings?err=" + "新密码至少 6 位", status_code=303)
+            if new_pwd != (new_pwd2 or "").strip():
+                return RedirectResponse("/settings?err=" + "两次输入的新密码不一样", status_code=303)
+            rec["pwd"] = _hash(new_pwd)
+            rec["password_changed_at"] = _now()
+            rec["pwd_by"] = "self"
 
-    # ⭐ **只写这两个字段**。别顺手 `rec[k] = v` 遍历整个 form ——
-    #   那样会把没在本表单里的字段（比如 `met_day`）写成空/null。
-    rec["display_name"] = name
-    users[uid] = rec
-    _save_users(users)
+        # ⭐ **只写这两个字段**。别顺手 `rec[k] = v` 遍历整个 form ——
+        #   那样会把没在本表单里的字段（比如 `met_day`）写成空/null。
+        rec["display_name"] = name
+        users[uid] = rec
+        _save_users(users)
     return RedirectResponse("/settings?ok=" + "已保存", status_code=303)

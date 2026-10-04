@@ -50,6 +50,8 @@ from base import (
     _backbar, _two_way_footer, MEMORY_DIR, MENU_PATH, AVATAR_MAX,
     drop_avatar, save_avatar,
     _check_met_day, met_known,
+    # 🔐 账号表的读-改-写事务（下面两处改 `users.json` 的地方都要包住）
+    _users_txn,
 )
 # ⚠ `_two_way_footer` 原本**定义**在本文件里（2026-09-30 加的），**当天就下沉到 `base.py`** ——
 #   因为她要求「日记功能页的底栏也一样」，日记那两个页也要同款底栏。
@@ -752,13 +754,15 @@ async def home_edit_profile_save(request: Request, display_name: str = Form(""))
     uid = _current_uid(request)
     if not uid:
         return RedirectResponse("/")
-    users = _load_users()
-    rec = users.get(uid)
-    if not rec:
-        return RedirectResponse("/logout")
-    rec["display_name"] = (display_name or "").strip()
-    users[uid] = rec
-    _save_users(users)
+    # 🔐 读-改-写**整段**进事务 —— 管理员后台 / CLI 可能正在同一秒改这张表。
+    with _users_txn():
+        users = _load_users()
+        rec = users.get(uid)
+        if not rec:
+            return RedirectResponse("/logout")
+        rec["display_name"] = (display_name or "").strip()
+        users[uid] = rec
+        _save_users(users)
     return RedirectResponse("/home/edit/profile?ok=name", status_code=303)
 
 
@@ -1122,13 +1126,14 @@ async def home_edit_save(request: Request, kind: str,
         if err:
             return RedirectResponse("/home/edit/%s?err=%s" % (kind, quote(err)),
                                     status_code=303)
-        users = _load_users()
-        rec = users.get(uid) or {}
-        changed = str(rec.get(kind) or "") != val
-        if changed:
-            rec[kind] = val
-            users[uid] = rec
-            _save_users(users)          # 已是「写 .tmp + os.replace」原子落盘
+        with _users_txn():
+            users = _load_users()
+            rec = users.get(uid) or {}
+            changed = str(rec.get(kind) or "") != val
+            if changed:
+                rec[kind] = val
+                users[uid] = rec
+                _save_users(users)      # 已是「写 .tmp + os.replace」原子落盘
         return RedirectResponse("/home?saved=1" if changed else "/home", status_code=303)
 
     changed = False

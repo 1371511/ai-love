@@ -9,6 +9,11 @@ web/avatars/
 #   （`.bak-*` 是 tools/reset_password.py 的自动备份，同样不进。）
 web/users.json
 web/users.json.bak-*
+# 2026-10-04：🛡 管理员后台的两个运行时文件 —— 同样**是用户/运维数据，不进仓库**。
+#   · `admin_audit.jsonl`：管理员动作审计（只追加）。⚠ 注意**别删**：它是"谁改了谁"的唯一证据。
+#   · `users.json.lock`：账号表的**跨进程**文件锁（`base._users_txn()` 用，空文件）。
+web/admin_audit.jsonl
+web/users.json.lock
 
 # Python 缓存
 __pycache__/
