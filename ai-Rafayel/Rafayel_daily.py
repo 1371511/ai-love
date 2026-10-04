@@ -20,8 +20,8 @@ import time
 
 from Rafayel_affinity import current_level, init_unlocked, pending_unlock
 from Rafayel_config import (
-    AFFINITY_UNLOCK, AUTO_GREET_TZ_OFFSET, DAILY_STATS, MEMORY_DIR,
-    SESSION_GAP_HOURS, USAGE_STATS,
+    AFFINITY_UNLOCK, AUTO_GREET_TZ_OFFSET, DAILY_STATS,
+    SESSION_GAP_HOURS, USAGE_STATS, mem_dir, mem_path,
 )
 
 _DAY_CAP = 400          # 最多留这么多天，别让文件无限长大
@@ -35,10 +35,10 @@ def _path(user_id, memory_dir=None):
     """
     `{uid}_daily.json` 的完整路径。
 
-    ⚠ 默认用引擎自己的 `MEMORY_DIR`（线上所有调用都是这样）；传了 `memory_dir`
+    ⚠ 默认走 `Rafayel_config.mem_dir()`（**Step 0**：落盘目录的唯一出口）；传了 `memory_dir`
       就用传的那个 —— 留给本地脚本 / 自测指向临时目录用（见 `tick_unlock`）。
     """
-    return os.path.join(memory_dir or MEMORY_DIR, "%s_daily.json" % user_id)
+    return mem_path("daily", user_id, memory_dir=memory_dir)
 
 
 def _load(path):
@@ -197,7 +197,7 @@ def tick_unlock(user_id, memory_dir=None):
     """
     if not AFFINITY_UNLOCK:
         return
-    md = memory_dir or MEMORY_DIR
+    md = memory_dir or mem_dir()
     try:
         rec = load_unlocked(user_id, md)
         if rec is None:
@@ -287,7 +287,7 @@ def memory_uids():
     """
     out = []
     try:
-        for p in glob.glob(os.path.join(MEMORY_DIR, "*.json")):
+        for p in glob.glob(os.path.join(mem_dir(), "*.json")):
             uid = os.path.splitext(os.path.basename(p))[0]
             if uid.isdigit() and uid not in out:
                 out.append(uid)
@@ -317,7 +317,7 @@ def backfill_unlocked(init_fn, level_fn, dry_run=False):
             if load_unlocked(uid) is not None:      # ① 只补缺
                 skipped += 1
                 continue
-            lv = int(level_fn(uid, MEMORY_DIR) or 0)
+            lv = int(level_fn(uid, mem_dir()) or 0)
             if lv <= 0:                             # ③ 算不出来就不动
                 skipped += 1
                 continue
@@ -331,7 +331,7 @@ def backfill_unlocked(init_fn, level_fn, dry_run=False):
 
 
 def _usage_path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_usage.json" % user_id)
+    return mem_path("usage", user_id)
 
 
 def _split_usage(usage):

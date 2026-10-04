@@ -19,9 +19,11 @@
    网页端不许直接 import，要走 `Rafayel_chat` 门面重新导出（见主档 3.1）。
    加新模块 = 红线多一个口子，登记漏了就是白加一道锁。
 
-⚠ `MEMORY_DIR` 是值复制：`from Rafayel_config import MEMORY_DIR` 拿到的是那一刻的值，
-   改 `Rafayel_config.MEMORY_DIR` 不会跟着变 ⇒ 自测要隔离目录，改
-   `Rafayel_mood.MEMORY_DIR` 这一处就够（2026-09-30 踩过同款：`page/*.py` 里那个同名变量）。
+✅ 落盘路径走 `Rafayel_config.mem_path()`（**Step 0，2026-10-04**）。
+   ⚠ 原来这里写的是「`MEMORY_DIR` 是值复制 ⇒ 自测要改 `Rafayel_mood.MEMORY_DIR`」，
+     那是**已经修掉的旧坑**：现在路径在**调用时**才从 `Rafayel_config.MEMORY_DIR` 解析
+     ⇒ 隔离目录**只改 `Rafayel_config.MEMORY_DIR` 一处**就够，
+       ⚠ **改本模块的 `MEMORY_DIR` 已经没用**（本模块不再持有这个名字）。
 """
 
 import json
@@ -33,7 +35,8 @@ import time
 import requests
 
 from Rafayel_config import (
-    API_URL, LLM_EXTRA, MEMORY_DIR, MODEL, MOOD_CALM_BLOCK, MOOD_DECAY_GONE_HOURS,
+    API_URL, LLM_EXTRA, MODEL, MOOD_CALM_BLOCK, MOOD_DECAY_GONE_HOURS,
+    mem_dir, mem_path,
     MOOD_DECAY_HOURS, MOOD_DECAY_LONG_HOURS, MOOD_ENABLE,
     MOOD_JUDGE_CARD_HINT, MOOD_JUDGE_MAX_TOKENS, MOOD_JUDGE_MAX_TURNS,
     MOOD_JUDGE_TEMPERATURE, MOOD_JUDGE_TIMEOUT, MOOD_MAX_CAUSE, api_key,
@@ -234,7 +237,7 @@ _BLOCK_HEAD = (
 # ---------------------------------------------------------------- 落盘
 
 def _path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_mood.json" % user_id)
+    return mem_path("mood", user_id)
 
 
 def _blank():
@@ -288,7 +291,7 @@ def load(user_id):
 def save(user_id, data):
     """原子写（tmp + replace，照 `Rafayel_memory.py:1235` 那套）。返回是否写成功。"""
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
+        os.makedirs(mem_dir(), exist_ok=True)
         path = _path(user_id)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

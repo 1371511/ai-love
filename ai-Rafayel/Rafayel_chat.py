@@ -113,6 +113,9 @@ __all__ = [
     "CARD_SCENARIO", "CARD_SYSTEM_PROMPT", "CARD_POST_HISTORY",
     "CARD_FIRST_MES", "CARD_ALT_GREETINGS",
     # 配置
+    # ⚠ `MEMORY_DIR` 是**给老代码留的兼容出口**（`card/_work/_verify_profile.py` 在引它）。
+    #    ⚠ 它是**值复制**，别再拿它拼路径 —— 新代码一律用 `Rafayel_config.mem_dir()` /
+    #      `mem_path()`（Step 0：落盘目录的唯一出口，调用时才解析）。
     "MEMORY_DIR", "MAX_TOKENS", "TEMPERATURE", "SUMMARY_MAX_TOKENS", "SUMMARY_INTERVAL",
     "MAX_HISTORY_TURNS", "MAX_FACTS", "MAX_PROFILE_ITEMS",
     "WB_MAX_CHARS", "WB_MAX_ENTRIES", "API_URL", "MODEL",

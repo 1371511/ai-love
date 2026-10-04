@@ -32,7 +32,7 @@ from Rafayel_config import (
     AUTO_GREET, AUTO_GREET_GAP_DAYS_MAX, AUTO_GREET_GAP_DAYS_MIN,
     AUTO_GREET_HOUR_END, AUTO_GREET_HOUR_START,
     AUTO_GREET_IDLE_HOURS, AUTO_GREET_MAX_PER_DAY, AUTO_GREET_MIN_GAP_HOURS,
-    AUTO_GREET_TZ_OFFSET, DEFAULT_USER_NAME, MEMORY_DIR,
+    AUTO_GREET_TZ_OFFSET, DEFAULT_USER_NAME, mem_dir, mem_path,
 )
 from Rafayel_profile import get_user_profile
 
@@ -98,7 +98,7 @@ def _pool_for(idle_hours, hour):
 
 
 def _record_path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_greet.json" % user_id)
+    return mem_path("greet", user_id)
 
 
 def load_record(user_id):
@@ -117,7 +117,7 @@ def load_record(user_id):
 
 
 def save_record(user_id, rec):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     path = _record_path(user_id)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

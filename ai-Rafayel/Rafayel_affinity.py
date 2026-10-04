@@ -24,7 +24,7 @@ import re
 import time
 from datetime import date
 
-from Rafayel_config import DEFAULT_USER_NAME      # 她的默认称呼（唯一真相源在 config）
+from Rafayel_config import DEFAULT_USER_NAME, mem_path   # 她的默认称呼（唯一真相源在 config）
 
 # ---------------------------------------------------------------- 评分参数
 # ⚠ 这些数字是初版，**等真机跑一段时间再调**。改这里就够了。
@@ -367,7 +367,7 @@ def sms_full(filename):
 
 
 def _her_name(user_id, memory_dir):
-    prof = _read_json(os.path.join(memory_dir, "%s_profile.json" % user_id)) or {}
+    prof = _read_json(mem_path("profile", user_id, memory_dir=memory_dir)) or {}
     return (prof.get("name") or "").strip() or _DEFAULT_NAME
 
 
@@ -420,7 +420,7 @@ def pending_unlock(user_id, memory_dir):
     lv_now = current_level(user_id, memory_dir)
     if not lv_now:
         return None
-    daily = _read_json(os.path.join(memory_dir, "%s_daily.json" % user_id)) or {}
+    daily = _read_json(mem_path("daily", user_id, memory_dir=memory_dir)) or {}
     u = daily.get("unlocked")
     if not isinstance(u, dict):
         return None                      # 还没初始化 ⇒ 调用方先 init_unlocked
@@ -624,14 +624,15 @@ def compute(user_id, memory_dir):
     """
     算出某个用户的好感度。缺的数据返回 0 并记进 `missing`，**不编造**。
     """
-    mem = _read_json(os.path.join(memory_dir, "%s.json" % user_id)) or {}
-    prof = _read_json(os.path.join(memory_dir, "%s_profile.json" % user_id))
+    mem = _read_json(mem_path(uid=user_id, memory_dir=memory_dir)) or {}
+    prof = _read_json(mem_path("profile", user_id, memory_dir=memory_dir))
     if prof is None:
         # 兼容：画像可能躺在备份目录里（本机 cli 就是这样）
+        # ⚠ 备份目录**不是**「当前 memory 目录」⇒ 不走 `mem_path()`（它只管正式文件）
         prof = _read_json(os.path.join(memory_dir, "_bak-20260918-cli",
                                        "%s_profile.json" % user_id)) or {}
-    daily = _read_json(os.path.join(memory_dir, "%s_daily.json" % user_id))
-    usage = _read_json(os.path.join(memory_dir, "%s_usage.json" % user_id))
+    daily = _read_json(mem_path("daily", user_id, memory_dir=memory_dir))
+    usage = _read_json(mem_path("usage", user_id, memory_dir=memory_dir))
 
     missing = []
 

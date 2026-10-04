@@ -32,7 +32,7 @@ from datetime import datetime, timedelta
 from Rafayel_config import (
     AUTO_GREET_TZ_OFFSET,               # ⏱ 时区沿用打招呼那一份：整条链上只该有一个「现在几点」
     DEFAULT_USER_NAME,
-    MEMORY_DIR, QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN,
+    QZONE_AUTO, QZONE_AUTO_GAP_DAYS_MAX, QZONE_AUTO_GAP_DAYS_MIN, mem_dir, mem_path,
     QZONE_AUTO_HOUR_END, QZONE_AUTO_HOUR_START, QZONE_AUTO_MAX_PER_DAY,
     QZONE_BDAY, QZONE_BDAY_RAFAYEL, QZONE_RELEVANT,
 )
@@ -114,7 +114,7 @@ def _images_ok(entry):
 # ============================================================
 
 def _record_path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_qzone.json" % user_id)
+    return mem_path("qzone", user_id)
 
 
 def _blank_record():
@@ -166,7 +166,7 @@ def load_record(user_id):
 
 
 def save_record(user_id, rec):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     path = _record_path(user_id)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -524,7 +524,7 @@ def mark_posted(user_id, entry, delivered=True, now=None):
 # ⚠ 仍受时段闸（8–23 点）约束：生日也不半夜打扰。
 
 def _bday_path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_bday.json" % user_id)
+    return mem_path("bday", user_id)
 
 
 def _blank_bday_record():
@@ -552,7 +552,7 @@ def load_bday_record(user_id):
 
 
 def save_bday_record(user_id, rec):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     path = _bday_path(user_id)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

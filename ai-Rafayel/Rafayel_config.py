@@ -7,7 +7,7 @@
 `Rafayel_profile ↔ Rafayel_memory` 的循环导入，整个包直接炸。
 
 放三类东西：
-  ① 路径 —— MEMORY_DIR（对话记忆与用户画像的落盘目录）
+  ① 路径 —— `mem_dir()` / `mem_path()`（memory 文件路径的**唯一出口**；`MEMORY_DIR` 是它背后的常量）
   ② 可调数值 —— 历史轮数 / 摘要间隔 / 生成上限 / 世界书注入预算
   ③ API 配置 —— 读 .env、默认 key、当前生效的 key
 
@@ -15,6 +15,7 @@
 """
 
 import contextlib
+import json
 import os
 import random
 import threading
@@ -33,10 +34,211 @@ load_dotenv(os.path.join(ROOT, ".env"))
 
 
 # ============================================================
-#  💾 路径
+#  💾 路径（⭐ Step 0：memory 文件路径的**唯一出口**）
 # ============================================================
 
 MEMORY_DIR = os.path.join(ROOT, "memory")
+
+# 🎭 角色命名空间（2026-10-04 预留）
+#    ⚠⭐ Step 0 **只收参数、不参与路径** —— 传与不传 `char`，得到的路径**完全一样**。
+#      这是刻意的：Step 0 只做「收敛出口」，**行为零变化**。
+#      Step 2 才真正加目录层（`memory/{char}/…`）⇒ 届时**只改 `mem_dir()` 一行**，
+#      全项目 20 个调用点一处都不用动。规划见 `docs/规划/多角色与存储-规划.md` §6.2。
+DEFAULT_CHAR = "rafayel"
+
+
+def mem_dir(char=None):
+    """
+    当前 memory 目录（**函数，不是常量** —— 这一点很关键）。
+
+    ⚠⭐ 为什么非写成函数不可：各模块原来写 `from Rafayel_config import MEMORY_DIR`，
+       那是**值复制** —— `Rafayel_config.MEMORY_DIR = tmp` 改不动它们。
+       这个坑**真踩过两次**：`Rafayel_mood` 文件头那段说明、
+       `tools/llm_gate_selftest.py`「必须逐个翻掉」的循环，都是给它打的补丁。
+       ⇒ 走这个函数 = **调用时才读模块全局** ⇒ 以后**只改 `Rafayel_config.MEMORY_DIR` 一处**，
+         全站（含所有自测的临时目录隔离）跟着生效。
+    ⚠ Step 2 的角色目录层**只改这一个函数**。
+    """
+    return MEMORY_DIR
+
+
+def mem_path(kind=None, uid=None, char=None, memory_dir=None):
+    """
+    `memory/` 下某个文件的**完整路径** —— 全项目唯一的拼接出口。
+
+        mem_path(uid=uid)         ⇒ `{uid}.json`          （对话主档）
+        mem_path("profile", uid)  ⇒ `{uid}_profile.json`
+        mem_path("weather")       ⇒ `weather.json`        （**角色级全局**，不带 uid）
+        mem_path("_qzone_posts")  ⇒ `_qzone_posts.json`
+
+    ⚠ `memory_dir` 显式传目录时优先 —— `Rafayel_daily` / `Rafayel_affinity` 的
+      `memory_dir=` 参数走的就是这条：它们是**已经按目录参数化**的公开 API，语义不变。
+    ⚠ 命名规矩（**别在这里改**）：主档 `{uid}.json`、其余 `{uid}_{kind}.json`；
+      不带 uid 的（`weather` / `_qzone_*`）是**角色级**文件。
+    """
+    base = memory_dir or mem_dir(char)
+    if uid is None:
+        name = "%s.json" % kind
+    elif kind:
+        name = "%s_%s.json" % (uid, kind)
+    else:
+        name = "%s.json" % uid
+    return os.path.join(base, name)
+
+
+# ============================================================
+#  🔒 memory 的跨进程写事务（2026-10-05 · 收「整份覆盖」那条架构债）
+# ============================================================
+# ⚠⚠ 为什么需要：`memory/{uid}.json` 是**读-改-写**（读整份 → 改 → 写整份），
+#    而写它的是**两个进程**：QQ 端 `Rafayel_bot.py` 与 `web/`。
+#    两边同时进来 ⇒ 后写的把先写的**整份**盖掉。丢的是：
+#      · 「他记住的事」（`key_facts`）—— 她在网页上刚加的会被抹掉
+#      · 画像（`{uid}_profile.json`）—— 同理
+#      · ⚠⚠ **`messages` / `turn_count`** —— 两个进程是**两条独立对话流**
+#        （QQ 一个窗口、网页一个窗口）⇒ 谁后写谁把另一边的对话从文件里**抹掉**
+#    ⚠ 后者是 2026-10-05 才查实的：旧笔记只登记了前两条，第 3 条一直没写下来。
+#
+# ⚠⭐ 为什么住在 config（跟 `bg_slot()` 一个道理）：
+#    引擎与网页端**都要用**（网页端改「他记住的事」走 `Rafayel_memory._facts_edit`），
+#    而 config 在 `check_static.py` 的 `WEB_WHITELIST` 里 ⇒ **零新增 ADR-22 开口**。
+#
+# ⚠ 锁文件 = `memory/{uid}.json.lock`（跟 `web/users.json.lock` 同一套做法）：
+#    · `fcntl.flock` / `msvcrt.locking` —— **进程一死内核自动释放**，不会留死锁；
+#    · 后缀是 `.lock`（不是 `.json`）⇒ `memory_uids()` / `web._known_uids()` 那些
+#      `*.json` 扫描**看不见它**，不会被当成一个用户。
+#    · 按 uid 分锁 ⇒ 不同用户之间**互不阻塞**。
+def mem_lock_path(uid):
+    """某个 uid 的写锁文件路径（⚠ 会跟着 `MEMORY_DIR` 走，测试可重定向）。"""
+    return "%s.lock" % os.path.join(MEMORY_DIR, "%s.json" % uid)
+
+
+# 🔁 本线程已持有的 uid 集合 —— `mem_txn()` 靠它做**可重入**。
+#    ⚠⚠ 没有它的话：`_facts_edit()` 先取锁、里面再调 `save_memory()` 又取一次锁
+#      ⇒ `flock` 在**同一个进程里也会自锁**（两个 fd = 两份 open file description）
+#      ⇒ **死锁**，而且表现为"她发一条消息就没反应了"，极难查。
+_MEM_LOCK_HELD = threading.local()
+
+
+@contextlib.contextmanager
+def mem_txn(uid):
+    """
+    `memory/{uid}.json`（或 `{uid}_xxx.json`）的**读-改-写事务**。
+
+    用法（⚠ **整段**包住读→改→写，只锁写是没用的）::
+
+        with mem_txn(uid):
+            d = _read_json(path)
+            ...改...
+            _write_json(path, d)
+
+    ⚠ **同线程可重入**：已经持锁的线程再进一次直接放行（见 `_MEM_LOCK_HELD` 那段注释）。
+    ⚠ 拿不到锁**不中断**（退回不加锁）：那种情况下正确性跟加锁之前一样，
+      但不会因为一把锁让对话整条路挂掉。
+    """
+    held = getattr(_MEM_LOCK_HELD, "uids", None)
+    if held is None:
+        held = _MEM_LOCK_HELD.uids = set()
+    if uid in held:                     # 🔁 重入：本线程已经拿着了
+        yield
+        return
+
+    fh = None
+    try:
+        try:
+            fh = open(mem_lock_path(uid), "a+")
+            if os.name == "nt":
+                import msvcrt
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        except Exception:
+            if fh is not None:
+                try:
+                    fh.close()
+                except Exception:
+                    pass
+            fh = None
+        held.add(uid)
+        yield
+    finally:
+        held.discard(uid)
+        if fh is not None:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+                fh.close()
+            except Exception:
+                pass
+
+
+# ---------------------------------------------------------------- 三方合并（两个模块共用）
+# ⚠ 为什么也放 config：`Rafayel_memory`（层 2）与 `Rafayel_profile`（层 1）**都要用**，
+#   而 profile 不能 import memory（会成环）⇒ 唯一能共用的地方就是 config。
+#   ⚠ 也**绝不许各写一份**：合并口径差一点，丢数据的表现完全不同。
+def read_json(path, default=None):
+    """
+    读一份 json 的**宽容版**：读不了 / 不是对象 ⇒ `default`（默认 `{}`），**不抛异常**。
+
+    ⚠ 为什么写盘路径上要"宽容"：`save_memory` / `UserProfile.save` 都是
+      「**先读盘再合并**」。这时读失败若抛异常，等于「盘上那份一旦坏了 ⇒ **以后再也写不进去**」，
+      比坏了更糟。⇒ 读不到就当空、照常写；真正的保护靠 `merge3_*` 的基线。
+    """
+    try:
+        with open(path, encoding="utf-8") as f:
+            d = json.load(f)
+    except Exception:
+        d = None
+    if isinstance(d, dict):
+        return d
+    return {} if default is None else default
+
+
+def merge3_list(cur, disk, base):
+    """
+    列表字段的**三方合并**（⚠ 关键两条：**删除不复活**、**别人的新增不丢**）。
+
+    `base` = 本轮开头从磁盘读到的那份（见 `ConversationManager.reload_shared_from_disk`）。
+    规则：
+      · 写者加的（在 `cur` 不在 `base`）        ⇒ 保留
+      · 写者删的（在 `base` 不在 `cur`）        ⇒ 保持删除
+      · ⭐ **别人删的**（在 `base`、**在 `disk` 却没有**）⇒ **跟着删**
+        （少了这一条会"复活"：A 删了 → B 用**旧基线**写一次 ⇒ 那条又冒出来）
+      · 别人加的（在 `disk` 不在 `base`）       ⇒ **补进来**
+      · 顺序：以写者那份为准，补进来的追加在后面
+
+    ⚠⚠ 一道**保命闸**：只有「磁盘上这一格**真的存在**」时才敢按"别人删的"跟着删。
+      磁盘文件整个丢了 / 读失败（`disk` 拿到 `None`）时**只做加法** ——
+      否则一次读盘失败就会把 `key_facts` 清空。
+    ⚠ `base is None`（读不到基线）⇒ 退回"以写者为准"，= **改动之前的行为**。
+    """
+    if base is None:
+        return list(cur or [])
+    base_l, cur_l = list(base), list(cur or [])
+    has_disk = isinstance(disk, list)
+    disk_l = disk if has_disk else []
+    out = []
+    for x in cur_l:
+        if has_disk and x in base_l and x not in disk_l:
+            continue                      # ⭐ 别人删了（或被超上限裁了）⇒ 跟着删
+        out.append(x)
+    for x in disk_l:
+        if x not in base_l and x not in out:
+            out.append(x)                 # 别人新加的 ⇒ 补进来
+    return out
+
+
+def merge3_scalar(cur, disk, base):
+    """单值字段：写者**动过**就用写者的；没动过就用盘上的（别人可能改过它）。"""
+    if base is None or cur != base:
+        return cur
+    return disk
 
 
 # ============================================================

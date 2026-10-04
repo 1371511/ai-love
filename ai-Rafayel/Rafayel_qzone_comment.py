@@ -28,13 +28,15 @@ import time
 
 import requests
 
-from Rafayel_config import (MEMORY_DIR, QZONE_BRIDGE_TIMEOUT, QZONE_BRIDGE_URL,
+from Rafayel_config import (QZONE_BRIDGE_TIMEOUT, QZONE_BRIDGE_URL, mem_dir, mem_path,
                             QZONE_CMT_DELAY_MAX, QZONE_CMT_DELAY_MIN,
                             QZONE_CMT_FEED_NUM, QZONE_CMT_HOUR_END,
                             QZONE_CMT_HOUR_START, QZONE_CMT_MAX_PER_DAY)
 
-POSTS_FILE = "_qzone_posts.json"          # 全局：说说正文 → 是谁的那条
-CMT_FILE = "_qzone_cmt.json"              # 全局：评论数快照 + 待处理队列
+# ⚠ 这两个常量存的是 **kind**（**不带** `.json`）—— 拼路径由 `mem_path()` 唯一负责（Step 0）。
+#   ⚠ 它们不带 uid ⇒ 是**角色级全局**文件（每个角色一份），跟 `weather` 同类。
+POSTS_FILE = "_qzone_posts"               # 全局：说说正文 → 是谁的那条
+CMT_FILE = "_qzone_cmt"                   # 全局：评论数快照 + 待处理队列
 
 
 # ============================================================
@@ -42,7 +44,8 @@ CMT_FILE = "_qzone_cmt.json"              # 全局：评论数快照 + 待处理
 # ============================================================
 
 def _path(name):
-    return os.path.join(MEMORY_DIR, name)
+    """`_qzone_posts` / `_qzone_cmt` 这类**角色级全局**文件的完整路径。"""
+    return mem_path(name)
 
 
 def _load(name, default):
@@ -58,7 +61,7 @@ def _load(name, default):
 
 
 def _save(name, data):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     p = _path(name)
     tmp = p + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:
@@ -305,7 +308,7 @@ def clean_comment(text):
 
 def is_known_user(user_id):
     """评论者是不是我们认识的（私聊过的）用户 —— 陌生人不理。"""
-    p = os.path.join(MEMORY_DIR, "%s.json" % str(user_id))
+    p = mem_path(uid=str(user_id))
     return os.path.isfile(p)
 
 

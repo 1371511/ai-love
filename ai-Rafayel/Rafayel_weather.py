@@ -26,7 +26,7 @@ import os
 import time
 
 from Rafayel_config import (
-    MEMORY_DIR, WEATHER, WEATHER_CITY, WEATHER_COLD_MIN, WEATHER_DROP_DELTA,
+    WEATHER, WEATHER_CITY, WEATHER_COLD_MIN, WEATHER_DROP_DELTA, mem_dir, mem_path,
     WEATHER_FAIL_TTL_SECONDS, WEATHER_HOT_MAX, WEATHER_LAT, WEATHER_LON,
     WEATHER_TIMEOUT, WEATHER_TTL_SECONDS,
 )
@@ -35,13 +35,14 @@ def _nudge_path():
     """
     「今天关怀过了」记在**全局**文件里（温度是全局的，不按用户分）。
 
-    ⚠ 为什么写成**函数**而不是模块级常量：MEMORY_DIR 一旦被改（测试会改），
-      常量算出来的路径就对不上了（真踩到：测试里改了 MEMORY_DIR，文件却仍写去真实目录）。
-      跟 `Rafayel_greet._record_path` 同一个写法。
+    ⚠ 为什么写成**函数**而不是模块级常量：目录一旦被改（测试会改），常量算出来的路径就对不上
+      （真踩到：测试里改了 MEMORY_DIR，文件却仍写去真实目录）。
+      ⇒ 现在统一走 `Rafayel_config.mem_path()`（**Step 0**）：它**调用时**才解析目录
+        ⇒ 全项目只改 `Rafayel_config.MEMORY_DIR` 一处就生效。跟 `Rafayel_greet._record_path` 同一写法。
     ⚠ 文件名不带 uid ⇒ 打招呼 / 发说说 / 节日那几个扫 MEMORY_DIR 的循环都会跳过它
       （它们只认纯数字 uid）。
     """
-    return os.path.join(MEMORY_DIR, "weather.json")
+    return mem_path("weather")
 
 # 进程内缓存：{"at": 时间戳, "data": 数据 or None}
 #   ⚠ 失败的也会缓存（`data=None`），只是 TTL 更短 —— 否则每轮都去卡 5 秒超时。
@@ -164,7 +165,7 @@ def _load_nudge():
 
 
 def _save_nudge(d):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     path = _nudge_path()
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

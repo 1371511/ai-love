@@ -37,7 +37,7 @@ from Rafayel_daily import record_usage as usage_record
 from Rafayel_config import (
     ADVANCE_ENABLE, ADVANCE_HINT,
     AFFINITY_TONE, API_URL, CALL_SUMMARY, DAILY_QA, LLM_EXTRA, MAX_TOKENS, CALL_WORLDBOOK_ENABLE,
-    MEMORY_DIR, MODEL, MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE,
+    MODEL, MOOD_ENABLE, QZONE_CMT_ENABLE, REPLY_MAX_LINES, REPLY_SHAPE, mem_dir,
     REPLY_SPLIT_FALLBACK, REPLY_SPLIT_MAX_LINES, REPLY_SPLIT_MIN_CHARS, TEMPERATURE,
     WB_MAX_CHARS, WB_MAX_ENTRIES, api_key, temp_for,
     # 🚦 2026-10-02（方案 A 的 ③）前台重试：撞上「上游并发 / RPM 被拒」这类错就退避重试。
@@ -343,7 +343,7 @@ def _level_block(cm):
     if not AFFINITY_TONE:
         return ""
     try:
-        return tone_for(cm.user_id, MEMORY_DIR)
+        return tone_for(cm.user_id, mem_dir())
     except Exception as e:
         print("⚠️ 牵绊度语气注入失败（不影响对话）：%s" % e)
         return ""

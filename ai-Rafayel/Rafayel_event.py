@@ -29,7 +29,7 @@ import time
 
 from Rafayel_config import (
     AUTO_GREET_TZ_OFFSET, EVENT, EVENT_HOUR_END, EVENT_HOUR_START,
-    EVENT_POOL, MEMORY_DIR,
+    EVENT_POOL, mem_dir, mem_path,
 )
 from Rafayel_qzone_auto import render_text
 
@@ -112,7 +112,7 @@ def fest_today(now=None, pool=None):
 
 
 def _record_path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_event.json" % user_id)
+    return mem_path("event", user_id)
 
 
 def load_record(user_id):
@@ -132,7 +132,7 @@ def load_record(user_id):
 
 
 def save_record(user_id, rec):
-    os.makedirs(MEMORY_DIR, exist_ok=True)
+    os.makedirs(mem_dir(), exist_ok=True)
     path = _record_path(user_id)
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as f:

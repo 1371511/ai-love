@@ -28,11 +28,11 @@ import json
 import os
 import time
 
-from Rafayel_config import ARCHIVE_KEEP, ARCHIVE_MAX_DAYS, ARCHIVE_MAX_MSGS, MEMORY_DIR
+from Rafayel_config import ARCHIVE_KEEP, ARCHIVE_MAX_DAYS, ARCHIVE_MAX_MSGS, mem_dir, mem_path
 
 
 def _path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_archive.json" % str(user_id))
+    return mem_path("archive", str(user_id))
 
 
 def _blank():
@@ -88,7 +88,7 @@ def load(user_id):
 def save(user_id, data):
     """原子写（tmp + replace，跟 `Rafayel_mood.save` 同一套）。返回是否成功。"""
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
+        os.makedirs(mem_dir(), exist_ok=True)
         p = _path(user_id)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:

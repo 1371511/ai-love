@@ -44,11 +44,11 @@ import json
 import os
 import time
 
-from Rafayel_config import CALLS_KEEP, CALLS_MAX_LINES, MEMORY_DIR
+from Rafayel_config import CALLS_KEEP, CALLS_MAX_LINES, mem_dir, mem_path
 
 
 def _path(user_id):
-    return os.path.join(MEMORY_DIR, "%s_calls.json" % str(user_id))
+    return mem_path("calls", str(user_id))
 
 
 def _blank():
@@ -140,7 +140,7 @@ def load(user_id):
 def save(user_id, data):
     """原子写（tmp + replace，跟 `Rafayel_archive` / `Rafayel_mood` 同一套）。"""
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
+        os.makedirs(mem_dir(), exist_ok=True)
         p = _path(user_id)
         tmp = p + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
@@ -213,8 +213,13 @@ def append_turn(user_id, role, content, ts=None):
     if not calls:
         # 🎲 兜底开的那通也要带界碑 —— 她这句话本身就是开场白
         #   （老记录/异常路径才会走到这儿，界碑别留空，否则 `_call_ctx` 拿到空串）。
+        # ⚠⚠ 2026-10-05 修：这里原来写的是 `text` —— **未定义的名字** ⇒ 一执行就
+        #   `NameError`（`call_selftest` 抓到的）。本函数签名是
+        #   `append_turn(user_id, role, content, ts)`，本地变量只有 `content`。
+        #   ⇒ 这条分支只在「一通记录都没有、却先来了一句台词」时才走到（异常路径 /
+        #     老记录），所以线上没炸过；但它确实是**执行必崩**的。
         calls.append({"id": _new_id(calls, ts), "start_ts": ts, "end_ts": ts,
-                      "hello": (text if role == "user" else "").strip(),
+                      "hello": (content if role == "user" else "").strip(),
                       "summarized": False, "lines": []})
     cur = calls[-1]
     # ⚠ 疯话闸（`CALLS_MAX_LINES=400`）：这**不是「截断」**—— 正常一通电话远不到，

@@ -21,8 +21,10 @@ from Rafayel_config import (
     API_URL, AUTO_GREET_TZ_OFFSET, DAY_KEEP, DAY_ROLL, DAY_ROLL_MIN_GAP,
     DAY_SUMMARY_MAX_TOKENS, DIARY_ENABLE, DIARY_HARD_LEN, DIARY_MAX_ITEMS, DIARY_MAX_LEN,
     LLM_EXTRA, MAX_FACTS, MAX_HISTORY_TURNS, LONG_TERM_SUMMARY_MAX,
-    MEMORY_DIR, MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT,
+    MODEL, NOW_GAP_HOURS, NOW_PROMPT, REPLY_SHAPE, REPLY_SHAPE_HINT, mem_dir, mem_path,
     SUMMARY_INTERVAL, SUMMARY_MAX_TOKENS, TIMELINE_GAP_HOURS, temp_for,
+    # 🔒 写盘的**跨进程事务** + 三方合并 + 宽容读盘（2026-10-05 收「整份覆盖」那条债）
+    mem_txn, merge3_list, read_json,
     # 🚦 2026-10-02（独立项 1）「引擎转述的报错」的判据（前缀，从三句模板现算）。
     #    ⚠ 那三句话**不是他说的话**，绝不能当台词摘进长期记忆 —— 见 `summarize_call`。
     LLM_ERR_MARKS,
@@ -271,33 +273,93 @@ def _clean_day_text(text, limit=200):
 #  💾 记忆持久化
 # ============================================================
 
-def save_memory(user_id: str, cm):
-    """把某个用户的记忆保存到 JSON 文件"""
-    os.makedirs(MEMORY_DIR, exist_ok=True)
-    data = {
-        "messages": cm.messages,
-        "long_term_summary": cm.long_term_summary,
-        # 待总结缓冲也要落盘：不加的话，重启会丢掉「上次满 SUMMARY_INTERVAL 轮之后、
-        # 还没累够一轮」的那批素材，它们就永远进不了摘要（2026-09-22 修）。
-        "pending_summary": cm.pending_summary,
-        "key_facts": cm.key_facts,
-        "turn_count": cm.turn_count,
-        "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
-        # 🕐 她最后一条消息的时间戳（用于重启后第一条也算得出「隔了多久」）
-        "last_msg_at": cm.last_msg_at,
-        # 🗓 跨天小结（2026-09-24）：[{date: "YYYY-MM-DD", text: "…"}]，最多 DAY_KEEP 条
-        "day_summaries": cm.day_summaries,
-    }
-    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
-    tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
-    os.replace(tmp, path)  # 先写临时文件再替换，防止写一半崩了丢数据
+def _warn_lost_messages(user_id, now_msgs, disk_msgs):
+    """
+    ⚠ **丢话告警**（只让它可见，**不改行为**）：本次写盘会让磁盘上几条「别人的消息」消失？
+
+    ⚠⚠ 背景（2026-10-05 才查实，旧笔记**没登记**这一条）：
+      bot 与 web 是**两条独立对话流**（QQ 一个窗口、网页一个窗口），
+      而 `messages` 只有一份、写的时候**整份覆盖** ⇒ 谁后写谁把另一边**从文件里抹掉**。
+      ⚠ 旧笔记只写了「会被盖：`key_facts` / `{uid}_profile.json`」——
+        其实 `messages` / `turn_count` **也在同一个文件里**，同样会被盖。
+
+    ⇒ 为什么不顺手合并：那要动**对话历史的格式与窗口**（`MAX_HISTORY_TURNS` + 留档），
+      弄错会让他「重复说同一句」或「记错顺序」，比暂时丢话更难查。
+    ⇒ 所以先**让它从静默变成能看见**：拿真实数据判断它到底发不发生、多频繁，
+      再决定要不要按 `ts` 取并集（`docs/错题集/待办与坑.md` §5.1）。
+    """
+    if not isinstance(disk_msgs, list) or not isinstance(now_msgs, list):
+        return
+
+    def _k(m):
+        return (m.get("role"), m.get("content"), m.get("ts")) if isinstance(m, dict) else m
+
+    have = {_k(m) for m in now_msgs}
+    lost = [m for m in disk_msgs
+            if isinstance(m, dict) and m.get("role") in ("user", "assistant")
+            and _k(m) not in have]
+    if lost:
+        print("⚠️ [丢话告警] %s：本次写盘会让磁盘上 **%d 条**消息消失"
+              "（多半是另一个进程刚写的对话 —— 见「整份覆盖」那条债）" % (user_id, len(lost)))
+
+
+def save_memory(user_id: str, cm, only=None):
+    """
+    把某个用户的记忆保存到 JSON 文件。
+
+    `only` = **只写这几格**（`{字段: 值}`），其余**原样保留磁盘上的**。
+      ⚠⭐ 网页端改「他记住的事」走的就是 `only={"key_facts": …}` ——
+        它**绝不能**顺手把 `messages` 写回去：那是"拿我读到的旧版本覆盖别人刚写的新版本"。
+        （2026-10-05 查实的丢数据来路之一，旧笔记**没登记**。）
+      `only=None`（默认）＝ 对话轮次那条路：写完整的 8 格。
+
+    ⚠⚠ 全流程在 `mem_txn(user_id)`（**跨进程**锁）里，而且**在锁内重新读盘**：
+      · 只锁「写」是没用的 —— 丢更新正好发生在「读」和「写」之间；
+      · `key_facts` / `day_summaries` 走**三方合并**（基线见 `reload_shared_from_disk`）
+        ⇒ 她删掉的**不复活**、别人加的**不丢**（`merge3_list` 在 config 里，两模块共用）。
+      · 以**磁盘那份为底**再 `update(only)` ⇒ 本次不写的格一律保持磁盘现状。
+    """
+    if only is None:
+        only = {
+            "messages": cm.messages,
+            "long_term_summary": cm.long_term_summary,
+            # 待总结缓冲也要落盘：不加的话，重启会丢掉「上次满 SUMMARY_INTERVAL 轮之后、
+            # 还没累够一轮」的那批素材，它们就永远进不了摘要（2026-09-22 修）。
+            "pending_summary": cm.pending_summary,
+            "key_facts": cm.key_facts,
+            "turn_count": cm.turn_count,
+            "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            # 🕐 她最后一条消息的时间戳（用于重启后第一条也算得出「隔了多久」）
+            "last_msg_at": cm.last_msg_at,
+            # 🗓 跨天小结（2026-09-24）：[{date: "YYYY-MM-DD", text: "…"}]，最多 DAY_KEEP 条
+            "day_summaries": cm.day_summaries,
+        }
+
+    path = mem_path(uid=user_id)
+    with mem_txn(user_id):
+        os.makedirs(mem_dir(), exist_ok=True)
+        disk = read_json(path)                # ⚠ **锁内**重读（只在锁外读=白锁）
+        data = dict(disk)                     # ⭐ 以磁盘那份为底：本次不写的格原样保住
+        data.update(only)
+        if "key_facts" in only:
+            data["key_facts"] = merge3_list(only["key_facts"], disk.get("key_facts"),
+                                            getattr(cm, "_base_key_facts", None))
+        if "day_summaries" in only:
+            data["day_summaries"] = merge3_list(only["day_summaries"],
+                                                disk.get("day_summaries"),
+                                                getattr(cm, "_base_day_summaries", None))
+        # ⚠ 只对「对话轮次」那条路告警：`only=` 那条根本不写 messages
+        if "messages" in only:
+            _warn_lost_messages(user_id, data.get("messages"), disk.get("messages"))
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, path)  # 先写临时文件再替换，防止写一半崩了丢数据
 
 
 def load_memory(user_id: str, cm) -> bool:
     """启动时读回记忆，文件不存在返回 False"""
-    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    path = mem_path(uid=user_id)
     if not os.path.exists(path):
         return False
     try:
@@ -320,6 +382,8 @@ def load_memory(user_id: str, cm) -> bool:
         #    ⇒ 不是列表就当没有（跟 `_pend` / `_days` 一致的收法）。
         _kf = data.get("key_facts")
         cm.key_facts = _kf if isinstance(_kf, list) else []
+        # 🧬 记下「刚读到的磁盘值」当三方合并的基线（见 `save_memory`）
+        cm._base_key_facts = list(cm.key_facts)
         cm.turn_count = data.get("turn_count", 0)
         # 🕐 读回「她最后一条消息」的时间戳。
         #    老文件没有 `last_msg_at` ⇒ 退回 `saved_at`（那是上次**存盘**的时刻，
@@ -337,6 +401,7 @@ def load_memory(user_id: str, cm) -> bool:
         _days = data.get("day_summaries")
         if isinstance(_days, list):
             cm.day_summaries = [d for d in _days if isinstance(d, dict) and d.get("text")][-DAY_KEEP:]
+            cm._base_day_summaries = list(cm.day_summaries)
         return True
     except Exception as e:
         print(f"⚠️ 读取记忆失败（{user_id}）：{e}，将从头开始")
@@ -358,7 +423,7 @@ def _read_key_facts(user_id: str):
     ⚠ 类型闸跟 `load_memory()` / `compute()` / `page/home.py` 三处保持一致
       （不是 list 就当没有 —— 见文件头「先看类型再看内容」那节）。
     """
-    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    path = mem_path(uid=user_id)
     if not os.path.isfile(path):
         return None
     try:
@@ -383,7 +448,7 @@ def recent_context(user_id, n=6):
       发说说那条链（后台 task）不该依赖对话引擎的进程内状态，
       而且它跑在**另一个协程**里，去摸 `cm.messages` 既没必要也不安全。
     """
-    path = os.path.join(MEMORY_DIR, f"{user_id}.json")
+    path = mem_path(uid=user_id)
     if not os.path.exists(path):
         return ""
     try:
@@ -505,6 +570,12 @@ class ConversationManager:
         #    模型就会把昨天的事当成今天。跨天时把昨天的原话摘出去、换成一条带日期的小结。
         self.day_summaries = []
 
+        # 🧬 **三方合并的基线**（2026-10-05）：这两格是「别人也可能改」的，
+        #    落盘时拿它跟磁盘比 —— 才分得清「我改的」和「别人改的」。
+        #    ⚠ `None` = 还没读到基线 ⇒ 合并退回「以写者为准」（= 改动之前的行为）。
+        self._base_key_facts = None
+        self._base_day_summaries = None
+
     def reload_shared_from_disk(self):
         """
         🔄 把「网页端也能写」的两处从磁盘重读一次（**每轮对话开头**调）。
@@ -533,6 +604,9 @@ class ConversationManager:
         facts = _read_key_facts(self.user_id)
         if facts is not None:
             self.key_facts = facts
+            # 🧬 同时更新三方合并的基线：**这次读到的就是「当前磁盘真值」**，
+            #    本轮之后我对 `key_facts` 的增删都相对它算（见 `save_memory`）。
+            self._base_key_facts = list(facts)
 
     def get_full_system_prompt(self):
         """构建完整的系统提示词，包含用户画像、记忆摘要和关键事实"""
@@ -1131,7 +1205,13 @@ def _facts_edit(user_id: str, fn) -> bool:
         return False
     if not fn(cm):
         return False
-    save_memory(user_id, cm)
+    # ⚠⚠ **只写 `key_facts` 这一格**（2026-10-05 修）：
+    #   以前这里是 `save_memory(user_id, cm)` —— 它把**全部 8 格**都写回去，
+    #   其中 `messages` 是上面 `load_memory()` 刚读到的**旧版本**。
+    #   ⇒ 她在这边加一条事实的那一瞬间，只要 bot 刚好写完一轮，
+    #     **bot 那一轮就从文件里消失**（旧笔记没登记这条，2026-10-05 查实）。
+    #   ⚠ 顺带：`only=` 那条路**根本不写 messages** ⇒ 也不可能再"顺手覆盖"。
+    save_memory(user_id, cm, only={"key_facts": cm.key_facts})
     return True
 
 
@@ -1347,7 +1427,7 @@ def _diary_text_from(raw_text: str) -> str:
 
 
 def _diary_path(user_id: str) -> str:
-    return os.path.join(MEMORY_DIR, f"{user_id}_diary.json")
+    return mem_path("diary", user_id)
 
 
 def _diary_ok(e) -> bool:
@@ -1489,7 +1569,7 @@ def _diary_edit(user_id: str, fn) -> bool:
     if not fn(entries):
         return False
     try:
-        os.makedirs(MEMORY_DIR, exist_ok=True)
+        os.makedirs(mem_dir(), exist_ok=True)
         tmp = path + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
             json.dump({"entries": entries,

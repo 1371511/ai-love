@@ -16,7 +16,8 @@ import os
 import re
 import time
 
-from Rafayel_config import MEMORY_DIR, MAX_PROFILE_ITEMS
+from Rafayel_config import (MAX_PROFILE_ITEMS, mem_dir, mem_path, mem_txn,
+                            merge3_list, merge3_scalar, read_json)
 
 
 # ============================================================
@@ -163,7 +164,7 @@ class UserProfile:
 
     def __init__(self, user_id: str):
         self.user_id = user_id
-        self.path = os.path.join(MEMORY_DIR, f"{user_id}_profile.json")
+        self.path = mem_path("profile", user_id)
         self.data = {
             "user_id": user_id,
             "name": None,
@@ -177,6 +178,9 @@ class UserProfile:
             "manual": {},       # {kind: 值 或 [原话...]} 她手写的 —— 只进 prompt，不计好感度
             "prof_seen": 0,     # 自动项条数的历史峰值（只涨不跌）⇒ 删一条不掉好感度
         }
+        # 🧬 三方合并的基线（2026-10-05）：`load()` 之后填上，`save()` 拿它跟磁盘比
+        #    ⇒ 才分得清「我改的」和「另一个进程改的」。⚠ `None` = 退回「以写者为准」。
+        self._base = None
         self.load()
 
     def load(self):
@@ -195,17 +199,67 @@ class UserProfile:
             self.data["manual"] = dict(saved.get("manual") or {})
             # 老文件没有 prof_seen ⇒ 用「现在的条数」补齐（一次性迁移）
             self.data["prof_seen"] = int(saved.get("prof_seen") or 0) or self._auto_n()
+            # 🧬 读成功 ⇒ 把这一份记成三方合并的基线（`save()` 用）
+            self._base = self._snapshot()
         except Exception as e:
             print(f"⚠️ 读取用户画像失败（{self.user_id}）：{e}，将从空画像开始")
 
-    def save(self):
+    def _snapshot(self):
+        """
+        当前 `data` 的**深拷贝** —— 三方合并的基线（见 `save()`）。
+
+        ⚠ 用 JSON 往返而不是 `dict()`：`suppressed` / `manual` 是**字典里套列表**，
+          浅拷贝之后里层还是同一个对象，改动会同时改到基线（那合并就永远判成"没动过"）。
+          画像很小，往返一次的开销可以忽略。
+        """
         try:
-            os.makedirs(MEMORY_DIR, exist_ok=True)
-            self.data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-            tmp = self.path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.path)
+            return json.loads(json.dumps(self.data, ensure_ascii=False))
+        except Exception:
+            return None
+
+    def save(self):
+        """
+        落盘（⚠ 2026-10-05 起：**跨进程锁 + 按字段三方合并**，不再整份覆盖）。
+
+        ⚠⚠ 为什么必须改：这个文件**两个进程都在写** ——
+          QQ 端（`extract_from_text` 自动学到的）与网页端（她自己在主页改的）。
+          以前整份覆盖 ⇒ 后写的把先写的**整份**抹掉：
+            · 她刚在主页填的「生日 / 称呼」被下一轮对话写回旧值
+            · 她刚删掉的一条标签**又回来了**
+        ⚠ 合并规则（`self._base` = `load()` 时那份基线）：
+          · 列表格（likes / dislikes / traits）⇒ 三方合并（**不复活删除**、**不丢别人的新增**）
+          · 单值格（name / birthday）⇒ 写者**动过**就用写者，没动过用盘上的
+          · suppressed / manual ⇒ 整体比：写者动过用写者，没动过用盘上的
+          · prof_seen ⇒ 取**两边最大**（它的口径本来就是「只涨不跌」）
+        ⚠ 全程在 `mem_txn(uid)` 里，而且**在锁内重新读盘**（只锁写是没用的）。
+        """
+        try:
+            os.makedirs(mem_dir(), exist_ok=True)
+            with mem_txn(self.user_id):
+                disk = read_json(self.path)
+                base = self._base
+                if base is not None and disk:
+                    for k in self.KINDS:
+                        if k in self.SCALAR_KINDS:
+                            self.data[k] = merge3_scalar(self.data.get(k), disk.get(k),
+                                                         base.get(k))
+                        else:
+                            self.data[k] = merge3_list(self.data.get(k) or [],
+                                                       disk.get(k) or [], base.get(k))
+                    for k in ("suppressed", "manual"):
+                        if self.data.get(k) == base.get(k):
+                            self.data[k] = dict(disk.get(k) or {})
+                    try:
+                        self.data["prof_seen"] = max(int(self.data.get("prof_seen") or 0),
+                                                     int(disk.get("prof_seen") or 0))
+                    except Exception:
+                        pass
+                self.data["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+                tmp = self.path + ".tmp"
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(self.data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.path)
+                self._base = self._snapshot()      # 落盘成功 ⇒ 基线跟上
         except Exception as e:
             print(f"⚠️ 保存用户画像失败（{self.user_id}）：{e}")
 
