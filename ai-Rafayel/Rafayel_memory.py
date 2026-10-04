@@ -42,7 +42,7 @@ from Rafayel_archive import append as archive_append
 #     （她 2026-10-02 选的就是「通话页自己写」）。
 from Rafayel_calls import mark_summarized as calls_mark
 from Rafayel_calls import pending_call as calls_pending
-# 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）：写日记时给一句「他现在的心情」。
+# 💗 情绪（2026-10-01 新，主档 docs/规划/情绪模块.md）：写日记时给一句「他现在的心情」。
 #   ⚠ 只给**事实**、不加指令 —— 让他自己带着这个心情写，不替他规定写什么。
 #   ⚠ 依赖方向合法：memory(2) → mood(1)；mood 只依赖 config，**不反向 import memory**。
 #   ⚠ `MOOD_ENABLE=False` 或心情是「平静」⇒ `mood_current()` 返回 None ⇒ 零变化。
@@ -226,7 +226,7 @@ def day_label(day_key):
     ⚠⭐ **为什么要开一个公共的，而不是让网页端直接用那个 `_day_label`**：
       下划线开头的是私有 helper，跨模块直接引是坏味道（改了签名谁都不知道）。
       这层壳就一句，但它把「**日期文案只有一份实现**」这条规矩落到实处 ——
-      页面永远不需要自己拼日期（`docs/日记.md` 红线 6）。
+      页面永远不需要自己拼日期（`docs/规划/日记.md` 红线 6）。
     """
     return _day_label(day_key)
 

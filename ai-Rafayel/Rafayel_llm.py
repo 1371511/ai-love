@@ -54,7 +54,7 @@ from Rafayel_dailyq import hint_for as dailyq_hint
 from Rafayel_event import fest_today as event_fest_today
 from Rafayel_memory import ConversationManager, load_memory, save_memory, _strip_outgoing_prefix
 from Rafayel_memory import summarize_call as _summarize_call_into
-# 💗 情绪（2026-10-01 新，主档 docs/情绪模块.md）
+# 💗 情绪（2026-10-01 新，主档 docs/规划/情绪模块.md）
 #   ⭐ 只调 `spawn_update` —— 它**起后台线程**判情绪，一秒都不占她等待的时间。
 #   ⚠ 绝不能在 `get_reply` 里**同步**判：那会直接 +1~2s 加到她等待的时间上。
 from Rafayel_mood import block_for, spawn_update

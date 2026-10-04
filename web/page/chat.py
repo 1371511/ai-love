@@ -60,7 +60,9 @@ from base import (
     # 🔊 2026-10-02 语音那一套（切段 / 提取台词 / 哈希）**下沉去了 base** ——
     #    通话页也要给字幕挂语音，而**哈希必须两边算得一模一样**，否则一播就 404。
     #    页面之间不许互 import ⇒ 只能共用底座那一份。`VOICE_PATH` 也一起搬了。
-    VOICE_PATH, VOICE_QUOTE_MODE, _segs, _voice_text, _says_of, _vhash,
+    #    ⭐ 2026-10-04 多引一个 `_say_call`：通话页 10-04 起改挂「整条合并」哈希，
+    #      本页的 `/chat/voice` 路由**两种口径都得认**（只认逐段会让通话页全 404）。
+    VOICE_PATH, VOICE_QUOTE_MODE, _segs, _voice_text, _says_of, _say_call, _vhash,
 )
 from Rafayel_affinity import compute
 from Rafayel_chat import get_reply, mood_hint, take_opening, tick_unlock
@@ -1467,6 +1469,11 @@ async def chat_voice(request: Request, h: str = ""):
     ⚠⚠ **两个台词来源**（2026-10-02 第 5 批起）：`memory/{uid}.json`（聊天）
       + `memory/{uid}_calls.json`（通话）—— 通话走 `wire=False` 后内容不进前者，
       只查它会**一条通话台词都认不出**（全 404）。见 `base._read_calls_talk()` 那段注释。
+    ⚠⚠ **两套哈希口径**（2026-10-04 起，两页分家）：
+      · `/chat` 挂的是**逐段**哈希（`_says_of`，一段气泡一个喇叭）；
+      · `/call` 挂的是**整条合并**哈希（`_say_call`，一条字幕一段音频）。
+      ⇒ 这里**两种都要认**：只认前者会让通话页全 404（比改之前更糟 ——
+        改之前至少第一段有声）。见 `base._say_call()` 那条注释。
     """
     uid = _current_uid(request)
     if not uid:
@@ -1484,7 +1491,10 @@ async def chat_voice(request: Request, h: str = ""):
     for role, txt in _read_talk(uid) + _read_calls_talk(uid):
         if role != "assistant":
             continue                       # 她自己的气泡没有播放按钮，不认她的哈希
-        for say in _says_of(txt):
+        # ⭐ 逐段 + 整条合并，**两种口径都试一遍**（2026-10-04）：
+        #   单段消息两者算出同一个 `say`（幂等，不会重复），
+        #   只有「一句里含换行」时 `_say_call` 才会多出一个候选 —— 那正是通话页挂的那个。
+        for say in _says_of(txt) + [_say_call(txt)]:
             # ⚠ 哈希算的就是 `say` 本身（页面上也是这么算的）；
             #   `say` 为空 = 那一段没台词（纯动作 / 纯旁白）⇒ 不参与匹配。
             if say and _vhash(say) == h:
